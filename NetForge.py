@@ -562,6 +562,12 @@ class GenerateTab(ttk.Frame):
             messagebox.showwarning("Missing", "Select a site profile.")
             return
         self._populate_step2(mn, pn)
+        # auto-fill domain name from profile
+        profile = self.app.profiles[pn]
+        domain = profile.get("domain_name", "")
+        if domain:
+            self.domain.delete(0, "end")
+            self.domain.insert(0, domain)
         self._show_step(1)
 
     def _populate_step2(self, model_name, profile_name):
@@ -1001,6 +1007,7 @@ class ProfilesTab(ttk.Frame):
 
         _section(form, "Profile Details")
         self.name_e = _field(form, "Profile Name")
+        self.domain_e = _field(form, "Domain Name")
         self.mgmt_vlan_e = _field(form, "Management VLAN ID")
 
         # -- VLAN definitions (raw IOS) --
@@ -1110,6 +1117,8 @@ class ProfilesTab(ttk.Frame):
         p = self.app.profiles.get(name, {})
 
         self.name_e.delete(0, "end"); self.name_e.insert(0, name)
+        self.domain_e.delete(0, "end")
+        self.domain_e.insert(0, p.get("domain_name", ""))
         self.mgmt_vlan_e.delete(0, "end")
         self.mgmt_vlan_e.insert(0, p.get("mgmt_vlan", ""))
 
@@ -1127,6 +1136,7 @@ class ProfilesTab(ttk.Frame):
     def _new(self):
         self.lb.selection_clear(0, "end")
         self.name_e.delete(0, "end")
+        self.domain_e.delete(0, "end")
         self.mgmt_vlan_e.delete(0, "end")
         self.vlans_text.delete("1.0", "end")
         self._clear_vars(); self._clear_pa()
@@ -1168,6 +1178,7 @@ class ProfilesTab(ttk.Frame):
                 del self.app.profiles[old]
 
         self.app.profiles[name] = {
+            "domain_name":      self.domain_e.get().strip(),
             "mgmt_vlan":        self.mgmt_vlan_e.get().strip(),
             "vlan_definitions": self.vlans_text.get("1.0", "end").strip(),
             "role_variables":   role_vars,
