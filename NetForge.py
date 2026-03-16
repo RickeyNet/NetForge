@@ -12,6 +12,7 @@ sessions.  No org-specific data is shipped — everything is user-defined.
 
 import json
 import os
+import re
 import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -113,6 +114,24 @@ def save_json(name, data):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(os.path.join(DATA_DIR, name), "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+
+
+def expand_range_iface(iface_str):
+    """Expand 'range PrefixN-M' into individual port strings.
+
+    Returns a list of individual interface strings.  If the input is not
+    a range specification, the original string is returned in a one-element
+    list so callers can always iterate the result.
+    """
+    s = iface_str.strip()
+    if not s.lower().startswith("range "):
+        return [s]
+    rest = s[6:]                       # strip leading "range "
+    m = re.match(r'^(.+?)(\d+)-(\d+)$', rest)
+    if not m:
+        return [s]
+    prefix, start_s, end_s = m.group(1), m.group(2), m.group(3)
+    return [f"{prefix}{i}" for i in range(int(start_s), int(end_s) + 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -519,21 +538,37 @@ class GenerateTab(ttk.Frame):
 
         # clear and repopulate
         self._clear_pa_rows()
+        listed = self.app.base.get("port_display_mode") == "listed"
         pa_list = profile.get("port_assignments", [])
         if pa_list:
             # profile already has assignments — use them
             for pa in pa_list:
-                self._add_pa_row(pa)
+                if listed:
+                    for iface in expand_range_iface(pa.get("interfaces", "")):
+                        self._add_pa_row({"interfaces": iface,
+                                          "role": pa.get("role", ""),
+                                          "description": pa.get(
+                                              "description", "")})
+                else:
+                    self._add_pa_row(pa)
         else:
             # no profile assignments — seed from model port groups
             for pg in model.get("port_groups", []):
-                if pg["start"] == pg["end"]:
-                    iface = f"{pg['prefix']}{pg['start']}"
+                if pg["start"] == pg["end"] or listed:
+                    if listed and pg["start"] != pg["end"]:
+                        for i in range(pg["start"], pg["end"] + 1):
+                            self._add_pa_row(
+                                {"interfaces": f"{pg['prefix']}{i}",
+                                 "role": "", "description": ""})
+                    else:
+                        self._add_pa_row(
+                            {"interfaces": f"{pg['prefix']}{pg['start']}",
+                             "role": "", "description": ""})
                 else:
                     iface = (f"range {pg['prefix']}"
                              f"{pg['start']}-{pg['end']}")
-                self._add_pa_row({"interfaces": iface,
-                                  "role": "", "description": ""})
+                    self._add_pa_row({"interfaces": iface,
+                                      "role": "", "description": ""})
 
     def _step2_next(self):
         self._show_step(2)
@@ -1100,6 +1135,21 @@ class BaseTab(ttk.Frame):
 
         b = self.app.base
 
+        # preferences
+        _section(form, "Preferences")
+        pf = ttk.Frame(form)
+        pf.pack(fill="x", padx=5, pady=(4, 8))
+        ttk.Label(pf, text="Port Display Default:").pack(side="left")
+        self.port_display_cb = ttk.Combobox(
+            pf, width=18, state="readonly",
+            values=["Range", "Individual Ports"])
+        self.port_display_cb.pack(side="left", padx=6)
+        cur = b.get("port_display_mode", "range")
+        self.port_display_cb.set(
+            "Individual Ports" if cur == "listed" else "Range")
+        ttk.Label(pf, text="(how ports appear in the Generate Config wizard)",
+                  style="Hint.TLabel").pack(side="left", padx=4)
+
         # simple field
         _section(form, "Credentials")
         self.fields["local_username"] = _field(
@@ -1159,6 +1209,9 @@ class BaseTab(ttk.Frame):
             data[key] = widget.get().strip()
         for key, widget in self.text_areas.items():
             data[key] = widget.get("1.0", "end").strip()
+        display_val = self.port_display_cb.get()
+        data["port_display_mode"] = (
+            "listed" if display_val == "Individual Ports" else "range")
         self.app.base = data
         save_json("base_settings.json", data)
         messagebox.showinfo("Saved", "Base settings saved.")
@@ -1556,7 +1609,7 @@ class GuideTab(ttk.Frame):
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("Cisco Switch Config Generator")
+        root.title("NetForge Config Generator")
         root.geometry("1050x780")
         root.minsize(900, 600)
         apply_theme(root)
