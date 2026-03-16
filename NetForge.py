@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import tkinter as tk
+import zipfile
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from jinja2 import Environment
 
@@ -24,10 +25,19 @@ from jinja2 import Environment
 # ---------------------------------------------------------------------------
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
+    _BUNDLE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    _BUNDLE_DIR = BASE_DIR
 
 DATA_DIR = os.path.join(BASE_DIR, "data")
+
+# On first run of a one-file build, seed data/ from bundled defaults
+if not os.path.exists(DATA_DIR):
+    _bundled_data = os.path.join(_BUNDLE_DIR, "data")
+    if os.path.isdir(_bundled_data):
+        import shutil
+        shutil.copytree(_bundled_data, DATA_DIR)
 
 # ---------------------------------------------------------------------------
 # Dark-mode colour palette  (grey / black — no blue)
@@ -114,6 +124,35 @@ def save_json(name, data):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(os.path.join(DATA_DIR, name), "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+
+
+def expand_port_groups_for_stack(port_groups, stack_members):
+    """Replicate port groups for each member of a switch stack.
+
+    For a prefix like ``GigabitEthernet1/0/`` the leading switch number
+    (the ``1`` before the first ``/``) is replaced with each member number
+    (1 … *stack_members*).  If the prefix doesn't contain a ``/`` or the
+    stack is size 1 the original groups are returned unchanged.
+    """
+    if stack_members <= 1:
+        return list(port_groups)
+    expanded = []
+    for pg in port_groups:
+        prefix = pg["prefix"]
+        # Match the switch number before the first slash
+        m = re.match(r'^([A-Za-z-]*)(\d+)(/.*)$', prefix)
+        if m:
+            name_part, _orig_num, tail = m.group(1), m.group(2), m.group(3)
+            for member in range(1, stack_members + 1):
+                expanded.append({
+                    "prefix": f"{name_part}{member}{tail}",
+                    "start": pg["start"],
+                    "end": pg["end"],
+                })
+        else:
+            # Can't parse switch number — just include as-is
+            expanded.append(pg)
+    return expanded
 
 
 def expand_range_iface(iface_str):
@@ -267,8 +306,10 @@ def render_config(model, profile, roles, base, sw):
 
     # -- switch provision (from model) ------------------------------------
     provision = model.get("provision", "").strip()
+    stack = model.get("stack_members", 1)
     if provision:
-        parts.append(f"switch 1 provision  {provision}")
+        for member in range(1, stack + 1):
+            parts.append(f"switch {member} provision {provision}")
 
     # -- domain name ------------------------------------------------------
     parts.append(f"ip domain name {sw['domain_name']}")
@@ -284,13 +325,15 @@ def render_config(model, profile, roles, base, sw):
 
     # -- disable ALL ports first (from model port groups) -----------------
     dis_tpl = base.get("disabled_port_template", "").strip()
-    if dis_tpl and model.get("port_groups"):
+    all_pgs = expand_port_groups_for_stack(
+        model.get("port_groups", []), stack)
+    if dis_tpl and all_pgs:
         try:
             rendered_dis = env.from_string(dis_tpl).render(**role_vars)
         except Exception:
             rendered_dis = dis_tpl
 
-        for pg in model["port_groups"]:
+        for pg in all_pgs:
             if pg["start"] == pg["end"]:
                 hdr = f"interface {pg['prefix']}{pg['start']}"
             else:
@@ -525,9 +568,14 @@ class GenerateTab(ttk.Frame):
         model   = self.app.models[model_name]
         profile = self.app.profiles[profile_name]
 
+        # expand port groups for stack members
+        stack = model.get("stack_members", 1)
+        all_pgs = expand_port_groups_for_stack(
+            model.get("port_groups", []), stack)
+
         # update reference label
         lines = []
-        for pg in model.get("port_groups", []):
+        for pg in all_pgs:
             if pg["start"] == pg["end"]:
                 lines.append(f"  {pg['prefix']}{pg['start']}")
             else:
@@ -553,7 +601,7 @@ class GenerateTab(ttk.Frame):
                     self._add_pa_row(pa)
         else:
             # no profile assignments — seed from model port groups
-            for pg in model.get("port_groups", []):
+            for pg in all_pgs:
                 if pg["start"] == pg["end"] or listed:
                     if listed and pg["start"] != pg["end"]:
                         for i in range(pg["start"], pg["end"] + 1):
@@ -712,6 +760,11 @@ class ModelsTab(ttk.Frame):
                                   default="")
         ttk.Label(form, text="  e.g.  c9300-24s  or  c9200-24p",
                   style="Hint.TLabel").pack(anchor="w", padx=28)
+        self.stack_e = _field(form, "Stack Members", default="1")
+        ttk.Label(form,
+                  text="  Number of switches in the stack (1 = standalone)."
+                       "  Port groups are replicated per member.",
+                  style="Hint.TLabel").pack(anchor="w", padx=28)
 
         # port groups
         self.pg_lf = ttk.LabelFrame(form, text="Port Groups", padding=5)
@@ -766,6 +819,8 @@ class ModelsTab(ttk.Frame):
         self.name_e.delete(0, "end");      self.name_e.insert(0, name)
         self.provision_e.delete(0, "end"); self.provision_e.insert(
             0, m.get("provision", ""))
+        self.stack_e.delete(0, "end");     self.stack_e.insert(
+            0, str(m.get("stack_members", 1)))
         self._clear_pg()
         for pg in m.get("port_groups", []):
             self._add_pg(pg)
@@ -774,6 +829,7 @@ class ModelsTab(ttk.Frame):
         self.lb.selection_clear(0, "end")
         self.name_e.delete(0, "end")
         self.provision_e.delete(0, "end")
+        self.stack_e.delete(0, "end"); self.stack_e.insert(0, "1")
         self._clear_pg()
 
     def _delete(self):
@@ -805,7 +861,12 @@ class ModelsTab(ttk.Frame):
             old = self.lb.get(sel[0])
             if old != name and old in self.app.models:
                 del self.app.models[old]
+        try:
+            stack = max(1, int(self.stack_e.get().strip()))
+        except ValueError:
+            stack = 1
         self.app.models[name] = {"provision": self.provision_e.get().strip(),
+                                  "stack_members": stack,
                                   "port_groups": pgs}
         save_json("models.json", self.app.models)
         self._refresh(); self.app.gen_tab.refresh_combos()
@@ -1614,6 +1675,20 @@ class App:
         root.minsize(900, 600)
         apply_theme(root)
 
+        # menu bar
+        menubar = tk.Menu(root, bg=C["bg2"], fg=C["fg"],
+                          activebackground=C["border"],
+                          activeforeground=C["fg"], relief="flat")
+        file_menu = tk.Menu(menubar, tearoff=0, bg=C["bg2"], fg=C["fg"],
+                            activebackground=C["border"],
+                            activeforeground=C["fg"])
+        file_menu.add_command(label="Export Settings...",
+                              command=self._export_settings)
+        file_menu.add_command(label="Import Settings...",
+                              command=self._import_settings)
+        menubar.add_cascade(label="File", menu=file_menu)
+        root.configure(menu=menubar)
+
         # load data
         self.models   = load_json("models.json",        {})
         self.roles    = load_json("roles.json",          {})
@@ -1621,17 +1696,106 @@ class App:
         self.base     = load_json("base_settings.json",  {})
 
         # tabs
-        nb = ttk.Notebook(root)
-        nb.pack(fill="both", expand=True, padx=5, pady=5)
+        self.nb = ttk.Notebook(root)
+        self.nb.pack(fill="both", expand=True, padx=5, pady=5)
 
-        self.gen_tab = GenerateTab(nb, self)
-        nb.add(self.gen_tab,  text="  Generate Config  ")
+        self.gen_tab = GenerateTab(self.nb, self)
+        self.nb.add(self.gen_tab,  text="  Generate Config  ")
 
-        nb.add(ModelsTab(nb, self),   text="  Switch Models  ")
-        nb.add(RolesTab(nb, self),    text="  Interface Roles  ")
-        nb.add(ProfilesTab(nb, self), text="  Site Profiles  ")
-        nb.add(BaseTab(nb, self),     text="  Base Settings  ")
-        nb.add(GuideTab(nb, self),    text="  How-To Guide  ")
+        self.models_tab   = ModelsTab(self.nb, self)
+        self.roles_tab    = RolesTab(self.nb, self)
+        self.profiles_tab = ProfilesTab(self.nb, self)
+        self.base_tab     = BaseTab(self.nb, self)
+        self.nb.add(self.models_tab,   text="  Switch Models  ")
+        self.nb.add(self.roles_tab,    text="  Interface Roles  ")
+        self.nb.add(self.profiles_tab, text="  Site Profiles  ")
+        self.nb.add(self.base_tab,     text="  Base Settings  ")
+        self.nb.add(GuideTab(self.nb, self), text="  How-To Guide  ")
+
+    # ---- export / import settings ----
+    _SETTINGS_FILES = [
+        "models.json", "roles.json", "profiles.json", "base_settings.json",
+    ]
+
+    def _export_settings(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".zip",
+            initialfile="NetForge_Settings.zip",
+            filetypes=[("ZIP Archive", "*.zip"), ("All", "*.*")])
+        if not path:
+            return
+        try:
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name in self._SETTINGS_FILES:
+                    fp = os.path.join(DATA_DIR, name)
+                    if os.path.exists(fp):
+                        zf.write(fp, name)
+            messagebox.showinfo("Exported",
+                                f"Settings exported to:\n{path}")
+        except Exception as exc:
+            messagebox.showerror("Export Error", str(exc))
+
+    def _import_settings(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("ZIP Archive", "*.zip"), ("All", "*.*")])
+        if not path:
+            return
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                names = zf.namelist()
+                valid = [n for n in names if n in self._SETTINGS_FILES]
+                if not valid:
+                    messagebox.showwarning(
+                        "Invalid",
+                        "The selected ZIP does not contain NetForge settings.")
+                    return
+                if not messagebox.askyesno(
+                        "Import Settings",
+                        f"This will overwrite your current settings:\n\n"
+                        f"  {', '.join(valid)}\n\n"
+                        "Continue?"):
+                    return
+                os.makedirs(DATA_DIR, exist_ok=True)
+                for name in valid:
+                    zf.extract(name, DATA_DIR)
+        except zipfile.BadZipFile:
+            messagebox.showerror("Import Error",
+                                 "The selected file is not a valid ZIP.")
+            return
+        except Exception as exc:
+            messagebox.showerror("Import Error", str(exc))
+            return
+
+        # reload data and refresh all tabs
+        self.models   = load_json("models.json",       {})
+        self.roles    = load_json("roles.json",         {})
+        self.profiles = load_json("profiles.json",      {})
+        self.base     = load_json("base_settings.json", {})
+        self._rebuild_tabs()
+        messagebox.showinfo("Imported",
+                            "Settings imported successfully.\n"
+                            "All tabs have been refreshed.")
+
+    def _rebuild_tabs(self):
+        """Destroy and recreate all editing tabs to reflect imported data."""
+        for tab in (self.gen_tab, self.models_tab, self.roles_tab,
+                    self.profiles_tab, self.base_tab):
+            self.nb.forget(tab)
+            tab.destroy()
+
+        guide = self.nb.tabs()  # only the guide tab remains
+        self.gen_tab      = GenerateTab(self.nb, self)
+        self.models_tab   = ModelsTab(self.nb, self)
+        self.roles_tab    = RolesTab(self.nb, self)
+        self.profiles_tab = ProfilesTab(self.nb, self)
+        self.base_tab     = BaseTab(self.nb, self)
+
+        self.nb.insert(0, self.gen_tab,      text="  Generate Config  ")
+        self.nb.insert(1, self.models_tab,   text="  Switch Models  ")
+        self.nb.insert(2, self.roles_tab,    text="  Interface Roles  ")
+        self.nb.insert(3, self.profiles_tab, text="  Site Profiles  ")
+        self.nb.insert(4, self.base_tab,     text="  Base Settings  ")
+        self.nb.select(0)
 
 
 def main():

@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for NetForge — single-folder Windows executable."""
+"""PyInstaller spec for NetForge — single-file Windows executable."""
 
 import os
 
@@ -27,24 +27,15 @@ pyz = PYZ(a.pure, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='NetForge',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,          # no terminal window — GUI only
-    icon='NetForge.ico',
-    contents_directory='.',  # keep data/ next to the exe (no _internal)
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
     upx_exclude=[],
-    name='NetForge',
+    console=False,
+    icon='NetForge.ico',
 )

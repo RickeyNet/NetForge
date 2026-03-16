@@ -83,5 +83,263 @@
         "end": 0
       }
     ]
+  },
+  "C9300-24S-A 2 Stack": {
+    "provision": "c9300-24s",
+    "stack_members": 2,
+    "port_groups": [
+      {
+        "prefix": "GigabitEthernet1/0/",
+        "start": 1,
+        "end": 24
+      },
+      {
+        "prefix": "TenGigabitEthernet1/1/",
+        "start": 1,
+        "end": 8
+      },
+      {
+        "prefix": "TwentyFiveGigE1/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "FortyGigabitEthernet1/1",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "AppGigabitEthernet1/0/",
+        "start": 1,
+        "end": 1
+      },
+      {
+        "prefix": "GigabitEthernet0/",
+        "start": 0,
+        "end": 0
+      },
+      {
+        "prefix": "GigabitEthernet2/0/",
+        "start": 1,
+        "end": 24
+      },
+      {
+        "prefix": "TenGigabitEthernet2/1/",
+        "start": 1,
+        "end": 8
+      },
+      {
+        "prefix": "TwentyFiveGigE2/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "FortyGigabitEthernet2/1",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "AppGigabitEthernet2/0/",
+        "start": 1,
+        "end": 1
+      }
+    ]
+  },
+  "C9300-24S-A 3 Stack": {
+    "provision": "c9300-24s",
+    "stack_members": 3,
+    "port_groups": [
+      {
+        "prefix": "GigabitEthernet1/0/",
+        "start": 1,
+        "end": 24
+      },
+      {
+        "prefix": "TenGigabitEthernet1/1/",
+        "start": 1,
+        "end": 8
+      },
+      {
+        "prefix": "TwentyFiveGigE1/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "FortyGigabitEthernet1/1",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "AppGigabitEthernet1/0/",
+        "start": 1,
+        "end": 1
+      },
+      {
+        "prefix": "GigabitEthernet0/",
+        "start": 0,
+        "end": 0
+      },
+      {
+        "prefix": "GigabitEthernet2/0/",
+        "start": 1,
+        "end": 24
+      },
+      {
+        "prefix": "TenGigabitEthernet2/1/",
+        "start": 1,
+        "end": 8
+      },
+      {
+        "prefix": "TwentyFiveGigE2/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "FortyGigabitEthernet2/1",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "AppGigabitEthernet2/0/",
+        "start": 1,
+        "end": 1
+      },
+      {
+        "prefix": "GigabitEthernet3/0/",
+        "start": 1,
+        "end": 24
+      },
+      {
+        "prefix": "TenGigabitEthernet3/1/",
+        "start": 1,
+        "end": 8
+      },
+      {
+        "prefix": "TwentyFiveGigE3/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "FortyGigabitEthernet3/1",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "AppGigabitEthernet3/0/",
+        "start": 1,
+        "end": 1
+      }
+    ]
+  },
+  "C9300-24S-A 4 Stack": {
+    "provision": "c9300-24s",
+    "stack_members": 4,
+    "port_groups": [
+      {
+        "prefix": "GigabitEthernet1/0/",
+        "start": 1,
+        "end": 24
+      },
+      {
+        "prefix": "TenGigabitEthernet1/1/",
+        "start": 1,
+        "end": 8
+      },
+      {
+        "prefix": "TwentyFiveGigE1/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "FortyGigabitEthernet1/1",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "AppGigabitEthernet1/0/",
+        "start": 1,
+        "end": 1
+      },
+      {
+        "prefix": "GigabitEthernet0/",
+        "start": 0,
+        "end": 0
+      },
+      {
+        "prefix": "GigabitEthernet2/0/",
+        "start": 1,
+        "end": 24
+      },
+      {
+        "prefix": "TenGigabitEthernet2/1/",
+        "start": 1,
+        "end": 8
+      },
+      {
+        "prefix": "TwentyFiveGigE2/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "FortyGigabitEthernet2/1",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "AppGigabitEthernet2/0/",
+        "start": 1,
+        "end": 1
+      },
+      {
+        "prefix": "GigabitEthernet3/0/",
+        "start": 1,
+        "end": 24
+      },
+      {
+        "prefix": "TenGigabitEthernet3/1/",
+        "start": 1,
+        "end": 8
+      },
+      {
+        "prefix": "TwentyFiveGigE3/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "FortyGigabitEthernet3/1",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "AppGigabitEthernet3/0/",
+        "start": 1,
+        "end": 1
+      },
+      {
+        "prefix": "GigabitEthernet4/0/",
+        "start": 1,
+        "end": 24
+      },
+      {
+        "prefix": "TenGigabitEthernet4/1/",
+        "start": 1,
+        "end": 8
+      },
+      {
+        "prefix": "TwentyFiveGigE4/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "FortyGigabitEthernet4/1",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "AppGigabitEthernet4/0/",
+        "start": 1,
+        "end": 1
+      }
+    ]
   }
 }
