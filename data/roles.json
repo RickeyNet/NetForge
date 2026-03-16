@@ -1,0 +1,17 @@
+{
+  "Private VLAN Promiscuous": {
+    "commands": "description {{ description }}\nswitchport private-vlan mapping {{ pvlan_primary }} {{ pvlan_isolated }}\nswitchport mode private-vlan promiscuous\nspanning-tree portfast\nspanning-tree bpduguard enable\nno shut"
+  },
+  "Private VLAN Isolated": {
+    "commands": "description {{ description }}\nswitchport private-vlan host-association {{ pvlan_primary }} {{ pvlan_isolated }}\nswitchport private-vlan mapping {{ pvlan_primary }} {{ pvlan_isolated }}\nswitchport mode private-vlan host\nno shutdown\nspanning-tree portfast\nspanning-tree bpduguard enable"
+  },
+  "Trunk Uplink to Switch": {
+    "commands": "description {{ description }}\nswitchport trunk native vlan {{ native_vlan }}\nswitchport trunk allowed vlan {{ trunk_allowed }}\nswitchport mode trunk\nswitchport nonegotiate\nno shutdown"
+  },
+  "Trunk Uplink to Firewall": {
+    "commands": "description {{ description }}\nswitchport trunk allowed vlan {{ trunk_allowed }}\nswitchport mode trunk\nswitchport nonegotiate\nno shutdown"
+  },
+  "Access Port": {
+    "commands": "description {{ description }}\nswitchport access vlan {{ access_vlan }}\nswitchport mode access\nno shutdown\nspanning-tree portfast\nspanning-tree bpduguard enable"
+  }
+}

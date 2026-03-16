@@ -1,0 +1,14 @@
+{
+  "local_username": "admin",
+  "global_services": "no service pad\nservice timestamps debug datetime msec localtime\nservice timestamps log datetime msec localtime\nservice password-encryption\nno platform punt-keepalive disable-kernel-core",
+  "mgmt_vrf": "vrf definition Mgmt-vrf\naddress-family ipv4\nexit-address-family",
+  "logging": "no logging console",
+  "aaa": "aaa new-model\naaa authentication login default local\naaa authentication enable default enable\naaa authorization exec default local",
+  "security": "no ip source-route\nno service call-home",
+  "ssh": "crypto key generate rsa modulus 4096\nip ssh version 2\nip ssh time-out 60",
+  "switching": "vtp mode transparent\nspanning-tree mode rapid-pvst\nspanning-tree extend system-id\nmemory free low-watermark processor 134344\nredundancy\nmode sso\ntransceiver type all\nmonitoring\nexit\nvlan dot1q tag native",
+  "mgmt_port": "vrf forwarding Mgmt-vrf\nno ip address\nnegotiation auto\nexit",
+  "line_config": "line con 0\nexec-timeout 9 0\nline vty 0 4\nexec-timeout 9 0\ntransport input ssh\nline vty 5 15\nexec-timeout 0 0\ntransport input none\nexit",
+  "banner": "",
+  "disabled_port_template": "description //Disabled Port\nswitchport access vlan {{ blackhole_vlan }}\nswitchport mode access\nshutdown\nspanning-tree bpduguard enable"
+}
