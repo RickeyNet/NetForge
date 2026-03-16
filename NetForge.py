@@ -374,7 +374,7 @@ def render_config(model, profile, roles, base, sw):
     # -- banner -----------------------------------------------------------
     banner = base.get("banner", "").strip()
     if banner:
-        parts.append(f"banner motd ^\n{banner}\n^")
+        parts.append(f"banner login ^\n{banner}\n^")
 
     # -- end --------------------------------------------------------------
     parts.append("end")
@@ -1255,10 +1255,10 @@ class BaseTab(ttk.Frame):
                       style="Hint.TLabel").pack(anchor="w", padx=5)
             self.text_areas[key] = _textarea(form, "", b.get(key, ""), h=4)
 
-        # banner (just the text — app wraps with banner motd ^ ... ^)
-        _section(form, "Banner MOTD")
+        # banner (just the text — app wraps with banner login ^ ... ^)
+        _section(form, "Banner LOGIN")
         ttk.Label(form, text="  Enter the banner text only — the app adds "
-                  "the 'banner motd ^' wrapper.",
+                  "the 'banner login ^' wrapper.",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.text_areas["banner"] = _textarea(
             form, "", b.get("banner", ""), h=3)
@@ -1652,7 +1652,7 @@ class GuideTab(ttk.Frame):
             "19.  Management VLAN interface (IP from wizard)\n"
             "20.  Default gateway\n"
             "21.  Line Configuration (from Base Settings)\n"
-            "22.  Banner MOTD (from Base Settings)\n"
+            "22.  Banner Login (from Base Settings)\n"
             "23.  end")
 
         # ---- Tips ----
