@@ -43,18 +43,18 @@ if not os.path.exists(DATA_DIR):
 # Dark-mode colour palette  (grey / black — no blue)
 # ---------------------------------------------------------------------------
 C = {
-    "bg":           "#1a1a1a",
-    "bg2":          "#242424",
-    "bg_input":     "#2d2d2d",
-    "fg":           "#d4d4d4",
-    "fg_dim":       "#909090",
-    "accent":       "#b0b0b0",
-    "accent_hover": "#c8c8c8",
-    "border":       "#3c3c3c",
-    "green":        "#a6e3a1",
-    "red":          "#c75050",
-    "red_hover":    "#d06060",
-    "sel_bg":       "#3c3c3c",
+    "bg":           "#1a1a1a",  # Main window background
+    "bg2":          "#242424",  # Secondary background (menus, panels)
+    "bg_input":     "#2d2d2d",  # Input field background
+    "fg":           "#d4d4d4",  # Primary text colour
+    "fg_dim":       "#909090",  # Muted / hint text colour
+    "accent":       "#b0b0b0",  # Accent elements (focus rings, highlights)
+    "accent_hover": "#c8c8c8",  # Accent hover state
+    "border":       "#3c3c3c",  # Borders and dividers
+    "green":        "#a6e3a1",  # Success / positive indicators
+    "red":          "#c75050",  # Delete / error actions
+    "red_hover":    "#d06060",  # Delete / error hover state
+    "sel_bg":       "#3c3c3c",  # Selection background
 }
 
 
@@ -323,6 +323,17 @@ def render_config(model, profile, roles, base, sw):
     # -- VLAN definitions from profile ------------------------------------
     add(profile.get("vlan_definitions", ""))
 
+    # -- custom sections: before interfaces -------------------------------
+    for cs in base.get("custom_sections", []):
+        if cs.get("position") == "pre-interface":
+            cmds = cs.get("commands", "").strip()
+            if cmds:
+                try:
+                    cmds = env.from_string(cmds).render(**role_vars)
+                except Exception:
+                    pass
+                add(cmds)
+
     # -- disable ALL ports first (from model port groups) -----------------
     dis_tpl = base.get("disabled_port_template", "").strip()
     all_pgs = expand_port_groups_for_stack(
@@ -367,6 +378,17 @@ def render_config(model, profile, roles, base, sw):
 
     # -- default gateway --------------------------------------------------
     parts.append(f"ip default-gateway {sw['default_gateway']}")
+
+    # -- custom sections: after interfaces --------------------------------
+    for cs in base.get("custom_sections", []):
+        if cs.get("position") == "post-interface":
+            cmds = cs.get("commands", "").strip()
+            if cmds:
+                try:
+                    cmds = env.from_string(cmds).render(**role_vars)
+                except Exception:
+                    pass
+                add(cmds)
 
     # -- line config ------------------------------------------------------
     add(base.get("line_config", ""))
@@ -1198,6 +1220,7 @@ class BaseTab(ttk.Frame):
         self.app = app
         self.fields = {}      # simple entry fields
         self.text_areas = {}  # multi-line text sections
+        self.cs_rows = []     # custom config section rows
         self._build()
 
     def _build(self):
@@ -1272,8 +1295,76 @@ class BaseTab(ttk.Frame):
         self.text_areas["disabled_port_template"] = _textarea(
             form, "", b.get("disabled_port_template", ""), h=4)
 
+        # -- custom config sections (user-defined production blocks) --
+        _section(form, "Custom Config Sections")
+        ttk.Label(form,
+                  text="  Add your own config sections (SNMP, NTP, QoS, "
+                  "DHCP Snooping, ACLs, etc.).\n"
+                  "  Each section is included in every generated config.  "
+                  "Use {{ variable }} placeholders — values\n"
+                  "  come from the Site Profile's Role Variables.",
+                  style="Hint.TLabel").pack(anchor="w", padx=5, pady=(4, 0))
+
+        cs_hdr = ttk.Frame(form)
+        cs_hdr.pack(fill="x", padx=5, pady=(6, 2))
+        ttk.Button(cs_hdr, text="+ Add Section",
+                   command=self._add_cs).pack(side="left")
+        ttk.Label(cs_hdr,
+                  text="  Position controls where the section appears in "
+                  "the generated config.",
+                  style="Hint.TLabel").pack(side="left", padx=6)
+
+        self.cs_container = ttk.Frame(form)
+        self.cs_container.pack(fill="x", padx=5, pady=(2, 6))
+
+        # load existing custom sections
+        for cs in b.get("custom_sections", []):
+            self._add_cs(cs)
+
         ttk.Button(form, text="Save Base Settings",
                    command=self._save).pack(padx=5, pady=10, anchor="w")
+
+    # -- custom section helpers --
+    def _add_cs(self, data=None):
+        """Add a custom config section block."""
+        frame = ttk.LabelFrame(self.cs_container, padding=5)
+        frame.pack(fill="x", pady=(0, 6))
+
+        top = ttk.Frame(frame)
+        top.pack(fill="x")
+        ttk.Label(top, text="Name:").pack(side="left")
+        name_e = ttk.Entry(top, width=28)
+        name_e.pack(side="left", padx=(4, 10))
+        ttk.Label(top, text="Position:").pack(side="left")
+        pos_cb = ttk.Combobox(top, width=22, state="readonly",
+                              values=["Before Interfaces",
+                                      "After Interfaces"])
+        pos_cb.pack(side="left", padx=4)
+        pos_cb.set("After Interfaces")
+        ttk.Button(top, text="X", width=3, style="Del.TButton",
+                   command=lambda f=frame: self._del_cs(f)
+                   ).pack(side="right")
+
+        cmds = tk.Text(frame, height=4, font=("Consolas", 9),
+                       bg=C["bg_input"], fg=C["fg"],
+                       insertbackground=C["fg"],
+                       selectbackground=C["sel_bg"],
+                       relief="flat", bd=2, wrap="word")
+        cmds.pack(fill="x", pady=(4, 0))
+
+        if isinstance(data, dict):
+            name_e.insert(0, data.get("name", ""))
+            pos = data.get("position", "post-interface")
+            pos_cb.set("Before Interfaces"
+                       if pos == "pre-interface" else "After Interfaces")
+            cmds.insert("1.0", data.get("commands", ""))
+
+        self.cs_rows.append({"frame": frame, "name": name_e,
+                             "position": pos_cb, "commands": cmds})
+
+    def _del_cs(self, frame):
+        self.cs_rows = [r for r in self.cs_rows if r["frame"] is not frame]
+        frame.destroy()
 
     def _save(self):
         data = {}
@@ -1284,6 +1375,22 @@ class BaseTab(ttk.Frame):
         display_val = self.port_display_cb.get()
         data["port_display_mode"] = (
             "listed" if display_val == "Individual Ports" else "range")
+
+        # collect custom sections
+        cs_list = []
+        for r in self.cs_rows:
+            name = r["name"].get().strip()
+            if name:
+                pos_val = r["position"].get()
+                cs_list.append({
+                    "name": name,
+                    "position": ("pre-interface"
+                                 if pos_val == "Before Interfaces"
+                                 else "post-interface"),
+                    "commands": r["commands"].get("1.0", "end").strip(),
+                })
+        data["custom_sections"] = cs_list
+
         self.app.base = data
         save_json("base_settings.json", data)
         messagebox.showinfo("Saved", "Base settings saved.")
@@ -1363,7 +1470,9 @@ class GuideTab(ttk.Frame):
             "it.\n\n"
             "Sections include: Global Services, Management VRF, Logging, "
             "AAA, Security, SSH/Crypto, Switching Features, Management Port, "
-            "Line Configuration, Banner, and the Disabled Port Template.")
+            "Line Configuration, Banner, Disabled Port Template, and "
+            "Custom Config Sections for production extras like SNMP, NTP, "
+            "QoS, DHCP Snooping, ACLs, etc.")
 
         subheading("Global Services Example")
         code(
@@ -1414,6 +1523,59 @@ class GuideTab(ttk.Frame):
             "shutdown\n"
             "spanning-tree bpduguard enable")
         body("Click 'Save Base Settings' when done.")
+
+        subheading("Custom Config Sections")
+        body(
+            "Use the Custom Config Sections area to add production-ready "
+            "config blocks that go beyond the basics — things like SNMP, "
+            "NTP, QoS, DHCP Snooping, Dynamic ARP Inspection, ACLs, "
+            "TACACS+, and anything else your production environment needs.\n\n"
+            "Click '+ Add Section' to create a new block. Each section has:\n\n"
+            "  Name — A label for your reference (e.g. 'SNMP Config')\n\n"
+            "  Position — Where it appears in the generated config:\n"
+            "    'Before Interfaces' — after VLANs, before ports are "
+            "configured. Good for DHCP Snooping, DAI, and global "
+            "policies that must exist before interface commands.\n"
+            "    'After Interfaces' — after all port and VLAN interface "
+            "config. Good for SNMP, NTP, ACLs, route-maps, and "
+            "monitoring.\n\n"
+            "  Commands — Raw IOS commands, just like the other Base "
+            "Settings sections. You can use {{ variable }} placeholders "
+            "here — values come from the Site Profile's Role Variables.\n\n"
+            "You can add as many sections as you need. They are saved "
+            "with your Base Settings and included in every generated "
+            "config. Delete a section with the X button.")
+
+        subheading("Custom Section Example: SNMP")
+        code(
+            "snmp-server community {{ snmp_ro_community }} RO\n"
+            "snmp-server location {{ site_location }}\n"
+            "snmp-server contact {{ contact_email }}")
+
+        subheading("Custom Section Example: NTP")
+        code(
+            "ntp server 10.0.0.1\n"
+            "ntp server 10.0.0.2\n"
+            "clock timezone EST -5\n"
+            "clock summer-time EDT recurring")
+
+        subheading("Custom Section Example: DHCP Snooping")
+        code(
+            "ip dhcp snooping\n"
+            "ip dhcp snooping vlan {{ access_vlan }}\n"
+            "no ip dhcp snooping information option\n"
+            "ip arp inspection vlan {{ access_vlan }}")
+
+        subheading("Custom Section Example: QoS")
+        code(
+            "mls qos\n"
+            "class-map match-any VOICE\n"
+            "match ip dscp ef\n"
+            "policy-map QOS-POLICY\n"
+            "class VOICE\n"
+            "priority percent 30\n"
+            "class class-default\n"
+            "bandwidth remaining percent 70")
 
         # ---- Step 2: Switch Models ----
         heading("Step 2 — Switch Models Tab")
@@ -1645,15 +1807,18 @@ class GuideTab(ttk.Frame):
             "12.  SSH / Crypto (from Base Settings)\n"
             "13.  Switching Features (from Base Settings)\n"
             "14.  VLAN Definitions (from Profile)\n"
-            "15.  Disable ALL ports (Model port groups + Disabled Port Template)\n"
-            "16.  VLAN 1 shutdown\n"
-            "17.  Management Port (from Base Settings)\n"
-            "18.  Port Assignments (Profile roles applied to interfaces)\n"
-            "19.  Management VLAN interface (IP from wizard)\n"
-            "20.  Default gateway\n"
-            "21.  Line Configuration (from Base Settings)\n"
-            "22.  Banner Login (from Base Settings)\n"
-            "23.  end")
+            "15.  Custom Sections — Before Interfaces\n"
+            "16.  Disable ALL ports (Model port groups + Disabled Port "
+            "Template)\n"
+            "17.  VLAN 1 shutdown\n"
+            "18.  Management Port (from Base Settings)\n"
+            "19.  Port Assignments (Profile roles applied to interfaces)\n"
+            "20.  Management VLAN interface (IP from wizard)\n"
+            "21.  Default gateway\n"
+            "22.  Custom Sections — After Interfaces\n"
+            "23.  Line Configuration (from Base Settings)\n"
+            "24.  Banner Login (from Base Settings)\n"
+            "25.  end")
 
         # ---- Tips ----
         heading("Tips")
@@ -1684,6 +1849,13 @@ class App:
         root.title("NetForge Config Generator")
         root.geometry("1050x780")
         root.minsize(900, 600)
+
+        # Set the window / taskbar icon
+        base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        icon_path = os.path.join(base_path, "NetForge.ico")
+        if os.path.isfile(icon_path):
+            root.iconbitmap(icon_path)
+
         apply_theme(root)
 
         # menu bar

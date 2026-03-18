@@ -12,6 +12,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (os.path.join(root, 'data'), 'data'),
+        (os.path.join(root, 'NetForge.ico'), '.'),
     ],
     hiddenimports=[],
     hookspath=[],
