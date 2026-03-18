@@ -1,3 +1,15 @@
+# NetForge v1.0.1 — Release Notes
+
+## New Feature: Custom Config Sections in Base Settings
+
+- Add your own IOS config sections (SNMP, NTP, QoS, DHCP Snooping, ACLs, etc.) directly in Base Settings
+- Each custom section includes a name, position control (before or after interfaces), and a raw IOS command block
+- Sections are included in every generated config
+- Supports Jinja2 `{{ variable }}` placeholders — values are pulled from the Site Profile's Role Variables
+- Add as many sections as needed using the "+ Add Section" button
+
+---
+
 # NetForge v1.0.0 — Release Notes
 
 ## Overview
