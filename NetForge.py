@@ -295,7 +295,7 @@ def render_config(model, profile, roles, base, sw):
     # -- credentials ------------------------------------------------------
     parts.append(f"enable secret {sw['enable_secret']}")
     username = base.get("local_username", "admin") or "admin"
-    parts.append(f"username {username} privilege 15 secret "
+    parts.append(f"username {username} privilege 0 secret "
                  f"{sw['admin_password']}")
 
     # -- AAA --------------------------------------------------------------
