@@ -1,3 +1,21 @@
+# NetForge v1.1.0 — Release Notes
+
+## New Feature: Theme Selector
+
+- Added a **Theme** menu in the menu bar for switching between colour themes
+- Themes apply instantly — all tabs, menus, and widgets update in place
+- Selected theme is saved to `data/theme.json` and persists across sessions
+- Theme preference is included in Settings Export/Import
+
+### Included Themes
+
+| Theme | Description |
+|-------|-------------|
+| **Default** | The original grey/black dark mode palette |
+| **Coral** | A deep ocean-teal background with warm coral accents |
+
+---
+
 # NetForge v1.0.1 — Release Notes
 
 ## New Feature: Custom Config Sections in Base Settings

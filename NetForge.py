@@ -19,6 +19,8 @@ import zipfile
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from jinja2 import Environment
 
+VERSION = "1.1.0"
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -40,22 +42,56 @@ if not os.path.exists(DATA_DIR):
         shutil.copytree(_bundled_data, DATA_DIR)
 
 # ---------------------------------------------------------------------------
-# Dark-mode colour palette  (grey / black — no blue)
+# Theme presets
 # ---------------------------------------------------------------------------
-C = {
-    "bg":           "#1a1a1a",  # Main window background
-    "bg2":          "#242424",  # Secondary background (menus, panels)
-    "bg_input":     "#2d2d2d",  # Input field background
-    "fg":           "#d4d4d4",  # Primary text colour
-    "fg_dim":       "#909090",  # Muted / hint text colour
-    "accent":       "#b0b0b0",  # Accent elements (focus rings, highlights)
-    "accent_hover": "#c8c8c8",  # Accent hover state
-    "border":       "#3c3c3c",  # Borders and dividers
-    "green":        "#a6e3a1",  # Success / positive indicators
-    "red":          "#c75050",  # Delete / error actions
-    "red_hover":    "#d06060",  # Delete / error hover state
-    "sel_bg":       "#3c3c3c",  # Selection background
+THEMES = {
+    "default": {
+        "name":         "Default",
+        "bg":           "#1a1a1a",
+        "bg2":          "#242424",
+        "bg_input":     "#2d2d2d",
+        "fg":           "#d4d4d4",
+        "fg_dim":       "#909090",
+        "accent":       "#b0b0b0",
+        "accent_hover": "#c8c8c8",
+        "border":       "#3c3c3c",
+        "green":        "#a6e3a1",
+        "red":          "#c75050",
+        "red_hover":    "#d06060",
+        "sel_bg":       "#3c3c3c",
+    },
+    "ocean_coral": {
+        "name":         "Coral",
+        "bg":           "#0b1e24",
+        "bg2":          "#112e35",
+        "bg_input":     "#163a45",
+        "fg":           "#e0d4bc",
+        "fg_dim":       "#7a9a8a",
+        "accent":       "#f08a65",
+        "accent_hover": "#f4a080",
+        "border":       "#1a4450",
+        "green":        "#8abb6a",
+        "red":          "#e05555",
+        "red_hover":    "#e87070",
+        "sel_bg":       "#1a4450",
+    },
 }
+
+# Active colour palette — starts with default, updated by _load_theme()
+C = dict(THEMES["default"])
+
+
+def _load_theme():
+    """Load the saved theme preference and apply it to C."""
+    saved = load_json("theme.json", {})
+    tid = saved.get("theme", "default")
+    if tid in THEMES:
+        C.update(THEMES[tid])
+
+
+def _save_theme(tid):
+    """Persist the selected theme id."""
+    save_json("theme.json", {"theme": tid})
 
 
 def apply_theme(root):
@@ -124,6 +160,10 @@ def save_json(name, data):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(os.path.join(DATA_DIR, name), "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+
+
+# Apply saved theme preference now that load_json is available
+_load_theme()
 
 
 def expand_port_groups_for_stack(port_groups, stack_members):
@@ -1870,6 +1910,18 @@ class App:
         file_menu.add_command(label="Import Settings...",
                               command=self._import_settings)
         menubar.add_cascade(label="File", menu=file_menu)
+
+        # theme selector menu
+        theme_menu = tk.Menu(menubar, tearoff=0, bg=C["bg2"], fg=C["fg"],
+                             activebackground=C["border"],
+                             activeforeground=C["fg"])
+        self._theme_var = tk.StringVar(value=self._current_theme_id())
+        for tid, t in THEMES.items():
+            theme_menu.add_radiobutton(
+                label=t["name"], variable=self._theme_var, value=tid,
+                command=lambda tid=tid: self._switch_theme(tid))
+        menubar.add_cascade(label="Theme", menu=theme_menu)
+
         root.configure(menu=menubar)
 
         # load data
@@ -1898,6 +1950,7 @@ class App:
     # ---- export / import settings ----
     _SETTINGS_FILES = [
         "models.json", "roles.json", "profiles.json", "base_settings.json",
+        "theme.json",
     ]
 
     def _export_settings(self):
@@ -1960,25 +2013,51 @@ class App:
                             "All tabs have been refreshed.")
 
     def _rebuild_tabs(self):
-        """Destroy and recreate all editing tabs to reflect imported data."""
-        for tab in (self.gen_tab, self.models_tab, self.roles_tab,
-                    self.profiles_tab, self.base_tab):
-            self.nb.forget(tab)
-            tab.destroy()
+        """Destroy and recreate all tabs to reflect imported data or theme."""
+        for tab in list(self.nb.tabs()):
+            w = self.root.nametowidget(tab)
+            self.nb.forget(w)
+            w.destroy()
 
-        guide = self.nb.tabs()  # only the guide tab remains
         self.gen_tab      = GenerateTab(self.nb, self)
         self.models_tab   = ModelsTab(self.nb, self)
         self.roles_tab    = RolesTab(self.nb, self)
         self.profiles_tab = ProfilesTab(self.nb, self)
         self.base_tab     = BaseTab(self.nb, self)
 
-        self.nb.insert(0, self.gen_tab,      text="  Generate Config  ")
-        self.nb.insert(1, self.models_tab,   text="  Switch Models  ")
-        self.nb.insert(2, self.roles_tab,    text="  Interface Roles  ")
-        self.nb.insert(3, self.profiles_tab, text="  Site Profiles  ")
-        self.nb.insert(4, self.base_tab,     text="  Base Settings  ")
+        self.nb.add(self.gen_tab,      text="  Generate Config  ")
+        self.nb.add(self.models_tab,   text="  Switch Models  ")
+        self.nb.add(self.roles_tab,    text="  Interface Roles  ")
+        self.nb.add(self.profiles_tab, text="  Site Profiles  ")
+        self.nb.add(self.base_tab,     text="  Base Settings  ")
+        self.nb.add(GuideTab(self.nb, self), text="  How-To Guide  ")
         self.nb.select(0)
+
+    @staticmethod
+    def _current_theme_id():
+        saved = load_json("theme.json", {})
+        return saved.get("theme", "default")
+
+    def _switch_theme(self, tid):
+        if tid not in THEMES:
+            return
+        C.update(THEMES[tid])
+        _save_theme(tid)
+        apply_theme(self.root)
+        # refresh menu bar colours
+        menubar = self.root.nametowidget(self.root.cget("menu"))
+        for i in range(menubar.index("end") + 1):
+            try:
+                sub = self.root.nametowidget(menubar.entrycget(i, "menu"))
+                sub.configure(bg=C["bg2"], fg=C["fg"],
+                              activebackground=C["border"],
+                              activeforeground=C["fg"])
+            except Exception:
+                pass
+        menubar.configure(bg=C["bg2"], fg=C["fg"],
+                          activebackground=C["border"],
+                          activeforeground=C["fg"])
+        self._rebuild_tabs()
 
 
 def main():
