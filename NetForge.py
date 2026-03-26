@@ -3,11 +3,11 @@ Cisco Switch Initial Configuration Generator
 
 A Windows GUI application that generates initial configurations for Cisco
 switches.  Users define switch models, interface roles, site profiles, and
-base settings as reusable presets — then pick a model + profile, fill in a
+base settings as reusable presets - then pick a model + profile, fill in a
 handful of per-switch values, and click Generate.
 
 All definitions are stored as JSON in the data/ directory and persist between
-sessions.  No org-specific data is shipped — everything is user-defined.
+sessions.  No org-specific data is shipped - everything is user-defined.
 """
 
 import json
@@ -19,7 +19,7 @@ import zipfile
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from jinja2 import Environment
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ THEMES = {
     },
 }
 
-# Active colour palette — starts with default, updated by _load_theme()
+# Active colour palette - starts with default, updated by _load_theme()
 C = dict(THEMES["default"])
 
 
@@ -190,7 +190,7 @@ def expand_port_groups_for_stack(port_groups, stack_members):
                     "end": pg["end"],
                 })
         else:
-            # Can't parse switch number — just include as-is
+            # Can't parse switch number - just include as-is
             expanded.append(pg)
     return expanded
 
@@ -268,7 +268,8 @@ def _field(parent, label, default="", width=35):
 
 def _textarea(parent, label, default="", h=5):
     f = ttk.Frame(parent); f.pack(fill="x", padx=5, pady=2)
-    ttk.Label(f, text=label, width=22, anchor="nw").pack(side="left")
+    if label:
+        ttk.Label(f, text=label, width=22, anchor="nw").pack(side="left")
     t = tk.Text(f, height=h, font=("Consolas", 9),
                 bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
                 selectbackground=C["sel_bg"], relief="flat", bd=2, wrap="word")
@@ -300,12 +301,12 @@ def _dark_listbox(parent, **kw):
 def render_config(model, profile, roles, base, sw):
     """Build the full IOS config string from all parts.
 
-    *model*    — switch model dict   (port_groups, provision)
-    *profile*  — site profile dict   (vlan_definitions, role_variables,
+    *model*    - switch model dict   (port_groups, provision)
+    *profile*  - site profile dict   (vlan_definitions, role_variables,
                                       port_assignments, mgmt_vlan)
-    *roles*    — all roles dict      {name: {commands: ...}}
-    *base*     — base settings dict  (text-area sections)
-    *sw*       — per-switch dict     (hostname, enable_secret, admin_password,
+    *roles*    - all roles dict      {name: {commands: ...}}
+    *base*     - base settings dict  (text-area sections)
+    *sw*       - per-switch dict     (hostname, enable_secret, admin_password,
                                       domain_name, mgmt_ip, mgmt_mask,
                                       default_gateway)
     """
@@ -319,7 +320,7 @@ def render_config(model, profile, roles, base, sw):
             parts.append(text)
 
     # -- header / global services -----------------------------------------
-    parts.append(f"!\n! {sw['hostname']} — Generated Configuration\n!")
+    parts.append(f"!\n! {sw['hostname']} - Generated Configuration\n!")
     parts.append("configure terminal")
     add(base.get("global_services", ""))
 
@@ -399,6 +400,8 @@ def render_config(model, profile, roles, base, sw):
 
     # -- port assignments from profile (override disabled ports) ----------
     for pa in profile.get("port_assignments", []):
+        if not pa.get("role") or pa["role"] == "unassigned":
+            continue
         role = roles.get(pa.get("role", ""), {})
         cmds = role.get("commands", "")
         try:
@@ -445,7 +448,7 @@ def render_config(model, profile, roles, base, sw):
 
 
 # ===================================================================
-#  TAB 1 — GENERATE CONFIG  (step-by-step wizard)
+#  TAB 1 - GENERATE CONFIG  (step-by-step wizard)
 # ===================================================================
 class GenerateTab(ttk.Frame):
     """Three-step wizard: Model & Site → Port Assignments → Switch Details."""
@@ -504,10 +507,17 @@ class GenerateTab(ttk.Frame):
         frame = ttk.Frame(self.container)
         self.step_frames.append(frame)
 
-        center = ttk.Frame(frame)
-        center.place(relx=0.5, rely=0.35, anchor="center")
+        scroll = ScrollFrame(frame)
+        scroll.pack(fill="both", expand=True)
+        body = scroll.inner
 
-        ttk.Label(center, text="Step 1 — Select Model & Site Profile",
+        # spacer to push content toward vertical center
+        ttk.Frame(body).pack(pady=40)
+
+        center = ttk.Frame(body)
+        center.pack(anchor="center")
+
+        ttk.Label(center, text="Step 1 - Select Model & Site Profile",
                   style="Sec.TLabel").pack(pady=(0, 20))
 
         self.model_cb = _combo(center, "Switch Model",
@@ -530,22 +540,35 @@ class GenerateTab(ttk.Frame):
         frame = ttk.Frame(self.container)
         self.step_frames.append(frame)
 
+        # navigation - pack at bottom first so it's always visible
+        nav = ttk.Frame(frame)
+        nav.pack(side="bottom", fill="x", padx=10, pady=8)
+        ttk.Button(nav, text="\u25c0  Back",
+                   command=lambda: self._show_step(0)).pack(side="left")
+        ttk.Button(nav, text="Next  \u25b6",
+                   command=self._step2_next).pack(side="right")
+
+        # scrollable content area above the pinned nav
+        scroll = ScrollFrame(frame)
+        scroll.pack(fill="both", expand=True)
+        body = scroll.inner
+
         # reference: model port groups
-        ref_lf = ttk.LabelFrame(frame,
+        ref_lf = ttk.LabelFrame(body,
                                 text="Available Interfaces (from model)",
                                 padding=8)
         ref_lf.pack(fill="x", padx=10, pady=(8, 4))
         self.port_ref = ttk.Label(ref_lf, text="", foreground=C["fg"])
         self.port_ref.pack(anchor="w")
 
-        ttk.Label(frame, style="Hint.TLabel",
+        ttk.Label(body, style="Hint.TLabel",
                   text="  Assign roles to the interface ranges you need.  "
                        "Any range not listed stays disabled automatically."
                   ).pack(anchor="w", padx=10, pady=(4, 2))
 
         # port assignment table
-        pa_lf = ttk.LabelFrame(frame, text="Port Assignments", padding=5)
-        pa_lf.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        pa_lf = ttk.LabelFrame(body, text="Port Assignments", padding=5)
+        pa_lf.pack(fill="x", padx=10, pady=(0, 5))
 
         hdr = ttk.Frame(pa_lf)
         hdr.pack(fill="x")
@@ -555,22 +578,26 @@ class GenerateTab(ttk.Frame):
         ttk.Button(hdr, text="+ Add Row",
                    command=lambda: self._add_pa_row()).pack(side="right")
 
-        self.pa_scroll = ScrollFrame(pa_lf)
-        self.pa_scroll.pack(fill="both", expand=True)
-        self.pa_container = self.pa_scroll.inner
-
-        # navigation
-        nav = ttk.Frame(frame)
-        nav.pack(fill="x", padx=10, pady=8)
-        ttk.Button(nav, text="\u25c0  Back",
-                   command=lambda: self._show_step(0)).pack(side="left")
-        ttk.Button(nav, text="Next  \u25b6",
-                   command=self._step2_next).pack(side="right")
+        self.pa_frame = ttk.Frame(pa_lf)
+        self.pa_frame.pack(fill="x")
+        self.pa_container = self.pa_frame
 
     # ============================================================ Step 3
     def _build_step3(self):
         frame = ttk.Frame(self.container)
         self.step_frames.append(frame)
+
+        # navigation - pack at bottom first so it's always visible
+        nav = ttk.Frame(frame)
+        nav.pack(side="bottom", fill="x", padx=10, pady=8)
+        ttk.Button(nav, text="\u25c0  Back",
+                   command=lambda: self._show_step(1)).pack(side="left")
+        ttk.Button(nav, text="Generate Config",
+                   command=self._generate).pack(side="left", padx=10)
+        ttk.Button(nav, text="Copy to Clipboard",
+                   command=self._copy).pack(side="left", padx=4)
+        ttk.Button(nav, text="Save to File",
+                   command=self._save).pack(side="left", padx=4)
 
         paned = ttk.PanedWindow(frame, orient="horizontal")
         paned.pack(fill="both", expand=True, padx=5, pady=5)
@@ -580,7 +607,7 @@ class GenerateTab(ttk.Frame):
         paned.add(left, weight=1)
         form = left.inner
 
-        ttk.Label(form, text="Step 3 — Enter Per-Switch Details",
+        ttk.Label(form, text="Step 3 - Enter Per-Switch Details",
                   style="Sec.TLabel").pack(anchor="w", padx=5, pady=(5, 10))
 
         self.hostname  = _field(form, "Hostname")
@@ -590,17 +617,6 @@ class GenerateTab(ttk.Frame):
         self.mgmt_ip   = _field(form, "Management IP")
         self.mgmt_mask = _field(form, "Subnet Mask", "255.255.255.0")
         self.gateway   = _field(form, "Default Gateway")
-
-        nav = ttk.Frame(form)
-        nav.pack(fill="x", padx=5, pady=(15, 5))
-        ttk.Button(nav, text="\u25c0  Back",
-                   command=lambda: self._show_step(1)).pack(side="left")
-        ttk.Button(nav, text="Generate Config",
-                   command=self._generate).pack(side="left", padx=10)
-        ttk.Button(nav, text="Copy to Clipboard",
-                   command=self._copy).pack(side="left", padx=4)
-        ttk.Button(nav, text="Save to File",
-                   command=self._save).pack(side="left", padx=4)
 
         # -- right: preview --
         right = ttk.Frame(paned)
@@ -641,14 +657,31 @@ class GenerateTab(ttk.Frame):
         all_pgs = expand_port_groups_for_stack(
             model.get("port_groups", []), stack)
 
-        # update reference label
-        lines = []
+        # update reference label - group similar port types onto one line
+        # e.g. GigabitEthernet1/0/1–24 .. GigabitEthernet4/0/1–24
+        #   → GigabitEthernet[1-4]/0/1 – 24
+        groups = {}  # (name_part, tail, start, end) → [member_nums]
+        ungrouped = []
         for pg in all_pgs:
-            if pg["start"] == pg["end"]:
-                lines.append(f"  {pg['prefix']}{pg['start']}")
+            m = re.match(r'^([A-Za-z-]*)(\d+)(/.*)$', pg["prefix"])
+            if m and stack > 1:
+                key = (m.group(1), m.group(3), pg["start"], pg["end"])
+                groups.setdefault(key, []).append(int(m.group(2)))
             else:
-                lines.append(
-                    f"  {pg['prefix']}{pg['start']} \u2013 {pg['end']}")
+                ungrouped.append(pg)
+        lines = []
+        for (name_part, tail, s, e), members in groups.items():
+            members.sort()
+            if len(members) > 1:
+                tag = f"{name_part}[{members[0]}-{members[-1]}]{tail}"
+            else:
+                tag = f"{name_part}{members[0]}{tail}"
+            lines.append(f"  {tag}{s} \u2013 {e}" if s != e
+                         else f"  {tag}{s}")
+        for pg in ungrouped:
+            lines.append(f"  {pg['prefix']}{pg['start']} \u2013 {pg['end']}"
+                         if pg["start"] != pg["end"]
+                         else f"  {pg['prefix']}{pg['start']}")
         self.port_ref.configure(
             text="\n".join(lines) if lines else "(no port groups defined)")
 
@@ -657,7 +690,7 @@ class GenerateTab(ttk.Frame):
         listed = self.app.base.get("port_display_mode") == "listed"
         pa_list = profile.get("port_assignments", [])
         if pa_list:
-            # profile already has assignments — use them
+            # profile already has assignments - use them
             for pa in pa_list:
                 if listed:
                     for iface in expand_range_iface(pa.get("interfaces", "")):
@@ -668,7 +701,7 @@ class GenerateTab(ttk.Frame):
                 else:
                     self._add_pa_row(pa)
         else:
-            # no profile assignments — seed from model port groups
+            # no profile assignments - seed from model port groups
             for pg in all_pgs:
                 if pg["start"] == pg["end"] or listed:
                     if listed and pg["start"] != pg["end"]:
@@ -696,7 +729,8 @@ class GenerateTab(ttk.Frame):
         iface = ttk.Entry(row, width=36)
         iface.pack(side="left", padx=1)
         role = ttk.Combobox(row, width=24, state="readonly",
-                            values=list(self.app.roles.keys()))
+                            values=["unassigned"] + list(self.app.roles.keys()))
+        role.bind("<MouseWheel>", lambda _e: "break")
         role.pack(side="left", padx=1)
         desc = ttk.Entry(row, width=14)
         desc.pack(side="left", padx=1, fill="x", expand=True)
@@ -705,8 +739,7 @@ class GenerateTab(ttk.Frame):
                    ).pack(side="left", padx=2)
         if data:
             iface.insert(0, data.get("interfaces", ""))
-            if data.get("role"):
-                role.set(data["role"])
+            role.set(data.get("role") or "unassigned")
             desc.insert(0, data.get("description", ""))
         self.pa_rows.append({"frame": row, "iface": iface,
                              "role": role, "desc": desc})
@@ -742,7 +775,7 @@ class GenerateTab(ttk.Frame):
         for r in self.pa_rows:
             iface = r["iface"].get().strip()
             role  = r["role"].get()
-            if iface and role:
+            if iface and role and role != "unassigned":
                 pas.append({"interfaces": iface, "role": role,
                             "description": r["desc"].get().strip()})
         return pas
@@ -794,7 +827,7 @@ class GenerateTab(ttk.Frame):
 
 
 # ===================================================================
-#  TAB 2 — SWITCH MODELS
+#  TAB 2 - SWITCH MODELS
 # ===================================================================
 class ModelsTab(ttk.Frame):
     def __init__(self, parent, app):
@@ -942,7 +975,7 @@ class ModelsTab(ttk.Frame):
 
 
 # ===================================================================
-#  TAB 3 — INTERFACE ROLES
+#  TAB 3 - INTERFACE ROLES
 # ===================================================================
 class RolesTab(ttk.Frame):
     def __init__(self, parent, app):
@@ -1037,7 +1070,7 @@ class RolesTab(ttk.Frame):
 
 
 # ===================================================================
-#  TAB 4 — SITE PROFILES
+#  TAB 4 - SITE PROFILES
 # ===================================================================
 class ProfilesTab(ttk.Frame):
     def __init__(self, parent, app):
@@ -1153,7 +1186,8 @@ class ProfilesTab(ttk.Frame):
         row = ttk.Frame(self.pa_frame); row.pack(fill="x", pady=1)
         iface = ttk.Entry(row, width=26);   iface.pack(side="left", padx=1)
         role  = ttk.Combobox(row, width=14, state="readonly",
-                             values=list(self.app.roles.keys()))
+                             values=["unassigned"] + list(self.app.roles.keys()))
+        role.bind("<MouseWheel>", lambda _e: "break")
         role.pack(side="left", padx=1)
         desc  = ttk.Entry(row, width=20);   desc.pack(side="left", padx=1)
         ttk.Button(row, text="X", width=3, style="Del.TButton",
@@ -1161,7 +1195,7 @@ class ProfilesTab(ttk.Frame):
                    ).pack(side="left", padx=2)
         if data:
             iface.insert(0, data.get("interfaces", ""))
-            role.set(data.get("role", ""))
+            role.set(data.get("role", "") or "unassigned")
             desc.insert(0, data.get("description", ""))
         self.pa_rows.append({"frame": row, "iface": iface,
                              "role": role, "desc": desc})
@@ -1252,7 +1286,7 @@ class ProfilesTab(ttk.Frame):
 
 
 # ===================================================================
-#  TAB 5 — BASE SETTINGS
+#  TAB 5 - BASE SETTINGS
 # ===================================================================
 class BaseTab(ttk.Frame):
     def __init__(self, parent, app):
@@ -1278,6 +1312,7 @@ class BaseTab(ttk.Frame):
         self.port_display_cb = ttk.Combobox(
             pf, width=18, state="readonly",
             values=["Range", "Individual Ports"])
+        self.port_display_cb.bind("<MouseWheel>", lambda _e: "break")
         self.port_display_cb.pack(side="left", padx=6)
         cur = b.get("port_display_mode", "range")
         self.port_display_cb.set(
@@ -1290,7 +1325,7 @@ class BaseTab(ttk.Frame):
         self.fields["local_username"] = _field(
             form, "Local Username", b.get("local_username", "admin"))
 
-        # text-area sections — order matches a typical IOS config
+        # text-area sections - order matches a typical IOS config
         sections = [
             ("global_services", "Global Services",
              "no service pad, service timestamps, platform commands, etc."),
@@ -1316,15 +1351,15 @@ class BaseTab(ttk.Frame):
             _section(form, title)
             ttk.Label(form, text=f"  {hint}",
                       style="Hint.TLabel").pack(anchor="w", padx=5)
-            self.text_areas[key] = _textarea(form, "", b.get(key, ""), h=4)
+            self.text_areas[key] = _textarea(form, "", b.get(key, ""), h=10)
 
-        # banner (just the text — app wraps with banner login ^ ... ^)
+        # banner (just the text - app wraps with banner login ^ ... ^)
         _section(form, "Banner LOGIN")
-        ttk.Label(form, text="  Enter the banner text only — the app adds "
+        ttk.Label(form, text="  Enter the banner text only - the app adds "
                   "the 'banner login ^' wrapper.",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.text_areas["banner"] = _textarea(
-            form, "", b.get("banner", ""), h=3)
+            form, "", b.get("banner", ""), h=20)
 
         # disabled-port template
         _section(form, "Disabled Port Template")
@@ -1333,7 +1368,7 @@ class BaseTab(ttk.Frame):
                   "  Use {{ blackhole_vlan }} or any profile variable.",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.text_areas["disabled_port_template"] = _textarea(
-            form, "", b.get("disabled_port_template", ""), h=4)
+            form, "", b.get("disabled_port_template", ""), h=10)
 
         # -- custom config sections (user-defined production blocks) --
         _section(form, "Custom Config Sections")
@@ -1341,7 +1376,7 @@ class BaseTab(ttk.Frame):
                   text="  Add your own config sections (SNMP, NTP, QoS, "
                   "DHCP Snooping, ACLs, etc.).\n"
                   "  Each section is included in every generated config.  "
-                  "Use {{ variable }} placeholders — values\n"
+                  "Use {{ variable }} placeholders - values\n"
                   "  come from the Site Profile's Role Variables.",
                   style="Hint.TLabel").pack(anchor="w", padx=5, pady=(4, 0))
 
@@ -1379,13 +1414,14 @@ class BaseTab(ttk.Frame):
         pos_cb = ttk.Combobox(top, width=22, state="readonly",
                               values=["Before Interfaces",
                                       "After Interfaces"])
+        pos_cb.bind("<MouseWheel>", lambda _e: "break")
         pos_cb.pack(side="left", padx=4)
         pos_cb.set("After Interfaces")
         ttk.Button(top, text="X", width=3, style="Del.TButton",
                    command=lambda f=frame: self._del_cs(f)
                    ).pack(side="right")
 
-        cmds = tk.Text(frame, height=4, font=("Consolas", 9),
+        cmds = tk.Text(frame, height=10, font=("Consolas", 9),
                        bg=C["bg_input"], fg=C["fg"],
                        insertbackground=C["fg"],
                        selectbackground=C["sel_bg"],
@@ -1437,7 +1473,7 @@ class BaseTab(ttk.Frame):
 
 
 # ===================================================================
-#  TAB 6 — HOW-TO GUIDE
+#  TAB 6 - HOW-TO GUIDE
 # ===================================================================
 class GuideTab(ttk.Frame):
     def __init__(self, parent, app):
@@ -1483,9 +1519,9 @@ class GuideTab(ttk.Frame):
             "Cisco switches. There are two phases:\n\n"
             "ONE-TIME SETUP  (tabs 2-5)\n"
             "Define your switch models, interface roles, site profiles, and "
-            "base settings. This only needs to be done once — after that the "
+            "base settings. This only needs to be done once - after that the "
             "definitions are saved and reused.\n\n"
-            "DAILY USE  (tab 1 — Generate Config)\n"
+            "DAILY USE  (tab 1 - Generate Config)\n"
             "Pick a model, pick a profile, review port assignments, enter "
             "the per-switch details (hostname, IPs, passwords), click "
             "Generate, then copy or save the config.")
@@ -1495,14 +1531,14 @@ class GuideTab(ttk.Frame):
         body(
             "Complete the setup tabs in this order. Each step builds on "
             "the previous one:\n\n"
-            "1.  Base Settings   — Global IOS commands shared by all switches\n"
-            "2.  Switch Models   — Hardware definitions (port groups)\n"
-            "3.  Interface Roles — Reusable per-port command templates\n"
-            "4.  Site Profiles   — VLANs, variables, and port assignments\n"
-            "5.  Generate Config — Use the wizard to build a config")
+            "1.  Base Settings   - Global IOS commands shared by all switches\n"
+            "2.  Switch Models   - Hardware definitions (port groups)\n"
+            "3.  Interface Roles - Reusable per-port command templates\n"
+            "4.  Site Profiles   - VLANs, variables, and port assignments\n"
+            "5.  Generate Config - Use the wizard to build a config")
 
         # ---- Step 1: Base Settings ----
-        heading("Step 1 — Base Settings Tab")
+        heading("Step 1 - Base Settings Tab")
         body(
             "The Base Settings tab contains IOS commands that are the same "
             "across every switch you configure. Each section is a text area "
@@ -1550,7 +1586,7 @@ class GuideTab(ttk.Frame):
         body(
             "This template is applied to EVERY port on the switch before "
             "your active port assignments override specific ranges. It is "
-            "the security baseline — typically shuts down ports and puts "
+            "the security baseline - typically shuts down ports and puts "
             "them on a blackhole VLAN.\n\n"
             "You can use {{ variable }} placeholders here. The variable "
             "values come from the Site Profile's Role Variables section. "
@@ -1567,21 +1603,21 @@ class GuideTab(ttk.Frame):
         subheading("Custom Config Sections")
         body(
             "Use the Custom Config Sections area to add production-ready "
-            "config blocks that go beyond the basics — things like SNMP, "
+            "config blocks that go beyond the basics - things like SNMP, "
             "NTP, QoS, DHCP Snooping, Dynamic ARP Inspection, ACLs, "
             "TACACS+, and anything else your production environment needs.\n\n"
             "Click '+ Add Section' to create a new block. Each section has:\n\n"
-            "  Name — A label for your reference (e.g. 'SNMP Config')\n\n"
-            "  Position — Where it appears in the generated config:\n"
-            "    'Before Interfaces' — after VLANs, before ports are "
+            "  Name - A label for your reference (e.g. 'SNMP Config')\n\n"
+            "  Position - Where it appears in the generated config:\n"
+            "    'Before Interfaces' - after VLANs, before ports are "
             "configured. Good for DHCP Snooping, DAI, and global "
             "policies that must exist before interface commands.\n"
-            "    'After Interfaces' — after all port and VLAN interface "
+            "    'After Interfaces' - after all port and VLAN interface "
             "config. Good for SNMP, NTP, ACLs, route-maps, and "
             "monitoring.\n\n"
-            "  Commands — Raw IOS commands, just like the other Base "
+            "  Commands - Raw IOS commands, just like the other Base "
             "Settings sections. You can use {{ variable }} placeholders "
-            "here — values come from the Site Profile's Role Variables.\n\n"
+            "here - values come from the Site Profile's Role Variables.\n\n"
             "You can add as many sections as you need. They are saved "
             "with your Base Settings and included in every generated "
             "config. Delete a section with the X button.")
@@ -1618,7 +1654,7 @@ class GuideTab(ttk.Frame):
             "bandwidth remaining percent 70")
 
         # ---- Step 2: Switch Models ----
-        heading("Step 2 — Switch Models Tab")
+        heading("Step 2 - Switch Models Tab")
         body(
             "Define each switch hardware model your organization uses. "
             "The app needs to know what interfaces exist on each model so "
@@ -1626,17 +1662,17 @@ class GuideTab(ttk.Frame):
             "you assign.\n\n"
             "For each model, provide:")
         body(
-            "Model Name — The exact Cisco model identifier "
+            "Model Name - The exact Cisco model identifier "
             "(e.g. C9200L-24T-4G-A).\n\n"
-            "Provision Type — The string used in the IOS 'switch 1 provision' "
+            "Provision Type - The string used in the IOS 'switch 1 provision' "
             "command (e.g. c9200l-24t, c9300-24). Leave blank if not needed.\n\n"
-            "Port Groups — Each group of interfaces on the switch. "
+            "Port Groups - Each group of interfaces on the switch. "
             "Click '+ Add Port Group' for each group and fill in:")
         body(
-            "  Prefix  — The IOS interface prefix including the trailing "
+            "  Prefix  - The IOS interface prefix including the trailing "
             "slash, e.g. GigabitEthernet1/0/\n"
-            "  Start   — First port number in the range\n"
-            "  End     — Last port number in the range")
+            "  Start   - First port number in the range\n"
+            "  End     - Last port number in the range")
 
         subheading("Example: C9200L-24T-4G-A")
         code(
@@ -1658,14 +1694,14 @@ class GuideTab(ttk.Frame):
         body("Click 'Save Model' when done.")
 
         # ---- Step 3: Interface Roles ----
-        heading("Step 3 — Interface Roles Tab")
+        heading("Step 3 - Interface Roles Tab")
         body(
             "An Interface Role is a reusable block of IOS commands that can "
             "be applied to any interface. Think of it as a template for a "
-            "type of port — access port, trunk port, uplink, etc.\n\n"
+            "type of port - access port, trunk port, uplink, etc.\n\n"
             "For each role, provide a name and the IOS commands that should "
             "be applied to the interface. The commands go between 'interface "
-            "...' and 'exit' — do NOT include those lines.")
+            "...' and 'exit' - do NOT include those lines.")
 
         subheading("Using Variables in Roles")
         body(
@@ -1673,7 +1709,7 @@ class GuideTab(ttk.Frame):
             "These variables are defined in the Site Profile's Role Variables "
             "section, so the same role template can be reused across sites "
             "with different VLAN numbers.\n\n"
-            "{{ description }} is always available — it is set per port "
+            "{{ description }} is always available - it is set per port "
             "assignment in the profile or in the Generate wizard.")
 
         subheading("Example: Access Port Role")
@@ -1717,7 +1753,7 @@ class GuideTab(ttk.Frame):
         body("Click 'Save Role' when done.")
 
         # ---- Step 4: Site Profiles ----
-        heading("Step 4 — Site Profiles Tab")
+        heading("Step 4 - Site Profiles Tab")
         body(
             "A Site Profile ties everything together for a specific type of "
             "deployment. It defines the VLANs, the variable values that feed "
@@ -1773,12 +1809,12 @@ class GuideTab(ttk.Frame):
         subheading("Port Assignments")
         body(
             "Map interface ranges to roles. Each row specifies:\n\n"
-            "  Interface(s) — The IOS interface or range text that goes after "
+            "  Interface(s) - The IOS interface or range text that goes after "
             "'interface'. For a single port: GigabitEthernet1/0/1  For "
             "multiple ports: range GigabitEthernet1/0/1-12\n\n"
-            "  Role — Pick one of the roles you defined in the Interface "
+            "  Role - Pick one of the roles you defined in the Interface "
             "Roles tab.\n\n"
-            "  Description — The port description. This value is available as "
+            "  Description - The port description. This value is available as "
             "{{ description }} in the role template.\n\n"
             "Any ports from the switch model that are NOT assigned here will "
             "be disabled using the Disabled Port Template from Base Settings.")
@@ -1790,17 +1826,17 @@ class GuideTab(ttk.Frame):
         body("Click 'Save Profile' when done.")
 
         # ---- Daily Use ----
-        heading("Daily Use — Generate Config Tab")
+        heading("Daily Use - Generate Config Tab")
         body(
             "Once setup is complete, generating a config is a 3-step wizard:")
 
-        subheading("Wizard Step 1 — Select Model & Site")
+        subheading("Wizard Step 1 - Select Model & Site")
         body(
             "Choose the switch model (determines available interfaces) and "
             "the site profile (determines VLANs, roles, and defaults). "
             "Click Next.")
 
-        subheading("Wizard Step 2 — Port Assignments")
+        subheading("Wizard Step 2 - Port Assignments")
         body(
             "The wizard shows all available port groups from the model and "
             "pre-fills port assignments from the profile. You can:\n\n"
@@ -1814,16 +1850,16 @@ class GuideTab(ttk.Frame):
             "Leave the Role dropdown empty for ranges you want to stay "
             "disabled. Click Next.")
 
-        subheading("Wizard Step 3 — Switch Details")
+        subheading("Wizard Step 3 - Switch Details")
         body(
             "Fill in the values unique to this specific switch:\n\n"
-            "  Hostname         — The switch hostname (e.g. SW-FLOOR3-01)\n"
-            "  Enable Secret    — The privileged EXEC password\n"
-            "  Admin Password   — The local admin account password\n"
-            "  Domain Name      — IP domain name for SSH key generation\n"
-            "  Management IP    — The switch management interface IP\n"
-            "  Subnet Mask      — Management subnet mask (default 255.255.255.0)\n"
-            "  Default Gateway  — The switch default gateway IP\n\n"
+            "  Hostname         - The switch hostname (e.g. SW-FLOOR3-01)\n"
+            "  Enable Secret    - The privileged EXEC password\n"
+            "  Admin Password   - The local admin account password\n"
+            "  Domain Name      - IP domain name for SSH key generation\n"
+            "  Management IP    - The switch management interface IP\n"
+            "  Subnet Mask      - Management subnet mask (default 255.255.255.0)\n"
+            "  Default Gateway  - The switch default gateway IP\n\n"
             "Click 'Generate Config' to build the configuration. It appears "
             "in the preview pane on the right. Use 'Copy to Clipboard' to "
             "paste directly into the switch console, or 'Save to File' to "
@@ -1847,7 +1883,7 @@ class GuideTab(ttk.Frame):
             "12.  SSH / Crypto (from Base Settings)\n"
             "13.  Switching Features (from Base Settings)\n"
             "14.  VLAN Definitions (from Profile)\n"
-            "15.  Custom Sections — Before Interfaces\n"
+            "15.  Custom Sections - Before Interfaces\n"
             "16.  Disable ALL ports (Model port groups + Disabled Port "
             "Template)\n"
             "17.  VLAN 1 shutdown\n"
@@ -1855,7 +1891,7 @@ class GuideTab(ttk.Frame):
             "19.  Port Assignments (Profile roles applied to interfaces)\n"
             "20.  Management VLAN interface (IP from wizard)\n"
             "21.  Default gateway\n"
-            "22.  Custom Sections — After Interfaces\n"
+            "22.  Custom Sections - After Interfaces\n"
             "23.  Line Configuration (from Base Settings)\n"
             "24.  Banner Login (from Base Settings)\n"
             "25.  end")
@@ -1868,7 +1904,7 @@ class GuideTab(ttk.Frame):
             "- You can create multiple Site Profiles for different deployment "
             "types using the same Interface Roles and Switch Models.\n\n"
             "- If you need a port configured differently than the profile "
-            "default, adjust it in the wizard's Step 2 — the changes only "
+            "default, adjust it in the wizard's Step 2 - the changes only "
             "affect the current config, not the saved profile.\n\n"
             "- The Disabled Port Template runs on every port BEFORE your "
             "assignments, so any port you don't explicitly assign a role to "
@@ -1876,7 +1912,7 @@ class GuideTab(ttk.Frame):
             "- Leave any Base Settings section blank to omit it entirely "
             "from the generated config.\n\n"
             "- The 'interface' keyword is added automatically. In port "
-            "assignments, just enter the range text — e.g. "
+            "assignments, just enter the range text - e.g. "
             "'range GigabitEthernet1/0/1-12' (not 'interface range ...').")
 
 
