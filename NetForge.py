@@ -75,6 +75,21 @@ THEMES = {
         "red_hover":    "#e87070",
         "sel_bg":       "#1a4450",
     },
+    "chris": {
+        "name":         "Chris",
+        "bg":           "#ff69b4",
+        "bg2":          "#ff85c2",
+        "bg_input":     "#ff3399",
+        "fg":           "#1b00ff",
+        "fg_dim":       "#ff6600",
+        "accent":       "#00ff00",
+        "accent_hover": "#ffff00",
+        "border":       "#8b00ff",
+        "green":        "#ff0000",
+        "red":          "#00ffff",
+        "red_hover":    "#39ff14",
+        "sel_bg":       "#ffd700",
+    },
 }
 
 # Active colour palette - starts with default, updated by _load_theme()
@@ -570,17 +585,25 @@ class GenerateTab(ttk.Frame):
         pa_lf = ttk.LabelFrame(body, text="Port Assignments", padding=5)
         pa_lf.pack(fill="x", padx=10, pady=(0, 5))
 
-        hdr = ttk.Frame(pa_lf)
-        hdr.pack(fill="x")
-        ttk.Label(hdr, text="Interface(s)", width=36).pack(side="left", padx=1)
-        ttk.Label(hdr, text="Role", width=24).pack(side="left", padx=1)
-        ttk.Label(hdr, text="Description", width=14).pack(side="left", padx=1)
-        ttk.Button(hdr, text="+ Add Row",
-                   command=lambda: self._add_pa_row()).pack(side="right")
+        self.pa_table = ttk.Frame(pa_lf)
+        self.pa_table.pack(fill="x")
+        self.pa_table.columnconfigure(0, weight=0)
+        self.pa_table.columnconfigure(1, weight=0)
+        self.pa_table.columnconfigure(2, weight=1)
+        self.pa_table.columnconfigure(3, weight=0)
 
-        self.pa_frame = ttk.Frame(pa_lf)
-        self.pa_frame.pack(fill="x")
-        self.pa_container = self.pa_frame
+        ttk.Label(self.pa_table, text="Interface(s)").grid(
+            row=0, column=0, sticky="w", padx=1)
+        ttk.Label(self.pa_table, text="Role").grid(
+            row=0, column=1, sticky="w", padx=1)
+        ttk.Label(self.pa_table, text="Description").grid(
+            row=0, column=2, sticky="w", padx=1)
+        ttk.Button(self.pa_table, text="+ Add Row",
+                   command=lambda: self._add_pa_row()).grid(
+            row=0, column=3, sticky="e", padx=2)
+
+        self.pa_next_row = 1
+        self.pa_container = self.pa_table
 
     # ============================================================ Step 3
     def _build_step3(self):
@@ -724,34 +747,42 @@ class GenerateTab(ttk.Frame):
 
     # ------------------------------------------------ port-assignment rows
     def _add_pa_row(self, data=None):
-        row = ttk.Frame(self.pa_container)
-        row.pack(fill="x", pady=1)
-        iface = ttk.Entry(row, width=36)
-        iface.pack(side="left", padx=1)
-        role = ttk.Combobox(row, width=24, state="readonly",
+        r = self.pa_next_row
+        self.pa_next_row += 1
+        iface = ttk.Entry(self.pa_container, width=36)
+        iface.grid(row=r, column=0, sticky="w", padx=1, pady=1)
+        role = ttk.Combobox(self.pa_container, width=24, state="readonly",
                             values=["unassigned"] + list(self.app.roles.keys()))
         role.bind("<MouseWheel>", lambda _e: "break")
-        role.pack(side="left", padx=1)
-        desc = ttk.Entry(row, width=14)
-        desc.pack(side="left", padx=1, fill="x", expand=True)
-        ttk.Button(row, text="X", width=3, style="Del.TButton",
-                   command=lambda: self._del_pa_row(row)
-                   ).pack(side="left", padx=2)
+        role.grid(row=r, column=1, sticky="w", padx=1, pady=1)
+        desc = ttk.Entry(self.pa_container, width=14)
+        desc.grid(row=r, column=2, sticky="ew", padx=1, pady=1)
+        del_btn = ttk.Button(self.pa_container, text="X", width=3,
+                             style="Del.TButton",
+                             command=lambda: self._del_pa_row(r))
+        del_btn.grid(row=r, column=3, padx=2, pady=1)
         if data:
             iface.insert(0, data.get("interfaces", ""))
             role.set(data.get("role") or "unassigned")
             desc.insert(0, data.get("description", ""))
-        self.pa_rows.append({"frame": row, "iface": iface,
-                             "role": role, "desc": desc})
+        self.pa_rows.append({"grid_row": r, "iface": iface,
+                             "role": role, "desc": desc,
+                             "widgets": [iface, role, desc, del_btn]})
 
-    def _del_pa_row(self, frame):
-        self.pa_rows = [r for r in self.pa_rows if r["frame"] is not frame]
-        frame.destroy()
+    def _del_pa_row(self, grid_row):
+        for r in self.pa_rows:
+            if r["grid_row"] == grid_row:
+                for w in r["widgets"]:
+                    w.destroy()
+                break
+        self.pa_rows = [r for r in self.pa_rows if r["grid_row"] != grid_row]
 
     def _clear_pa_rows(self):
         for r in self.pa_rows:
-            r["frame"].destroy()
+            for w in r["widgets"]:
+                w.destroy()
         self.pa_rows.clear()
+        self.pa_next_row = 1
 
     # ------------------------------------------------------------ actions
     def refresh_combos(self):
