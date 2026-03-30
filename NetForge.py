@@ -19,7 +19,7 @@ import zipfile
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from jinja2 import Environment
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 
 
 # ---------------------------------------------------------------------------
