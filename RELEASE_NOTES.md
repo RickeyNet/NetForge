@@ -18,8 +18,8 @@
 
 - Added a warm, light-mode theme with olive/sage backgrounds, cream input fields, and dusty rose accents
 
-| Theme | Description |
-|-------|-------------|
+| Theme         | Description                                                         |
+|---------------|---------------------------------------------------------------------|
 | **Sandstone** | Warm olive-sage background with cream inputs and dusty rose accents |
 
 ## UI Improvements
