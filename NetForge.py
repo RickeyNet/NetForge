@@ -75,6 +75,21 @@ THEMES = {
         "red_hover":    "#e87070",
         "sel_bg":       "#1a4450",
     },
+    "sandstone": {
+        "name":         "Sandstone",
+        "bg":           "#868f76",
+        "bg2":          "#a3ac9a",
+        "bg_input":     "#adab99",
+        "fg":           "#4a4a3a",
+        "fg_dim":       "#4b4938",
+        "accent":       "#5c2e2e",
+        "accent_hover": "#a06c6c",
+        "border":       "#b0ad94",
+        "green":        "#5a7a4a",
+        "red":          "#851616",
+        "red_hover":    "#703B3B",
+        "sel_bg":       "#4b493d",
+    },
     "chris": {
         "name":         "Chris",
         "bg":           "#ff69b4",
@@ -146,6 +161,10 @@ def apply_theme(root):
     s.map("TCombobox",
           fieldbackground=[("readonly", C["bg_input"])],
           foreground=[("readonly", C["fg"])])
+    root.option_add("*TCombobox*Listbox.background", C["bg_input"])
+    root.option_add("*TCombobox*Listbox.foreground", C["fg"])
+    root.option_add("*TCombobox*Listbox.selectBackground", C["border"])
+    root.option_add("*TCombobox*Listbox.selectForeground", C["fg"])
     s.configure("TSeparator",         background=C["border"])
     s.configure("Vertical.TScrollbar", background=C["bg2"],
                 troughcolor=C["bg"], arrowcolor=C["fg_dim"])
@@ -263,6 +282,66 @@ class ScrollFrame(ttk.Frame):
 
 
 # ---------------------------------------------------------------------------
+# Right-click context menu
+# ---------------------------------------------------------------------------
+def _attach_context_menu(widget):
+    """Attach a right-click context menu with Cut/Copy/Paste/Select All."""
+    def _show(event):
+        menu = tk.Menu(widget, tearoff=0,
+                       bg=C["bg2"], fg=C["fg"],
+                       activebackground=C["border"],
+                       activeforeground=C["fg"],
+                       relief="flat", bd=1)
+        is_text = isinstance(widget, tk.Text)
+        is_entry = isinstance(widget, (ttk.Entry, ttk.Combobox))
+        readonly = False
+        if is_entry:
+            readonly = str(widget.cget("state")) in ("readonly", "disabled")
+        elif is_text:
+            readonly = str(widget.cget("state")) == "disabled"
+
+        has_sel = False
+        try:
+            if is_text:
+                has_sel = bool(widget.tag_ranges("sel"))
+            elif is_entry:
+                widget.selection_get()
+                has_sel = True
+        except (tk.TclError, Exception):
+            pass
+
+        has_clip = False
+        try:
+            widget.clipboard_get()
+            has_clip = True
+        except (tk.TclError, Exception):
+            pass
+
+        if not readonly:
+            menu.add_command(label="Cut", accelerator="Ctrl+X",
+                            state="normal" if has_sel else "disabled",
+                            command=lambda: widget.event_generate("<<Cut>>"))
+        menu.add_command(label="Copy", accelerator="Ctrl+C",
+                         state="normal" if has_sel else "disabled",
+                         command=lambda: widget.event_generate("<<Copy>>"))
+        if not readonly:
+            menu.add_command(label="Paste", accelerator="Ctrl+V",
+                            state="normal" if has_clip else "disabled",
+                            command=lambda: widget.event_generate("<<Paste>>"))
+        menu.add_separator()
+        if is_text:
+            menu.add_command(label="Select All", accelerator="Ctrl+A",
+                            command=lambda: (widget.tag_add("sel", "1.0", "end"),
+                                             widget.mark_set("insert", "end")))
+        elif is_entry:
+            menu.add_command(label="Select All", accelerator="Ctrl+A",
+                            command=lambda: (widget.select_range(0, "end"),
+                                             widget.icursor("end")))
+        menu.tk_popup(event.x_root, event.y_root)
+    widget.bind("<Button-3>", _show)
+
+
+# ---------------------------------------------------------------------------
 # Reusable form helpers
 # ---------------------------------------------------------------------------
 def _section(parent, title):
@@ -278,6 +357,7 @@ def _field(parent, label, default="", width=35):
     e.pack(side="left", fill="x", expand=True)
     if default:
         e.insert(0, default)
+    _attach_context_menu(e)
     return e
 
 
@@ -291,6 +371,7 @@ def _textarea(parent, label, default="", h=5):
     t.pack(side="left", fill="x", expand=True)
     if default:
         t.insert("1.0", default)
+    _attach_context_menu(t)
     return t
 
 
@@ -411,7 +492,12 @@ def render_config(model, profile, roles, base, sw):
     parts.append("interface vlan1\nno ip address\nshutdown\nexit")
 
     # -- management port (Gi0/0, etc.) ------------------------------------
-    add(base.get("mgmt_port", ""))
+    has_mgmt_port = any(
+        pg.get("prefix", "").startswith("GigabitEthernet0/")
+        for pg in model.get("port_groups", [])
+    )
+    if has_mgmt_port:
+        add(base.get("mgmt_port", ""))
 
     # -- port assignments from profile (override disabled ports) ----------
     for pa in profile.get("port_assignments", []):
@@ -614,7 +700,7 @@ class GenerateTab(ttk.Frame):
         nav = ttk.Frame(frame)
         nav.pack(side="bottom", fill="x", padx=10, pady=8)
         ttk.Button(nav, text="\u25c0  Back",
-                   command=lambda: self._show_step(1)).pack(side="left")
+                   command=self._step3_back).pack(side="left")
         ttk.Button(nav, text="Generate Config",
                    command=self._generate).pack(side="left", padx=10)
         ttk.Button(nav, text="Copy to Clipboard",
@@ -651,6 +737,7 @@ class GenerateTab(ttk.Frame):
             bg=C["bg_input"], fg=C["green"], insertbackground=C["fg"],
             selectbackground=C["sel_bg"], relief="flat", bd=2)
         self.preview.pack(fill="both", expand=True, padx=4, pady=4)
+        _attach_context_menu(self.preview)
 
     # --------------------------------------------------------- step logic
     def _step1_next(self):
@@ -745,18 +832,24 @@ class GenerateTab(ttk.Frame):
     def _step2_next(self):
         self._show_step(2)
 
+    def _step3_back(self):
+        self.preview.delete("1.0", "end")
+        self._show_step(1)
+
     # ------------------------------------------------ port-assignment rows
     def _add_pa_row(self, data=None):
         r = self.pa_next_row
         self.pa_next_row += 1
         iface = ttk.Entry(self.pa_container, width=36)
         iface.grid(row=r, column=0, sticky="w", padx=1, pady=1)
+        _attach_context_menu(iface)
         role = ttk.Combobox(self.pa_container, width=24, state="readonly",
                             values=["unassigned"] + list(self.app.roles.keys()))
         role.bind("<MouseWheel>", lambda _e: "break")
         role.grid(row=r, column=1, sticky="w", padx=1, pady=1)
         desc = ttk.Entry(self.pa_container, width=14)
         desc.grid(row=r, column=2, sticky="ew", padx=1, pady=1)
+        _attach_context_menu(desc)
         del_btn = ttk.Button(self.pa_container, text="X", width=3,
                              style="Del.TButton",
                              command=lambda: self._del_pa_row(r))
@@ -928,6 +1021,9 @@ class ModelsTab(ttk.Frame):
         prefix = ttk.Entry(row, width=24); prefix.pack(side="left", padx=1)
         start  = ttk.Entry(row, width=6);  start.pack(side="left", padx=1)
         end    = ttk.Entry(row, width=6);  end.pack(side="left", padx=1)
+        _attach_context_menu(prefix)
+        _attach_context_menu(start)
+        _attach_context_menu(end)
         ttk.Button(row, text="X", width=3, style="Del.TButton",
                    command=lambda: self._del_pg(row)).pack(side="left", padx=2)
         if data:
@@ -1049,6 +1145,7 @@ class RolesTab(ttk.Frame):
                             selectbackground=C["sel_bg"],
                             relief="flat", bd=2, wrap="word")
         self.cmds.pack(fill="both", expand=True, padx=5, pady=4)
+        _attach_context_menu(self.cmds)
 
         ttk.Button(form, text="Save Role",
                    command=self._save).pack(padx=5, pady=10, anchor="w")
@@ -1148,6 +1245,7 @@ class ProfilesTab(ttk.Frame):
                                   selectbackground=C["sel_bg"],
                                   relief="flat", bd=2, wrap="word")
         self.vlans_text.pack(fill="x", padx=5, pady=4)
+        _attach_context_menu(self.vlans_text)
 
         # -- role variables --
         _section(form, "Role Variables")
@@ -1200,6 +1298,8 @@ class ProfilesTab(ttk.Frame):
         row = ttk.Frame(self.var_frame); row.pack(fill="x", pady=1)
         k = ttk.Entry(row, width=18); k.pack(side="left", padx=1)
         v = ttk.Entry(row, width=18); v.pack(side="left", padx=1)
+        _attach_context_menu(k)
+        _attach_context_menu(v)
         ttk.Button(row, text="X", width=3, style="Del.TButton",
                    command=lambda: self._del_row(row, self.var_rows)
                    ).pack(side="left", padx=2)
@@ -1216,11 +1316,13 @@ class ProfilesTab(ttk.Frame):
     def _add_pa(self, data=None):
         row = ttk.Frame(self.pa_frame); row.pack(fill="x", pady=1)
         iface = ttk.Entry(row, width=26);   iface.pack(side="left", padx=1)
+        _attach_context_menu(iface)
         role  = ttk.Combobox(row, width=14, state="readonly",
                              values=["unassigned"] + list(self.app.roles.keys()))
         role.bind("<MouseWheel>", lambda _e: "break")
         role.pack(side="left", padx=1)
         desc  = ttk.Entry(row, width=20);   desc.pack(side="left", padx=1)
+        _attach_context_menu(desc)
         ttk.Button(row, text="X", width=3, style="Del.TButton",
                    command=lambda: self._del_row(row, self.pa_rows)
                    ).pack(side="left", padx=2)
@@ -1441,6 +1543,7 @@ class BaseTab(ttk.Frame):
         ttk.Label(top, text="Name:").pack(side="left")
         name_e = ttk.Entry(top, width=28)
         name_e.pack(side="left", padx=(4, 10))
+        _attach_context_menu(name_e)
         ttk.Label(top, text="Position:").pack(side="left")
         pos_cb = ttk.Combobox(top, width=22, state="readonly",
                               values=["Before Interfaces",
@@ -1458,6 +1561,7 @@ class BaseTab(ttk.Frame):
                        selectbackground=C["sel_bg"],
                        relief="flat", bd=2, wrap="word")
         cmds.pack(fill="x", pady=(4, 0))
+        _attach_context_menu(cmds)
 
         if isinstance(data, dict):
             name_e.insert(0, data.get("name", ""))
@@ -1519,7 +1623,7 @@ class GuideTab(ttk.Frame):
 
         def heading(text):
             ttk.Label(f, text=text, font=("Segoe UI", 13, "bold"),
-                      foreground="#ffffff", background=C["bg"]
+                      foreground=C["accent"], background=C["bg"]
                       ).pack(anchor="w", padx=12, pady=(18, 2))
             ttk.Separator(f).pack(fill="x", padx=12)
 
@@ -1542,6 +1646,7 @@ class GuideTab(ttk.Frame):
             box.insert("1.0", text)
             box.configure(state="disabled")
             box.pack(anchor="w", padx=24, pady=(2, 4), fill="x")
+            _attach_context_menu(box)
 
         # ---- Overview ----
         heading("How To Use This App")
@@ -1965,31 +2070,37 @@ class App:
 
         apply_theme(root)
 
-        # menu bar
-        menubar = tk.Menu(root, bg=C["bg2"], fg=C["fg"],
-                          activebackground=C["border"],
-                          activeforeground=C["fg"], relief="flat")
-        file_menu = tk.Menu(menubar, tearoff=0, bg=C["bg2"], fg=C["fg"],
-                            activebackground=C["border"],
-                            activeforeground=C["fg"])
+        # custom menu bar (frame-based so it's fully theme-able on Windows)
+        self.menubar_frame = tk.Frame(root, bg=C["bg2"], bd=0,
+                                      relief="flat")
+        self.menubar_frame.pack(side="top", fill="x")
+
+        menu_kw = dict(bg=C["bg2"], fg=C["fg"], font=("Segoe UI", 9),
+                        activebackground=C["border"],
+                        activeforeground=C["fg"], bd=0, relief="flat",
+                        highlightthickness=0, padx=8, pady=4)
+        drop_kw = dict(tearoff=0, bg=C["bg2"], fg=C["fg"],
+                        activebackground=C["border"],
+                        activeforeground=C["fg"])
+
+        file_mb = tk.Menubutton(self.menubar_frame, text="File", **menu_kw)
+        file_mb.pack(side="left")
+        file_menu = tk.Menu(file_mb, **drop_kw)
         file_menu.add_command(label="Export Settings...",
                               command=self._export_settings)
         file_menu.add_command(label="Import Settings...",
                               command=self._import_settings)
-        menubar.add_cascade(label="File", menu=file_menu)
+        file_mb.configure(menu=file_menu)
 
-        # theme selector menu
-        theme_menu = tk.Menu(menubar, tearoff=0, bg=C["bg2"], fg=C["fg"],
-                             activebackground=C["border"],
-                             activeforeground=C["fg"])
+        theme_mb = tk.Menubutton(self.menubar_frame, text="Theme", **menu_kw)
+        theme_mb.pack(side="left")
+        theme_menu = tk.Menu(theme_mb, **drop_kw)
         self._theme_var = tk.StringVar(value=self._current_theme_id())
         for tid, t in THEMES.items():
             theme_menu.add_radiobutton(
                 label=t["name"], variable=self._theme_var, value=tid,
                 command=lambda tid=tid: self._switch_theme(tid))
-        menubar.add_cascade(label="Theme", menu=theme_menu)
-
-        root.configure(menu=menubar)
+        theme_mb.configure(menu=theme_menu)
 
         # load data
         self.models   = load_json("models.json",        {})
@@ -2111,19 +2222,21 @@ class App:
         C.update(THEMES[tid])
         _save_theme(tid)
         apply_theme(self.root)
-        # refresh menu bar colours
-        menubar = self.root.nametowidget(self.root.cget("menu"))
-        for i in range(menubar.index("end") + 1):
+        # refresh custom menu bar colours
+        self.menubar_frame.configure(bg=C["bg2"])
+        for w in self.menubar_frame.winfo_children():
+            w.configure(bg=C["bg2"], fg=C["fg"],
+                        activebackground=C["border"],
+                        activeforeground=C["fg"])
             try:
-                sub = self.root.nametowidget(menubar.entrycget(i, "menu"))
-                sub.configure(bg=C["bg2"], fg=C["fg"],
-                              activebackground=C["border"],
-                              activeforeground=C["fg"])
+                sub = w.cget("menu")
+                if sub:
+                    self.root.nametowidget(sub).configure(
+                        bg=C["bg2"], fg=C["fg"],
+                        activebackground=C["border"],
+                        activeforeground=C["fg"])
             except Exception:
                 pass
-        menubar.configure(bg=C["bg2"], fg=C["fg"],
-                          activebackground=C["border"],
-                          activeforeground=C["fg"])
         self._rebuild_tabs()
 
 
