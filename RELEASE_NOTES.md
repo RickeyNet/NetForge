@@ -1,3 +1,40 @@
+# NetForge v1.2.0 — Release Notes
+
+## Bug Fix: Management Port on C9200 Models
+
+- The `mgmt_port` base setting (GigabitEthernet0/0 config) was being included in every generated config, even for switch models that don't have that interface
+- Config generation now checks the selected model's port groups and only includes the management port block when a GigabitEthernet0/ interface exists (e.g., C9300 models)
+- C9200 models no longer generate invalid GigabitEthernet0/0 config lines
+
+## New Feature: Right-Click Context Menu
+
+- All text fields, text areas, and the config preview now support a right-click context menu
+- Menu includes **Cut**, **Copy**, **Paste**, and **Select All** with keyboard shortcut hints
+- Read-only widgets (config preview, guide code blocks) show only Copy and Select All
+- Menu items are contextually enabled/disabled based on selection and clipboard state
+- Styled to match the active theme
+
+## New Theme: Sandstone
+
+- Added a warm, light-mode theme with olive/sage backgrounds, cream input fields, and dusty rose accents
+
+| Theme | Description |
+|-------|-------------|
+| **Sandstone** | Warm olive-sage background with cream inputs and dusty rose accents |
+
+## UI Improvements
+
+- **Themed combo dropdowns** — combobox dropdown lists now match the active theme instead of showing a white system default
+- **Themed menu bar** — replaced the native Windows menu bar with a custom frame-based menu bar that fully respects theme colors
+- **Guide headings** — heading text in the How-To Guide now uses the theme accent color instead of hardcoded white, improving readability on light themes
+
+## Wizard: Back Button Clears Preview
+
+- Pressing the Back button on Step 3 (Switch Details) now clears the generated config preview
+- All input fields (hostname, IP, passwords, etc.) are preserved when navigating back
+
+---
+
 # NetForge v1.1.0 — Release Notes
 
 ## New Feature: Theme Selector
