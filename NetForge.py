@@ -678,6 +678,21 @@ class GenerateTab(ttk.Frame):
                        "Any range not listed stays disabled automatically."
                   ).pack(anchor="w", padx=10, pady=(4, 2))
 
+        # port display mode toggle
+        mode_fr = ttk.Frame(body)
+        mode_fr.pack(fill="x", padx=10, pady=(4, 2))
+        ttk.Label(mode_fr, text="Port Display:").pack(side="left")
+        self.pa_display_cb = ttk.Combobox(
+            mode_fr, width=18, state="readonly",
+            values=["Range", "Individual Ports"])
+        self.pa_display_cb.bind("<MouseWheel>", lambda _e: "break")
+        self.pa_display_cb.pack(side="left", padx=6)
+        cur = self.app.base.get("port_display_mode", "range")
+        self.pa_display_cb.set(
+            "Individual Ports" if cur == "listed" else "Range")
+        self.pa_display_cb.bind("<<ComboboxSelected>>",
+                                lambda _e: self._on_display_mode_changed())
+
         # port assignment table
         pa_lf = ttk.LabelFrame(body, text="Port Assignments", padding=5)
         pa_lf.pack(fill="x", padx=10, pady=(0, 5))
@@ -808,7 +823,7 @@ class GenerateTab(ttk.Frame):
 
         # clear and repopulate
         self._clear_pa_rows()
-        listed = self.app.base.get("port_display_mode") == "listed"
+        listed = self.pa_display_cb.get() == "Individual Ports"
         pa_list = profile.get("port_assignments", [])
         if pa_list:
             # profile already has assignments - use them
@@ -846,6 +861,14 @@ class GenerateTab(ttk.Frame):
     def _step3_back(self):
         self.preview.delete("1.0", "end")
         self._show_step(1)
+
+    def _on_display_mode_changed(self):
+        """Re-populate port assignment rows when the user toggles the
+        port display mode between Range and Individual Ports."""
+        mn = self.model_cb.get()
+        pn = self.profile_cb.get()
+        if mn and mn in self.app.models and pn and pn in self.app.profiles:
+            self._populate_step2(mn, pn)
 
     # ------------------------------------------------ port-assignment rows
     def _add_pa_row(self, data=None):
@@ -1448,22 +1471,6 @@ class BaseTab(ttk.Frame):
 
         b = self.app.base
 
-        # preferences
-        _section(form, "Preferences")
-        pf = ttk.Frame(form)
-        pf.pack(fill="x", padx=5, pady=(4, 8))
-        ttk.Label(pf, text="Port Display Default:").pack(side="left")
-        self.port_display_cb = ttk.Combobox(
-            pf, width=18, state="readonly",
-            values=["Range", "Individual Ports"])
-        self.port_display_cb.bind("<MouseWheel>", lambda _e: "break")
-        self.port_display_cb.pack(side="left", padx=6)
-        cur = b.get("port_display_mode", "range")
-        self.port_display_cb.set(
-            "Individual Ports" if cur == "listed" else "Range")
-        ttk.Label(pf, text="(how ports appear in the Generate Config wizard)",
-                  style="Hint.TLabel").pack(side="left", padx=4)
-
         # simple field
         _section(form, "Credentials")
         self.fields["local_username"] = _field(
@@ -1594,10 +1601,6 @@ class BaseTab(ttk.Frame):
             data[key] = widget.get().strip()
         for key, widget in self.text_areas.items():
             data[key] = widget.get("1.0", "end").strip()
-        display_val = self.port_display_cb.get()
-        data["port_display_mode"] = (
-            "listed" if display_val == "Individual Ports" else "range")
-
         # collect custom sections
         cs_list = []
         for r in self.cs_rows:
