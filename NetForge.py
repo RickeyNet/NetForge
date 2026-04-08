@@ -207,9 +207,20 @@ def expand_port_groups_for_stack(port_groups, stack_members):
     (the ``1`` before the first ``/``) is replaced with each member number
     (1 … *stack_members*).  If the prefix doesn't contain a ``/`` or the
     stack is size 1 the original groups are returned unchanged.
+
+    If the port groups already contain entries for multiple stack members
+    (member numbers > 1) they are returned as-is to avoid duplication.
     """
     if stack_members <= 1:
         return list(port_groups)
+
+    # Check if port_groups already include entries for stack members > 1.
+    # If so, they were defined explicitly and should not be expanded again.
+    for pg in port_groups:
+        m = re.match(r'^([A-Za-z-]*)(\d+)(/.*)$', pg["prefix"])
+        if m and int(m.group(2)) > 1:
+            return list(port_groups)
+
     expanded = []
     for pg in port_groups:
         prefix = pg["prefix"]

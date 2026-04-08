@@ -104,7 +104,7 @@
         "end": 2
       },
       {
-        "prefix": "FortyGigabitEthernet1/1",
+        "prefix": "FortyGigabitEthernet1/1/",
         "start": 1,
         "end": 2
       },
@@ -165,7 +165,7 @@
         "end": 2
       },
       {
-        "prefix": "FortyGigabitEthernet1/1",
+        "prefix": "FortyGigabitEthernet1/1/",
         "start": 1,
         "end": 2
       },
@@ -220,7 +220,7 @@
         "end": 2
       },
       {
-        "prefix": "FortyGigabitEthernet3/1",
+        "prefix": "FortyGigabitEthernet3/1/",
         "start": 1,
         "end": 2
       },
