@@ -19,7 +19,7 @@ import zipfile
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from jinja2 import Environment
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +493,11 @@ def render_config(model, profile, roles, base, sw):
             rendered_dis = dis_tpl
 
         for pg in all_pgs:
+            # Skip the OOB management port (e.g. GigabitEthernet0/0) —
+            # it's a routed port that doesn't accept switchport commands
+            # and is configured separately via the mgmt_port setting.
+            if pg.get("prefix", "").startswith("GigabitEthernet0/"):
+                continue
             if pg["start"] == pg["end"]:
                 hdr = f"interface {pg['prefix']}{pg['start']}"
             else:
@@ -503,12 +508,29 @@ def render_config(model, profile, roles, base, sw):
     parts.append("interface vlan1\nno ip address\nshutdown\nexit")
 
     # -- management port (Gi0/0, etc.) ------------------------------------
-    has_mgmt_port = any(
-        pg.get("prefix", "").startswith("GigabitEthernet0/")
-        for pg in model.get("port_groups", [])
-    )
-    if has_mgmt_port:
-        add(base.get("mgmt_port", ""))
+    # Only apply the default mgmt_port base setting when the user has NOT
+    # assigned a role to GigabitEthernet0/x via the port-assignment table.
+    mgmt_port_pgs = [pg for pg in model.get("port_groups", [])
+                     if pg.get("prefix", "").startswith("GigabitEthernet0/")]
+    if mgmt_port_pgs:
+        mgmt_assigned = any(
+            pa.get("role") and pa["role"] != "unassigned"
+            and "GigabitEthernet0/" in pa.get("interfaces", "")
+            for pa in profile.get("port_assignments", [])
+        )
+        if not mgmt_assigned:
+            pg = mgmt_port_pgs[0]
+            iface = f"{pg['prefix']}{pg['start']}"
+            oob_ip = sw.get("oob_ip", "")
+            oob_mask = sw.get("oob_mask", "")
+            if oob_ip and oob_mask:
+                parts.append(f"interface {iface}\n"
+                             f"ip address {oob_ip} {oob_mask}\n"
+                             f"negotiation auto\nexit")
+            else:
+                mgmt_cmds = base.get("mgmt_port", "").strip()
+                if mgmt_cmds:
+                    parts.append(f"interface {iface}\n{mgmt_cmds}")
 
     # -- port assignments from profile (override disabled ports) ----------
     for pa in profile.get("port_assignments", []):
@@ -753,6 +775,15 @@ class GenerateTab(ttk.Frame):
         self.mgmt_mask = _field(form, "Subnet Mask", "255.255.255.0")
         self.gateway   = _field(form, "Default Gateway")
 
+        # OOB management port (Gi0/0) - only shown for models that have one
+        self.oob_frame = ttk.Frame(form)
+        _section(self.oob_frame, "OOB Management Port (Gi0/0)")
+        ttk.Label(self.oob_frame,
+                  text="Optional - leave blank to use base settings default.",
+                  style="Hint.TLabel").pack(anchor="w", padx=5, pady=(2, 0))
+        self.oob_ip   = _field(self.oob_frame, "OOB IP Address")
+        self.oob_mask = _field(self.oob_frame, "OOB Subnet Mask")
+
         # -- right: preview --
         right = ttk.Frame(paned)
         paned.add(right, weight=1)
@@ -782,6 +813,16 @@ class GenerateTab(ttk.Frame):
         if domain:
             self.domain.delete(0, "end")
             self.domain.insert(0, domain)
+        # show/hide OOB fields based on whether model has Gi0/0
+        model = self.app.models[mn]
+        has_oob = any(pg.get("prefix", "").startswith("GigabitEthernet0/")
+                      for pg in model.get("port_groups", []))
+        if has_oob:
+            self.oob_frame.pack(fill="x", padx=5, pady=2)
+        else:
+            self.oob_frame.pack_forget()
+            self.oob_ip.delete(0, "end")
+            self.oob_mask.delete(0, "end")
         self._show_step(1)
 
     def _populate_step2(self, model_name, profile_name):
@@ -925,6 +966,8 @@ class GenerateTab(ttk.Frame):
             "mgmt_ip":         self.mgmt_ip.get().strip(),
             "mgmt_mask":       self.mgmt_mask.get().strip(),
             "default_gateway": self.gateway.get().strip(),
+            "oob_ip":          self.oob_ip.get().strip(),
+            "oob_mask":        self.oob_mask.get().strip(),
         }
 
     def _get_pa_list(self):

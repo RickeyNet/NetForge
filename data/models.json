@@ -58,6 +58,11 @@
         "end": 24
       },
       {
+        "prefix": "GigabitEthernet1/1/",
+        "start": 1,
+        "end": 4
+      },
+      {
         "prefix": "TenGigabitEthernet1/1/",
         "start": 1,
         "end": 8
@@ -94,6 +99,11 @@
         "end": 24
       },
       {
+        "prefix": "GigabitEthernet1/1/",
+        "start": 1,
+        "end": 4
+      },
+      {
         "prefix": "TenGigabitEthernet1/1/",
         "start": 1,
         "end": 8
@@ -122,6 +132,11 @@
         "prefix": "GigabitEthernet2/0/",
         "start": 1,
         "end": 24
+      },
+      {
+        "prefix": "GigabitEthernet2/1/",
+        "start": 1,
+        "end": 4
       },
       {
         "prefix": "TenGigabitEthernet2/1/",
@@ -155,6 +170,11 @@
         "end": 24
       },
       {
+        "prefix": "GigabitEthernet1/1/",
+        "start": 1,
+        "end": 4
+      },
+      {
         "prefix": "TenGigabitEthernet1/1/",
         "start": 1,
         "end": 8
@@ -185,6 +205,11 @@
         "end": 24
       },
       {
+        "prefix": "GigabitEthernet2/1/",
+        "start": 1,
+        "end": 4
+      },
+      {
         "prefix": "TenGigabitEthernet2/1/",
         "start": 1,
         "end": 8
@@ -208,6 +233,11 @@
         "prefix": "GigabitEthernet3/0/",
         "start": 1,
         "end": 24
+      },
+      {
+        "prefix": "GigabitEthernet3/1/",
+        "start": 1,
+        "end": 4
       },
       {
         "prefix": "TenGigabitEthernet3/1/",
@@ -241,6 +271,11 @@
         "end": 24
       },
       {
+        "prefix": "GigabitEthernet1/1/",
+        "start": 1,
+        "end": 4
+      },
+      {
         "prefix": "TenGigabitEthernet1/1/",
         "start": 1,
         "end": 8
@@ -271,6 +306,11 @@
         "end": 24
       },
       {
+        "prefix": "GigabitEthernet2/1/",
+        "start": 1,
+        "end": 4
+      },
+      {
         "prefix": "TenGigabitEthernet2/1/",
         "start": 1,
         "end": 8
@@ -296,6 +336,11 @@
         "end": 24
       },
       {
+        "prefix": "GigabitEthernet3/1/",
+        "start": 1,
+        "end": 4
+      },
+      {
         "prefix": "TenGigabitEthernet3/1/",
         "start": 1,
         "end": 8
@@ -319,6 +364,11 @@
         "prefix": "GigabitEthernet4/0/",
         "start": 1,
         "end": 24
+      },
+      {
+        "prefix": "GigabitEthernet4/1/",
+        "start": 1,
+        "end": 4
       },
       {
         "prefix": "TenGigabitEthernet4/1/",
