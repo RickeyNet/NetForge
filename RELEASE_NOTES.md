@@ -1,3 +1,23 @@
+# NetForge v1.2.2 — Release Notes
+
+## Fix: OOB Management Port (GigabitEthernet0/0) on C9300
+
+- The disabled port template (which contains `switchport` commands) is no longer applied to the OOB management port — GigabitEthernet0/0 is a routed interface that does not accept switchport commands
+- The `mgmt_port` base setting now renders with the correct `interface GigabitEthernet0/0` header
+
+## New Feature: OOB Management Port IP Assignment
+
+- Step 3 (Switch Details) now shows optional **OOB IP Address** and **OOB Subnet Mask** fields when the selected model has a GigabitEthernet0/0 port
+- If both fields are filled in, GigabitEthernet0/0 is configured with the specified IP address
+- If left blank, the default `mgmt_port` base setting is used as a fallback
+- If a role is assigned to GigabitEthernet0/0 in the Step 2 port assignment table, that role's commands take priority over both the OOB fields and the base setting
+
+## Model Update: C9300 Port Groups
+
+- Added `GigabitEthernet1/1/1–4` port group to all C9300 switch models
+
+---
+
 # NetForge v1.2.0 — Release Notes
 
 ## Bug Fix: Management Port on C9200 Models
