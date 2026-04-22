@@ -67,7 +67,7 @@ Feature ideas based on the current app structure and product scope.
 - [ ] Add a dry-run summary panel
   Show a short summary before render: selected model, stack size, number of assigned ports, management VLAN, unresolved variables, and disabled-port coverage.
 
-- [ ] Add recent files and recent profiles
+- [x] Add recent files and recent profiles
   Keep a short history of recently opened settings ZIPs, recently used profiles, and recently generated configs.
 
 - [ ] Add keyboard shortcuts

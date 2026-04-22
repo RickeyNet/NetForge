@@ -20,6 +20,7 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 from jinja2 import Environment
 
 VERSION = "1.2.2"
+_RECENT_MAX = 10
 
 
 # ---------------------------------------------------------------------------
@@ -792,7 +793,8 @@ class GenerateTab(ttk.Frame):
         self.preview = scrolledtext.ScrolledText(
             right, wrap="none", font=("Consolas", 10),
             bg=C["bg_input"], fg=C["green"], insertbackground=C["fg"],
-            selectbackground=C["sel_bg"], relief="flat", bd=2)
+            selectbackground=C["sel_bg"], relief="flat", bd=2,
+            state="disabled")
         self.preview.pack(fill="both", expand=True, padx=4, pady=4)
         _attach_context_menu(self.preview)
 
@@ -900,7 +902,9 @@ class GenerateTab(ttk.Frame):
         self._show_step(2)
 
     def _step3_back(self):
+        self.preview.configure(state="normal")
         self.preview.delete("1.0", "end")
+        self.preview.configure(state="disabled")
         self._show_step(1)
 
     def _on_display_mode_changed(self):
@@ -1000,8 +1004,11 @@ class GenerateTab(ttk.Frame):
             messagebox.showerror("Render Error", str(exc))
             return
 
+        self.preview.configure(state="normal")
         self.preview.delete("1.0", "end")
         self.preview.insert("1.0", cfg)
+        self.preview.configure(state="disabled")
+        self.app._push_recent("profiles", pn)
 
     def _save(self):
         txt = self.preview.get("1.0", "end").strip()
@@ -1016,6 +1023,7 @@ class GenerateTab(ttk.Frame):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(txt)
             messagebox.showinfo("Saved", f"Saved to:\n{path}")
+            self.app._push_recent("configs", path)
 
     def _copy(self):
         txt = self.preview.get("1.0", "end").strip()
@@ -2147,7 +2155,18 @@ class App:
                               command=self._export_settings)
         file_menu.add_command(label="Import Settings...",
                               command=self._import_settings)
+        file_menu.add_separator()
+        self._recent_profiles_menu = tk.Menu(file_menu, **drop_kw)
+        self._recent_zips_menu     = tk.Menu(file_menu, **drop_kw)
+        self._recent_configs_menu  = tk.Menu(file_menu, **drop_kw)
+        file_menu.add_cascade(label="Recent Profiles",
+                              menu=self._recent_profiles_menu)
+        file_menu.add_cascade(label="Recent Settings ZIPs",
+                              menu=self._recent_zips_menu)
+        file_menu.add_cascade(label="Recent Configs",
+                              menu=self._recent_configs_menu)
         file_mb.configure(menu=file_menu)
+        self._rebuild_recent_menus()
 
         theme_mb = tk.Menubutton(self.menubar_frame, text="Theme", **menu_kw)
         theme_mb.pack(side="left")
@@ -2209,8 +2228,10 @@ class App:
     def _import_settings(self):
         path = filedialog.askopenfilename(
             filetypes=[("ZIP Archive", "*.zip"), ("All", "*.*")])
-        if not path:
-            return
+        if path:
+            self._import_settings_from_path(path)
+
+    def _import_settings_from_path(self, path):
         try:
             with zipfile.ZipFile(path, "r") as zf:
                 names = zf.namelist()
@@ -2237,6 +2258,7 @@ class App:
             messagebox.showerror("Import Error", str(exc))
             return
 
+        self._push_recent("zips", path)
         # reload data and refresh all tabs
         self.models   = load_json("models.json",       {})
         self.roles    = load_json("roles.json",         {})
@@ -2246,6 +2268,73 @@ class App:
         messagebox.showinfo("Imported",
                             "Settings imported successfully.\n"
                             "All tabs have been refreshed.")
+
+    # ---- recent items -------------------------------------------------------
+
+    def _load_recents(self):
+        data = load_json("recent.json", {})
+        return {"profiles": data.get("profiles", []),
+                "zips":     data.get("zips",     []),
+                "configs":  data.get("configs",  [])}
+
+    def _save_recents(self, data):
+        save_json("recent.json", data)
+
+    def _push_recent(self, key, value):
+        """Prepend *value* to the *key* recents list and persist."""
+        data = self._load_recents()
+        lst  = [v for v in data.get(key, []) if v != value]
+        lst.insert(0, value)
+        data[key] = lst[:_RECENT_MAX]
+        self._save_recents(data)
+        self._rebuild_recent_menus()
+
+    def _rebuild_recent_menus(self):
+        """Repopulate all three Recent cascade menus from saved recents."""
+        data = self._load_recents()
+        specs = [
+            (self._recent_profiles_menu, "profiles", self._open_recent_profile),
+            (self._recent_zips_menu,     "zips",     self._open_recent_zip),
+            (self._recent_configs_menu,  "configs",  self._open_recent_config),
+        ]
+        for menu, key, handler in specs:
+            menu.delete(0, "end")
+            items = data.get(key, [])
+            if items:
+                for item in items:
+                    lbl = (os.path.basename(item)
+                           if key in ("zips", "configs") else item)
+                    menu.add_command(label=lbl,
+                                     command=lambda v=item: handler(v))
+            else:
+                menu.add_command(label="(none)", state="disabled")
+
+    def _open_recent_profile(self, name):
+        if name not in self.profiles:
+            messagebox.showwarning("Recent Profile",
+                                   f"Profile '{name}' no longer exists.")
+            return
+        self.nb.select(0)
+        self.gen_tab.profile_cb.set(name)
+
+    def _open_recent_zip(self, path):
+        if not os.path.isfile(path):
+            messagebox.showwarning("Recent File",
+                                   f"File not found:\n{path}")
+            return
+        self._import_settings_from_path(path)
+
+    def _open_recent_config(self, path):
+        if not os.path.isfile(path):
+            messagebox.showwarning("Recent Config",
+                                   f"File not found:\n{path}")
+            return
+        try:
+            os.startfile(path)
+        except Exception as exc:
+            messagebox.showerror("Open Error", str(exc))
+
+    # -------------------------------------------------------------------------
 
     def _rebuild_tabs(self):
         """Destroy and recreate all tabs to reflect imported data or theme."""
@@ -2294,6 +2383,13 @@ class App:
                         activeforeground=C["fg"])
             except Exception:
                 pass
+        # update cascade recent menu colours
+        _cascade_kw = dict(bg=C["bg2"], fg=C["fg"],
+                           activebackground=C["border"],
+                           activeforeground=C["fg"])
+        for _m in (self._recent_profiles_menu, self._recent_zips_menu,
+                   self._recent_configs_menu):
+            _m.configure(**_cascade_kw)
         self._rebuild_tabs()
 
 
