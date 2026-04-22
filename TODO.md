@@ -24,7 +24,7 @@ Feature ideas based on the current app structure and product scope.
 
 ## Workflow Improvements
 
-- [ ] Add clone/duplicate actions for models, roles, and profiles
+- [x] Add clone/duplicate actions for models, roles, and profiles
   Most edits will be variants of an existing object. A duplicate action would be faster and safer than creating each item from scratch.
 
 - [ ] Add search and filtering in the editor tabs

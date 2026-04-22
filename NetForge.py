@@ -16,7 +16,7 @@ import re
 import sys
 import tkinter as tk
 import zipfile
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, scrolledtext
 from jinja2 import Environment
 
 VERSION = "1.2.2"
@@ -395,12 +395,180 @@ def _combo(parent, label, values, width=33):
     return cb
 
 
+def _copy_name(name, existing):
+    """Return a unique copy name not already in *existing*."""
+    candidate = f"{name} (copy)"
+    n = 1
+    while candidate in existing:
+        n += 1
+        candidate = f"{name} (copy {n})"
+    return candidate
+
+
+def _dialog(title, msg, kind="info"):
+    """Themed modal info / warning / error dialog."""
+    accent = C["red"] if kind == "error" else C["accent"]
+    dlg = tk.Toplevel()
+    dlg.title(title)
+    dlg.configure(bg=C["bg"])
+    dlg.resizable(False, False)
+    dlg.grab_set()
+    tk.Frame(dlg, bg=accent, height=3).pack(fill="x")
+    inner = ttk.Frame(dlg, padding=(22, 14, 22, 18))
+    inner.pack()
+    ttk.Label(inner, text=title, style="Sec.TLabel").pack(anchor="w")
+    ttk.Label(inner, text=msg, wraplength=320,
+              justify="left").pack(anchor="w", pady=(6, 18))
+    ttk.Button(inner, text="OK", command=dlg.destroy).pack(anchor="e")
+    dlg.update_idletasks()
+    try:
+        root = dlg.nametowidget(".")
+        rx = root.winfo_x() + (root.winfo_width()  - dlg.winfo_width())  // 2
+        ry = root.winfo_y() + (root.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{max(0, rx)}+{max(0, ry)}")
+    except Exception:
+        pass
+    dlg.wait_window()
+
+
+def _ask(title, msg):
+    """Themed yes/no confirmation dialog. Returns True if user clicks Yes."""
+    result = [False]
+    dlg = tk.Toplevel()
+    dlg.title(title)
+    dlg.configure(bg=C["bg"])
+    dlg.resizable(False, False)
+    dlg.grab_set()
+    tk.Frame(dlg, bg=C["red"], height=3).pack(fill="x")
+    inner = ttk.Frame(dlg, padding=(22, 14, 22, 18))
+    inner.pack()
+    ttk.Label(inner, text=title, style="Sec.TLabel").pack(anchor="w")
+    ttk.Label(inner, text=msg, wraplength=320,
+              justify="left").pack(anchor="w", pady=(6, 18))
+    bf = ttk.Frame(inner)
+    bf.pack(anchor="e")
+    def _yes():
+        result[0] = True
+        dlg.destroy()
+    ttk.Button(bf, text="Yes", style="Del.TButton",
+               command=_yes).pack(side="left", padx=(0, 6))
+    ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="left")
+    dlg.update_idletasks()
+    try:
+        root = dlg.nametowidget(".")
+        rx = root.winfo_x() + (root.winfo_width()  - dlg.winfo_width())  // 2
+        ry = root.winfo_y() + (root.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{max(0, rx)}+{max(0, ry)}")
+    except Exception:
+        pass
+    dlg.wait_window()
+    return result[0]
+
+
 def _dark_listbox(parent, **kw):
     return tk.Listbox(parent, font=("Consolas", 10),
                       bg=C["bg_input"], fg=C["fg"],
                       selectbackground=C["border"],
                       selectforeground=C["fg"],
+                      selectmode="extended",
                       relief="flat", bd=2, **kw)
+
+
+class _CheckList(tk.Frame):
+    """Scrollable list where every row has a checkbox and a clickable label."""
+
+    def __init__(self, parent, on_click=None, **kw):
+        super().__init__(parent, bg=C["bg_input"], **kw)
+        vsb = ttk.Scrollbar(self, orient="vertical")
+        vsb.pack(side="right", fill="y")
+        self._canvas = tk.Canvas(self, bg=C["bg_input"], bd=0,
+                                  highlightthickness=0,
+                                  yscrollcommand=vsb.set)
+        self._canvas.pack(side="left", fill="both", expand=True)
+        vsb.config(command=self._canvas.yview)
+        self._inner = tk.Frame(self._canvas, bg=C["bg_input"])
+        self._win_id = self._canvas.create_window(
+            (0, 0), window=self._inner, anchor="nw")
+        self._inner.bind("<Configure>",
+                         lambda _: self._canvas.configure(
+                             scrollregion=self._canvas.bbox("all")))
+        self._canvas.bind("<Configure>",
+                          lambda e: self._canvas.itemconfig(
+                              self._win_id, width=e.width))
+        self._canvas.bind("<MouseWheel>", self._on_wheel)
+        self._on_click = on_click
+        self._vars     = {}   # name → BooleanVar
+        self._labels   = {}   # name → tk.Label
+        self._frames   = {}   # name → tk.Frame
+        self._selected = None
+
+    def _on_wheel(self, e):
+        self._canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+
+    def populate(self, names):
+        for w in self._inner.winfo_children():
+            w.destroy()
+        self._vars.clear()
+        self._labels.clear()
+        self._frames.clear()
+        self._selected = None
+        for name in names:
+            self._add_row(name)
+
+    def _add_row(self, name):
+        var = tk.BooleanVar()
+        row = tk.Frame(self._inner, bg=C["bg_input"])
+        row.pack(fill="x", padx=2, pady=1)
+        cb = tk.Checkbutton(row, variable=var,
+                             bg=C["bg_input"], fg=C["fg"],
+                             activebackground=C["bg_input"],
+                             selectcolor=C["bg2"],
+                             relief="flat", bd=0, cursor="hand2")
+        cb.pack(side="left")
+        lbl = tk.Label(row, text=name, anchor="w",
+                       bg=C["bg_input"], fg=C["fg"],
+                       font=("Consolas", 10), cursor="hand2")
+        lbl.pack(side="left", fill="x", expand=True, padx=(2, 4))
+        for w in (row, lbl):
+            w.bind("<Button-1>", lambda e, n=name: self._click(n))
+        for w in (row, lbl, cb):
+            w.bind("<MouseWheel>", self._on_wheel)
+        self._vars[name]   = var
+        self._labels[name] = lbl
+        self._frames[name] = row
+
+    def _click(self, name):
+        if self._selected and self._selected in self._labels:
+            self._labels[self._selected].configure(bg=C["bg_input"])
+            self._frames[self._selected].configure(bg=C["bg_input"])
+        self._selected = name
+        self._labels[name].configure(bg=C["sel_bg"])
+        self._frames[name].configure(bg=C["sel_bg"])
+        if self._on_click:
+            self._on_click(name)
+
+    def get_checked(self):
+        return [n for n, v in self._vars.items() if v.get()]
+
+    def get_selected(self):
+        return self._selected
+
+    def clear_selection(self):
+        if self._selected and self._selected in self._labels:
+            self._labels[self._selected].configure(bg=C["bg_input"])
+            self._frames[self._selected].configure(bg=C["bg_input"])
+        self._selected = None
+
+    def select(self, name):
+        if name not in self._frames:
+            return
+        self._click(name)
+        self._frames[name].update_idletasks()
+        y      = self._frames[name].winfo_y()
+        total  = self._inner.winfo_height()
+        ch     = self._canvas.winfo_height()
+        if total > ch:
+            self._canvas.yview_moveto(y / total)
 
 
 # ===================================================================
@@ -803,10 +971,10 @@ class GenerateTab(ttk.Frame):
         mn = self.model_cb.get()
         pn = self.profile_cb.get()
         if not mn or mn not in self.app.models:
-            messagebox.showwarning("Missing", "Select a switch model.")
+            _dialog("Missing", "Select a switch model.", "warning")
             return
         if not pn or pn not in self.app.profiles:
-            messagebox.showwarning("Missing", "Select a site profile.")
+            _dialog("Missing", "Select a site profile.", "warning")
             return
         self._populate_step2(mn, pn)
         # auto-fill domain name from profile
@@ -990,7 +1158,7 @@ class GenerateTab(ttk.Frame):
         pn = self.profile_cb.get()
         sw = self._sw_dict()
         if not sw["hostname"]:
-            messagebox.showwarning("Missing", "Hostname is required.")
+            _dialog("Missing", "Hostname is required.", "warning")
             return
 
         # build a profile copy with the wizard's port assignments
@@ -1001,7 +1169,7 @@ class GenerateTab(ttk.Frame):
             cfg = render_config(self.app.models[mn], profile,
                                 self.app.roles, self.app.base, sw)
         except Exception as exc:
-            messagebox.showerror("Render Error", str(exc))
+            _dialog("Render Error", str(exc), "error")
             return
 
         self.preview.configure(state="normal")
@@ -1013,7 +1181,7 @@ class GenerateTab(ttk.Frame):
     def _save(self):
         txt = self.preview.get("1.0", "end").strip()
         if not txt:
-            messagebox.showinfo("Empty", "Generate a config first.")
+            _dialog("Empty", "Generate a config first.")
             return
         name = self.hostname.get().strip() or "switch_config"
         path = filedialog.asksaveasfilename(
@@ -1022,17 +1190,17 @@ class GenerateTab(ttk.Frame):
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(txt)
-            messagebox.showinfo("Saved", f"Saved to:\n{path}")
+            _dialog("Saved", f"Saved to:\n{path}")
             self.app._push_recent("configs", path)
 
     def _copy(self):
         txt = self.preview.get("1.0", "end").strip()
         if not txt:
-            messagebox.showinfo("Empty", "Generate a config first.")
+            _dialog("Empty", "Generate a config first.")
             return
         self.clipboard_clear()
         self.clipboard_append(txt)
-        messagebox.showinfo("Copied", "Config copied to clipboard.")
+        _dialog("Copied", "Config copied to clipboard.")
 
 
 # ===================================================================
@@ -1053,12 +1221,12 @@ class ModelsTab(ttk.Frame):
         left = ttk.Frame(paned); paned.add(left, weight=0)
         ttk.Label(left, text="Switch Models",
                   style="Sec.TLabel").pack(anchor="w", padx=4, pady=4)
-        self.lb = _dark_listbox(left, width=22)
+        self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
-        self.lb.bind("<<ListboxSelect>>", self._on_select)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
-        ttk.Button(bf, text="New",    command=self._new).pack(side="left", padx=2)
-        ttk.Button(bf, text="Delete", command=self._delete,
+        ttk.Button(bf, text="New",       command=self._new).pack(side="left", padx=2)
+        ttk.Button(bf, text="Duplicate", command=self._duplicate).pack(side="left", padx=2)
+        ttk.Button(bf, text="Delete",    command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
         # -- right: edit --
@@ -1092,9 +1260,7 @@ class ModelsTab(ttk.Frame):
 
     # -- helpers --
     def _refresh(self):
-        self.lb.delete(0, "end")
-        for n in self.app.models:
-            self.lb.insert("end", n)
+        self.lb.populate(list(self.app.models.keys()))
 
     def _clear_pg(self):
         for r in self.pg_rows:
@@ -1123,11 +1289,9 @@ class ModelsTab(ttk.Frame):
         frame.destroy()
 
     # -- actions --
-    def _on_select(self, _=None):
-        sel = self.lb.curselection()
-        if not sel:
+    def _on_select(self, name=None):
+        if not name:
             return
-        name = self.lb.get(sel[0])
         m = self.app.models.get(name, {})
         self.name_e.delete(0, "end");      self.name_e.insert(0, name)
         self.provision_e.delete(0, "end"); self.provision_e.insert(
@@ -1139,19 +1303,39 @@ class ModelsTab(ttk.Frame):
             self._add_pg(pg)
 
     def _new(self):
-        self.lb.selection_clear(0, "end")
+        self.lb.clear_selection()
         self.name_e.delete(0, "end")
         self.provision_e.delete(0, "end")
         self.stack_e.delete(0, "end"); self.stack_e.insert(0, "1")
         self._clear_pg()
 
-    def _delete(self):
-        sel = self.lb.curselection()
-        if not sel:
+    def _duplicate(self):
+        name = self.lb.get_selected()
+        if not name:
+            _dialog("No Selection", "Select a model to duplicate.")
             return
-        name = self.lb.get(sel[0])
-        if messagebox.askyesno("Delete", f"Delete model '{name}'?"):
-            del self.app.models[name]
+        data = json.loads(json.dumps(self.app.models.get(name, {})))
+        new_name = _copy_name(name, self.app.models)
+        self.app.models[new_name] = data
+        save_json("models.json", self.app.models)
+        self._refresh()
+        self.app.gen_tab.refresh_combos()
+        self.lb.select(new_name)
+
+    def _delete(self):
+        names = self.lb.get_checked()
+        if not names:
+            sel = self.lb.get_selected()
+            if not sel:
+                return
+            names = [sel]
+        if len(names) == 1:
+            msg = f"Delete model '{names[0]}'?"
+        else:
+            msg = f"Delete {len(names)} models?\n\n  " + "\n  ".join(names)
+        if _ask("Delete", msg):
+            for name in names:
+                self.app.models.pop(name, None)
             save_json("models.json", self.app.models)
             self._refresh(); self._new()
             self.app.gen_tab.refresh_combos()
@@ -1159,21 +1343,18 @@ class ModelsTab(ttk.Frame):
     def _save(self):
         name = self.name_e.get().strip()
         if not name:
-            messagebox.showwarning("Missing", "Enter a model name."); return
+            _dialog("Missing", "Enter a model name.", "warning"); return
         pgs = []
         for r in self.pg_rows:
             try:
                 s, e = int(r["start"].get()), int(r["end"].get())
             except ValueError:
-                messagebox.showwarning("Invalid",
-                                       "Start / End must be numbers."); return
+                _dialog("Invalid", "Start / End must be numbers.", "warning"); return
             pgs.append({"prefix": r["prefix"].get().strip(),
                         "start": s, "end": e})
-        sel = self.lb.curselection()
-        if sel:
-            old = self.lb.get(sel[0])
-            if old != name and old in self.app.models:
-                del self.app.models[old]
+        old = self.lb.get_selected()
+        if old and old != name and old in self.app.models:
+            del self.app.models[old]
         try:
             stack = max(1, int(self.stack_e.get().strip()))
         except ValueError:
@@ -1183,7 +1364,7 @@ class ModelsTab(ttk.Frame):
                                   "port_groups": pgs}
         save_json("models.json", self.app.models)
         self._refresh(); self.app.gen_tab.refresh_combos()
-        messagebox.showinfo("Saved", f"Model '{name}' saved.")
+        _dialog("Saved", f"Model '{name}' saved.")
 
 
 # ===================================================================
@@ -1203,12 +1384,12 @@ class RolesTab(ttk.Frame):
         left = ttk.Frame(paned); paned.add(left, weight=0)
         ttk.Label(left, text="Interface Roles",
                   style="Sec.TLabel").pack(anchor="w", padx=4, pady=4)
-        self.lb = _dark_listbox(left, width=22)
+        self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
-        self.lb.bind("<<ListboxSelect>>", self._on_select)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
-        ttk.Button(bf, text="New",    command=self._new).pack(side="left", padx=2)
-        ttk.Button(bf, text="Delete", command=self._delete,
+        ttk.Button(bf, text="New",       command=self._new).pack(side="left", padx=2)
+        ttk.Button(bf, text="Duplicate", command=self._duplicate).pack(side="left", padx=2)
+        ttk.Button(bf, text="Delete",    command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
         # -- right: edit --
@@ -1237,49 +1418,62 @@ class RolesTab(ttk.Frame):
         self._refresh()
 
     def _refresh(self):
-        self.lb.delete(0, "end")
-        for n in self.app.roles:
-            self.lb.insert("end", n)
+        self.lb.populate(list(self.app.roles.keys()))
 
-    def _on_select(self, _=None):
-        sel = self.lb.curselection()
-        if not sel:
+    def _on_select(self, name=None):
+        if not name:
             return
-        name = self.lb.get(sel[0])
         role = self.app.roles.get(name, {})
         self.name_e.delete(0, "end"); self.name_e.insert(0, name)
         self.cmds.delete("1.0", "end")
         self.cmds.insert("1.0", role.get("commands", ""))
 
     def _new(self):
-        self.lb.selection_clear(0, "end")
+        self.lb.clear_selection()
         self.name_e.delete(0, "end")
         self.cmds.delete("1.0", "end")
 
-    def _delete(self):
-        sel = self.lb.curselection()
-        if not sel:
+    def _duplicate(self):
+        name = self.lb.get_selected()
+        if not name:
+            _dialog("No Selection", "Select a role to duplicate.")
             return
-        name = self.lb.get(sel[0])
-        if messagebox.askyesno("Delete", f"Delete role '{name}'?"):
-            del self.app.roles[name]
+        data = json.loads(json.dumps(self.app.roles.get(name, {})))
+        new_name = _copy_name(name, self.app.roles)
+        self.app.roles[new_name] = data
+        save_json("roles.json", self.app.roles)
+        self._refresh()
+        self.lb.select(new_name)
+
+    def _delete(self):
+        names = self.lb.get_checked()
+        if not names:
+            sel = self.lb.get_selected()
+            if not sel:
+                return
+            names = [sel]
+        if len(names) == 1:
+            msg = f"Delete role '{names[0]}'?"
+        else:
+            msg = f"Delete {len(names)} roles?\n\n  " + "\n  ".join(names)
+        if _ask("Delete", msg):
+            for name in names:
+                self.app.roles.pop(name, None)
             save_json("roles.json", self.app.roles)
             self._refresh(); self._new()
 
     def _save(self):
         name = self.name_e.get().strip()
         if not name:
-            messagebox.showwarning("Missing", "Enter a role name."); return
-        sel = self.lb.curselection()
-        if sel:
-            old = self.lb.get(sel[0])
-            if old != name and old in self.app.roles:
-                del self.app.roles[old]
+            _dialog("Missing", "Enter a role name.", "warning"); return
+        old = self.lb.get_selected()
+        if old and old != name and old in self.app.roles:
+            del self.app.roles[old]
         self.app.roles[name] = {
             "commands": self.cmds.get("1.0", "end").strip()}
         save_json("roles.json", self.app.roles)
         self._refresh()
-        messagebox.showinfo("Saved", f"Role '{name}' saved.")
+        _dialog("Saved", f"Role '{name}' saved.")
 
 
 # ===================================================================
@@ -1301,12 +1495,12 @@ class ProfilesTab(ttk.Frame):
         left = ttk.Frame(paned); paned.add(left, weight=0)
         ttk.Label(left, text="Site Profiles",
                   style="Sec.TLabel").pack(anchor="w", padx=4, pady=4)
-        self.lb = _dark_listbox(left, width=22)
+        self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
-        self.lb.bind("<<ListboxSelect>>", self._on_select)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
-        ttk.Button(bf, text="New",    command=self._new).pack(side="left", padx=2)
-        ttk.Button(bf, text="Delete", command=self._delete,
+        ttk.Button(bf, text="New",       command=self._new).pack(side="left", padx=2)
+        ttk.Button(bf, text="Duplicate", command=self._duplicate).pack(side="left", padx=2)
+        ttk.Button(bf, text="Delete",    command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
         # -- right: edit --
@@ -1369,9 +1563,7 @@ class ProfilesTab(ttk.Frame):
 
     # -- list helpers --
     def _refresh(self):
-        self.lb.delete(0, "end")
-        for n in self.app.profiles:
-            self.lb.insert("end", n)
+        self.lb.populate(list(self.app.profiles.keys()))
 
     # -- variable rows --
     def _clear_vars(self):
@@ -1423,11 +1615,9 @@ class ProfilesTab(ttk.Frame):
         frame.destroy()
 
     # -- actions --
-    def _on_select(self, _=None):
-        sel = self.lb.curselection()
-        if not sel:
+    def _on_select(self, name=None):
+        if not name:
             return
-        name = self.lb.get(sel[0])
         p = self.app.profiles.get(name, {})
 
         self.name_e.delete(0, "end"); self.name_e.insert(0, name)
@@ -1448,20 +1638,40 @@ class ProfilesTab(ttk.Frame):
             self._add_pa(pa)
 
     def _new(self):
-        self.lb.selection_clear(0, "end")
+        self.lb.clear_selection()
         self.name_e.delete(0, "end")
         self.domain_e.delete(0, "end")
         self.mgmt_vlan_e.delete(0, "end")
         self.vlans_text.delete("1.0", "end")
         self._clear_vars(); self._clear_pa()
 
-    def _delete(self):
-        sel = self.lb.curselection()
-        if not sel:
+    def _duplicate(self):
+        name = self.lb.get_selected()
+        if not name:
+            _dialog("No Selection", "Select a profile to duplicate.")
             return
-        name = self.lb.get(sel[0])
-        if messagebox.askyesno("Delete", f"Delete profile '{name}'?"):
-            del self.app.profiles[name]
+        data = json.loads(json.dumps(self.app.profiles.get(name, {})))
+        new_name = _copy_name(name, self.app.profiles)
+        self.app.profiles[new_name] = data
+        save_json("profiles.json", self.app.profiles)
+        self._refresh()
+        self.app.gen_tab.refresh_combos()
+        self.lb.select(new_name)
+
+    def _delete(self):
+        names = self.lb.get_checked()
+        if not names:
+            sel = self.lb.get_selected()
+            if not sel:
+                return
+            names = [sel]
+        if len(names) == 1:
+            msg = f"Delete profile '{names[0]}'?"
+        else:
+            msg = f"Delete {len(names)} profiles?\n\n  " + "\n  ".join(names)
+        if _ask("Delete", msg):
+            for name in names:
+                self.app.profiles.pop(name, None)
             save_json("profiles.json", self.app.profiles)
             self._refresh(); self._new()
             self.app.gen_tab.refresh_combos()
@@ -1469,7 +1679,7 @@ class ProfilesTab(ttk.Frame):
     def _save(self):
         name = self.name_e.get().strip()
         if not name:
-            messagebox.showwarning("Missing", "Enter a profile name."); return
+            _dialog("Missing", "Enter a profile name.", "warning"); return
 
         role_vars = {}
         for r in self.var_rows:
@@ -1485,11 +1695,9 @@ class ProfilesTab(ttk.Frame):
                             "role": r["role"].get(),
                             "description": r["desc"].get().strip()})
 
-        sel = self.lb.curselection()
-        if sel:
-            old = self.lb.get(sel[0])
-            if old != name and old in self.app.profiles:
-                del self.app.profiles[old]
+        old = self.lb.get_selected()
+        if old and old != name and old in self.app.profiles:
+            del self.app.profiles[old]
 
         self.app.profiles[name] = {
             "domain_name":      self.domain_e.get().strip(),
@@ -1500,7 +1708,7 @@ class ProfilesTab(ttk.Frame):
         }
         save_json("profiles.json", self.app.profiles)
         self._refresh(); self.app.gen_tab.refresh_combos()
-        messagebox.showinfo("Saved", f"Profile '{name}' saved.")
+        _dialog("Saved", f"Profile '{name}' saved.")
 
 
 # ===================================================================
@@ -1669,7 +1877,7 @@ class BaseTab(ttk.Frame):
 
         self.app.base = data
         save_json("base_settings.json", data)
-        messagebox.showinfo("Saved", "Base settings saved.")
+        _dialog("Saved", "Base settings saved.")
 
 
 # ===================================================================
@@ -2220,10 +2428,9 @@ class App:
                     fp = os.path.join(DATA_DIR, name)
                     if os.path.exists(fp):
                         zf.write(fp, name)
-            messagebox.showinfo("Exported",
-                                f"Settings exported to:\n{path}")
+            _dialog("Exported", f"Settings exported to:\n{path}")
         except Exception as exc:
-            messagebox.showerror("Export Error", str(exc))
+            _dialog("Export Error", str(exc), "error")
 
     def _import_settings(self):
         path = filedialog.askopenfilename(
@@ -2237,11 +2444,11 @@ class App:
                 names = zf.namelist()
                 valid = [n for n in names if n in self._SETTINGS_FILES]
                 if not valid:
-                    messagebox.showwarning(
-                        "Invalid",
-                        "The selected ZIP does not contain NetForge settings.")
+                    _dialog("Invalid",
+                            "The selected ZIP does not contain NetForge settings.",
+                            "warning")
                     return
-                if not messagebox.askyesno(
+                if not _ask(
                         "Import Settings",
                         f"This will overwrite your current settings:\n\n"
                         f"  {', '.join(valid)}\n\n"
@@ -2251,11 +2458,11 @@ class App:
                 for name in valid:
                     zf.extract(name, DATA_DIR)
         except zipfile.BadZipFile:
-            messagebox.showerror("Import Error",
-                                 "The selected file is not a valid ZIP.")
+            _dialog("Import Error", "The selected file is not a valid ZIP.",
+                    "error")
             return
         except Exception as exc:
-            messagebox.showerror("Import Error", str(exc))
+            _dialog("Import Error", str(exc), "error")
             return
 
         self._push_recent("zips", path)
@@ -2265,9 +2472,8 @@ class App:
         self.profiles = load_json("profiles.json",      {})
         self.base     = load_json("base_settings.json", {})
         self._rebuild_tabs()
-        messagebox.showinfo("Imported",
-                            "Settings imported successfully.\n"
-                            "All tabs have been refreshed.")
+        _dialog("Imported",
+                "Settings imported successfully.\nAll tabs have been refreshed.")
 
     # ---- recent items -------------------------------------------------------
 
@@ -2311,29 +2517,27 @@ class App:
 
     def _open_recent_profile(self, name):
         if name not in self.profiles:
-            messagebox.showwarning("Recent Profile",
-                                   f"Profile '{name}' no longer exists.")
+            _dialog("Recent Profile",
+                    f"Profile '{name}' no longer exists.", "warning")
             return
         self.nb.select(0)
         self.gen_tab.profile_cb.set(name)
 
     def _open_recent_zip(self, path):
         if not os.path.isfile(path):
-            messagebox.showwarning("Recent File",
-                                   f"File not found:\n{path}")
+            _dialog("Recent File", f"File not found:\n{path}", "warning")
             return
         self._import_settings_from_path(path)
 
     def _open_recent_config(self, path):
         if not os.path.isfile(path):
-            messagebox.showwarning("Recent Config",
-                                   f"File not found:\n{path}")
+            _dialog("Recent Config", f"File not found:\n{path}", "warning")
             return
         try:
             with open(path, encoding="utf-8") as f:
                 text = f.read()
         except Exception as exc:
-            messagebox.showerror("Open Error", str(exc))
+            _dialog("Open Error", str(exc), "error")
             return
         # navigate to Generate Config tab, step 3, and load into preview
         self.nb.select(0)
