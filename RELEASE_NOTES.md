@@ -1,3 +1,54 @@
+# NetForge v1.3.0 — Release Notes
+
+## New Feature: Work Order Number Field
+
+- Step 3 (Switch Details) now includes a **Work Order #** field
+- When filled in, the work order number appears as a comment in the generated config header: `! Work Order: <number>`
+- `{{ work_order }}` is now a supported variable in the output filename template (Base Settings → Filename Template)
+  - Example: `{{ hostname }}_{{ work_order }}` produces `SW-CORE-01_WO-12345.txt`
+
+## New Feature: Output Filename Templates
+
+- Generated config filenames are now driven by a customizable **Filename Template** in Base Settings
+- Supported variables: `{{ hostname }}`, `{{ model }}`, `{{ profile }}`, `{{ date }}`, `{{ work_order }}`
+- Default template: `{{ hostname }}_{{ profile }}_{{ model }}_{{ work_order }}`
+- Invalid filename characters are automatically stripped from the result
+
+## New Feature: Quick-Copy Section Toolbar
+
+- The config preview pane now has a **Copy section** toolbar with one button per named config section
+- Sections: **Global / Base**, **VLANs**, **Interfaces**, **Management**, **Line Config**, **Banner / End**
+- Buttons are enabled only after a config is generated and disabled when the section is empty
+- Clicking a section button copies only that block to the clipboard
+
+## New Feature: Recent Files Menu
+
+- The **File** menu now contains three **Recent** sub-menus: **Recent Profiles**, **Recent Settings ZIPs**, and **Recent Configs**
+- Recently used profiles are remembered and can be selected directly from the menu to jump straight to the Generate tab
+- Recently imported settings ZIPs can be re-imported from the menu
+- Recently saved configs can be re-opened into the config preview pane
+- Up to 10 recent items are tracked per category and persisted across sessions
+
+## New Feature: Duplicate Action for Models, Roles, and Profiles
+
+- Models, Roles, and Profiles tabs now each have a **Duplicate** button
+- Duplicating an item creates a copy with a unique name (e.g., `My Profile (copy)`)
+- The duplicate is immediately selected and ready to edit
+
+## New Feature: Checkbox Multi-Select Delete
+
+- The item lists in Models, Roles, and Profiles tabs now use a checkbox-based list (`_CheckList`)
+- Check multiple items and click **Delete** to remove them all at once
+- Single-item delete still works by selecting (clicking) an item without checking it
+
+## UI Improvements
+
+- **Read-only config preview** — the config preview pane is now read-only; it can no longer be accidentally edited
+- **Themed dialogs** — all info, warning, and error message boxes replaced with fully themed custom dialogs (`_dialog` and `_ask`) that match the active theme
+- **Config preview cleared on back** — navigating back from Step 3 to Step 2 now clears the preview pane and disables the section copy buttons
+
+---
+
 # NetForge v1.2.2 — Release Notes
 
 ## Fix: OOB Management Port (GigabitEthernet0/0) on C9300

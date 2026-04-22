@@ -20,7 +20,7 @@ import zipfile
 from tkinter import ttk, filedialog, scrolledtext
 from jinja2 import Environment
 
-VERSION = "1.2.2"
+VERSION = "1.3.0"
 _RECENT_MAX = 10
 
 
@@ -406,15 +406,18 @@ def _copy_name(name, existing):
     return candidate
 
 
-def _apply_filename_template(template, *, hostname="", model="", profile=""):
+def _apply_filename_template(template, *, hostname="", model="", profile="",
+                             work_order=""):
     """Expand {{ var }} placeholders in a filename template.
 
-    Supported variables: hostname, model, profile, date (YYYY-MM-DD).
+    Supported variables: hostname, model, profile, date (YYYY-MM-DD),
+    work_order.
     Returns a sanitized string safe for use as a file name.
     """
     today = date.today().strftime("%Y-%m-%d")
     subs = {"hostname": hostname, "model": model,
-            "profile": profile, "date": today}
+            "profile": profile, "date": today,
+            "work_order": work_order}
     result = template
     for key, val in subs.items():
         result = result.replace("{{ " + key + " }}", val)
@@ -611,7 +614,12 @@ def render_config_sections(model, profile, roles, base, sw):
 
     # ── 1  Global / Base ────────────────────────────────────────────────
     gb = []
-    gb.append(f"!\n! {sw['hostname']} - Generated Configuration\n!")
+    wo_line = f"! Work Order: {sw['work_order']}" if sw.get("work_order") else ""
+    header = f"!\n! {sw['hostname']} - Generated Configuration"
+    if wo_line:
+        header += f"\n{wo_line}"
+    header += "\n!"
+    gb.append(header)
     gb.append("configure terminal")
     gb.append(base.get("global_services", ""))
     gb.append(f"hostname {sw['hostname']}")
@@ -944,13 +952,14 @@ class GenerateTab(ttk.Frame):
         ttk.Label(form, text="Step 3 - Enter Per-Switch Details",
                   style="Sec.TLabel").pack(anchor="w", padx=5, pady=(5, 10))
 
-        self.hostname  = _field(form, "Hostname")
-        self.secret    = _field(form, "Enable Secret")
-        self.password  = _field(form, "Admin Password")
-        self.domain    = _field(form, "Domain Name")
-        self.mgmt_ip   = _field(form, "Management IP")
-        self.mgmt_mask = _field(form, "Subnet Mask", "255.255.255.0")
-        self.gateway   = _field(form, "Default Gateway")
+        self.hostname    = _field(form, "Hostname")
+        self.secret      = _field(form, "Enable Secret")
+        self.password    = _field(form, "Admin Password")
+        self.domain      = _field(form, "Domain Name")
+        self.mgmt_ip     = _field(form, "Management IP")
+        self.mgmt_mask   = _field(form, "Subnet Mask", "255.255.255.0")
+        self.gateway     = _field(form, "Default Gateway")
+        self.work_order  = _field(form, "Work Order #")
 
         # OOB management port (Gi0/0) - only shown for models that have one
         self.oob_frame = ttk.Frame(form)
@@ -1166,6 +1175,7 @@ class GenerateTab(ttk.Frame):
             "default_gateway": self.gateway.get().strip(),
             "oob_ip":          self.oob_ip.get().strip(),
             "oob_mask":        self.oob_mask.get().strip(),
+            "work_order":      self.work_order.get().strip(),
         }
 
     def _get_pa_list(self):
@@ -1223,6 +1233,7 @@ class GenerateTab(ttk.Frame):
             hostname=hostname,
             model=self.model_cb.get(),
             profile=self.profile_cb.get(),
+            work_order=self.work_order.get().strip(),
         )
         path = filedialog.asksaveasfilename(
             defaultextension=".txt", initialfile=initial,
