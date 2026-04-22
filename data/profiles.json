@@ -4,11 +4,5 @@
     "vlan_definitions": "interface vlan1\nno ip address\nshutdown\nexit",
     "role_variables": {},
     "port_assignments": []
-  },
-  "test (copy)": {
-    "mgmt_vlan": "3",
-    "vlan_definitions": "interface vlan1\nno ip address\nshutdown\nexit",
-    "role_variables": {},
-    "port_assignments": []
   }
 }

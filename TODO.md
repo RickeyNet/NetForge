@@ -39,7 +39,7 @@ Feature ideas based on the current app structure and product scope.
 - [x] Add output naming templates
   Support file naming patterns like `{{ hostname }}_{{ profile }}` when saving generated configs or batch output.
 
-- [ ] Add quick-copy actions for sections
+- [x] Add quick-copy actions for sections
   Copy only the management VLAN block, only interface configs, or only the base/global sections instead of always copying the full config.
 
 ## Data Model Enhancements

@@ -12,5 +12,5 @@
   "banner": "",
   "disabled_port_template": "description //Disabled Port\nswitchport access vlan {{ blackhole_vlan }}\nswitchport mode access\nshutdown\nspanning-tree bpduguard enable",
   "port_display_mode": "range",
-  "filename_template": "{{ hostname }}_config"
+  "filename_template": "{{ hostname }}_{{ model }}_{{ profile }}"
 }

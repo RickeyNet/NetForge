@@ -593,6 +593,154 @@ class _CheckList(tk.Frame):
 # ===================================================================
 #  CONFIG RENDERER
 # ===================================================================
+def render_config_sections(model, profile, roles, base, sw):
+    """Return an ordered dict of named config sections.
+
+    Keys (in order): "Global / Base", "VLANs", "Interfaces",
+                     "Management", "Post-Interface", "Line Config",
+                     "Banner / End"
+    Each value is a ready-to-paste block (empty string if nothing to show).
+    Used by render_config() and by the quick-copy toolbar.
+    """
+    env = Environment()
+    role_vars = profile.get("role_variables", {})
+    stack = model.get("stack_members", 1)
+
+    def build(parts):
+        return "\n\n".join(p.strip() for p in parts if p.strip())
+
+    # ── 1  Global / Base ────────────────────────────────────────────────
+    gb = []
+    gb.append(f"!\n! {sw['hostname']} - Generated Configuration\n!")
+    gb.append("configure terminal")
+    gb.append(base.get("global_services", ""))
+    gb.append(f"hostname {sw['hostname']}")
+    gb.append(base.get("mgmt_vrf", ""))
+    gb.append(base.get("logging", ""))
+    gb.append(f"enable secret {sw['enable_secret']}")
+    username = base.get("local_username", "admin") or "admin"
+    gb.append(f"username {username} privilege 0 secret "
+              f"{sw['admin_password']}")
+    gb.append(base.get("aaa", ""))
+    gb.append(base.get("security", ""))
+    provision = model.get("provision", "").strip()
+    if provision:
+        for member in range(1, stack + 1):
+            gb.append(f"switch {member} provision {provision}")
+    gb.append(f"ip domain name {sw['domain_name']}")
+    gb.append(base.get("ssh", ""))
+    gb.append(base.get("switching", ""))
+
+    # ── 2  VLANs ────────────────────────────────────────────────────────
+    vl = []
+    vl.append(profile.get("vlan_definitions", ""))
+    for cs in base.get("custom_sections", []):
+        if cs.get("position") == "pre-interface":
+            cmds = cs.get("commands", "").strip()
+            if cmds:
+                try:
+                    cmds = env.from_string(cmds).render(**role_vars)
+                except Exception:
+                    pass
+                vl.append(cmds)
+
+    # ── 3  Interfaces ───────────────────────────────────────────────────
+    ifaces = []
+    dis_tpl = base.get("disabled_port_template", "").strip()
+    all_pgs = expand_port_groups_for_stack(
+        model.get("port_groups", []), stack)
+    if dis_tpl and all_pgs:
+        try:
+            rendered_dis = env.from_string(dis_tpl).render(**role_vars)
+        except Exception:
+            rendered_dis = dis_tpl
+        for pg in all_pgs:
+            if pg.get("prefix", "").startswith("GigabitEthernet0/"):
+                continue
+            if pg["start"] == pg["end"]:
+                hdr = f"interface {pg['prefix']}{pg['start']}"
+            else:
+                hdr = (f"interface range {pg['prefix']}"
+                       f"{pg['start']}-{pg['end']}")
+            ifaces.append(f"{hdr}\n{rendered_dis}\nexit")
+    ifaces.append("interface vlan1\nno ip address\nshutdown\nexit")
+    mgmt_port_pgs = [pg for pg in model.get("port_groups", [])
+                     if pg.get("prefix", "").startswith("GigabitEthernet0/")]
+    if mgmt_port_pgs:
+        mgmt_assigned = any(
+            pa.get("role") and pa["role"] != "unassigned"
+            and "GigabitEthernet0/" in pa.get("interfaces", "")
+            for pa in profile.get("port_assignments", [])
+        )
+        if not mgmt_assigned:
+            pg = mgmt_port_pgs[0]
+            iface = f"{pg['prefix']}{pg['start']}"
+            oob_ip   = sw.get("oob_ip", "")
+            oob_mask = sw.get("oob_mask", "")
+            if oob_ip and oob_mask:
+                ifaces.append(f"interface {iface}\n"
+                              f"ip address {oob_ip} {oob_mask}\n"
+                              f"negotiation auto\nexit")
+            else:
+                mgmt_cmds = base.get("mgmt_port", "").strip()
+                if mgmt_cmds:
+                    ifaces.append(f"interface {iface}\n{mgmt_cmds}")
+    for pa in profile.get("port_assignments", []):
+        if not pa.get("role") or pa["role"] == "unassigned":
+            continue
+        role = roles.get(pa.get("role", ""), {})
+        cmds = role.get("commands", "")
+        try:
+            rendered = env.from_string(cmds).render(
+                description=pa.get("description", ""), **role_vars)
+        except Exception:
+            rendered = cmds
+        iface_name = pa.get("interfaces", "")
+        ifaces.append(f"interface {iface_name}\n{rendered}\nexit")
+
+    # ── 4  Management VLAN & Gateway ────────────────────────────────────
+    mgmt_vlan = profile.get("mgmt_vlan", "1")
+    mgmt = [
+        f"interface vlan{mgmt_vlan}\n"
+        f"description //Switch MGMT\n"
+        f"ip address {sw['mgmt_ip']} {sw['mgmt_mask']}\n"
+        f"exit",
+        f"ip default-gateway {sw['default_gateway']}",
+    ]
+
+    # ── 5  Post-Interface Custom Sections ────────────────────────────────
+    post = []
+    for cs in base.get("custom_sections", []):
+        if cs.get("position") == "post-interface":
+            cmds = cs.get("commands", "").strip()
+            if cmds:
+                try:
+                    cmds = env.from_string(cmds).render(**role_vars)
+                except Exception:
+                    pass
+                post.append(cmds)
+
+    # ── 6  Line Config ───────────────────────────────────────────────────
+    lc = [base.get("line_config", "")]
+
+    # ── 7  Banner / End ──────────────────────────────────────────────────
+    bn = []
+    banner = base.get("banner", "").strip()
+    if banner:
+        bn.append(f"banner login ^\n{banner}\n^")
+    bn.append("end")
+
+    return {
+        "Global / Base":  build(gb),
+        "VLANs":          build(vl),
+        "Interfaces":     build(ifaces),
+        "Management":     build(mgmt),
+        "Post-Interface": build(post),
+        "Line Config":    build(lc),
+        "Banner / End":   build(bn),
+    }
+
+
 def render_config(model, profile, roles, base, sw):
     """Build the full IOS config string from all parts.
 
@@ -605,168 +753,8 @@ def render_config(model, profile, roles, base, sw):
                                       domain_name, mgmt_ip, mgmt_mask,
                                       default_gateway)
     """
-    env = Environment()
-    role_vars = profile.get("role_variables", {})
-    parts = []                       # each entry is one config "block"
-
-    def add(text):
-        text = text.strip()
-        if text:
-            parts.append(text)
-
-    # -- header / global services -----------------------------------------
-    parts.append(f"!\n! {sw['hostname']} - Generated Configuration\n!")
-    parts.append("configure terminal")
-    add(base.get("global_services", ""))
-
-    # -- hostname ---------------------------------------------------------
-    parts.append(f"hostname {sw['hostname']}")
-
-    # -- management VRF ---------------------------------------------------
-    add(base.get("mgmt_vrf", ""))
-
-    # -- logging ----------------------------------------------------------
-    add(base.get("logging", ""))
-
-    # -- credentials ------------------------------------------------------
-    parts.append(f"enable secret {sw['enable_secret']}")
-    username = base.get("local_username", "admin") or "admin"
-    parts.append(f"username {username} privilege 0 secret "
-                 f"{sw['admin_password']}")
-
-    # -- AAA --------------------------------------------------------------
-    add(base.get("aaa", ""))
-
-    # -- security ---------------------------------------------------------
-    add(base.get("security", ""))
-
-    # -- switch provision (from model) ------------------------------------
-    provision = model.get("provision", "").strip()
-    stack = model.get("stack_members", 1)
-    if provision:
-        for member in range(1, stack + 1):
-            parts.append(f"switch {member} provision {provision}")
-
-    # -- domain name ------------------------------------------------------
-    parts.append(f"ip domain name {sw['domain_name']}")
-
-    # -- SSH / crypto -----------------------------------------------------
-    add(base.get("ssh", ""))
-
-    # -- switching features (STP, VTP, redundancy, etc.) ------------------
-    add(base.get("switching", ""))
-
-    # -- VLAN definitions from profile ------------------------------------
-    add(profile.get("vlan_definitions", ""))
-
-    # -- custom sections: before interfaces -------------------------------
-    for cs in base.get("custom_sections", []):
-        if cs.get("position") == "pre-interface":
-            cmds = cs.get("commands", "").strip()
-            if cmds:
-                try:
-                    cmds = env.from_string(cmds).render(**role_vars)
-                except Exception:
-                    pass
-                add(cmds)
-
-    # -- disable ALL ports first (from model port groups) -----------------
-    dis_tpl = base.get("disabled_port_template", "").strip()
-    all_pgs = expand_port_groups_for_stack(
-        model.get("port_groups", []), stack)
-    if dis_tpl and all_pgs:
-        try:
-            rendered_dis = env.from_string(dis_tpl).render(**role_vars)
-        except Exception:
-            rendered_dis = dis_tpl
-
-        for pg in all_pgs:
-            # Skip the OOB management port (e.g. GigabitEthernet0/0) —
-            # it's a routed port that doesn't accept switchport commands
-            # and is configured separately via the mgmt_port setting.
-            if pg.get("prefix", "").startswith("GigabitEthernet0/"):
-                continue
-            if pg["start"] == pg["end"]:
-                hdr = f"interface {pg['prefix']}{pg['start']}"
-            else:
-                hdr = f"interface range {pg['prefix']}{pg['start']}-{pg['end']}"
-            parts.append(f"{hdr}\n{rendered_dis}\nexit")
-
-    # -- VLAN 1 shutdown --------------------------------------------------
-    parts.append("interface vlan1\nno ip address\nshutdown\nexit")
-
-    # -- management port (Gi0/0, etc.) ------------------------------------
-    # Only apply the default mgmt_port base setting when the user has NOT
-    # assigned a role to GigabitEthernet0/x via the port-assignment table.
-    mgmt_port_pgs = [pg for pg in model.get("port_groups", [])
-                     if pg.get("prefix", "").startswith("GigabitEthernet0/")]
-    if mgmt_port_pgs:
-        mgmt_assigned = any(
-            pa.get("role") and pa["role"] != "unassigned"
-            and "GigabitEthernet0/" in pa.get("interfaces", "")
-            for pa in profile.get("port_assignments", [])
-        )
-        if not mgmt_assigned:
-            pg = mgmt_port_pgs[0]
-            iface = f"{pg['prefix']}{pg['start']}"
-            oob_ip = sw.get("oob_ip", "")
-            oob_mask = sw.get("oob_mask", "")
-            if oob_ip and oob_mask:
-                parts.append(f"interface {iface}\n"
-                             f"ip address {oob_ip} {oob_mask}\n"
-                             f"negotiation auto\nexit")
-            else:
-                mgmt_cmds = base.get("mgmt_port", "").strip()
-                if mgmt_cmds:
-                    parts.append(f"interface {iface}\n{mgmt_cmds}")
-
-    # -- port assignments from profile (override disabled ports) ----------
-    for pa in profile.get("port_assignments", []):
-        if not pa.get("role") or pa["role"] == "unassigned":
-            continue
-        role = roles.get(pa.get("role", ""), {})
-        cmds = role.get("commands", "")
-        try:
-            rendered = env.from_string(cmds).render(
-                description=pa.get("description", ""), **role_vars)
-        except Exception:
-            rendered = cmds
-        iface = pa.get("interfaces", "")
-        parts.append(f"interface {iface}\n{rendered}\nexit")
-
-    # -- management VLAN interface ----------------------------------------
-    mgmt_vlan = profile.get("mgmt_vlan", "1")
-    parts.append(f"interface vlan{mgmt_vlan}\n"
-                 f"description //Switch MGMT\n"
-                 f"ip address {sw['mgmt_ip']} {sw['mgmt_mask']}\n"
-                 f"exit")
-
-    # -- default gateway --------------------------------------------------
-    parts.append(f"ip default-gateway {sw['default_gateway']}")
-
-    # -- custom sections: after interfaces --------------------------------
-    for cs in base.get("custom_sections", []):
-        if cs.get("position") == "post-interface":
-            cmds = cs.get("commands", "").strip()
-            if cmds:
-                try:
-                    cmds = env.from_string(cmds).render(**role_vars)
-                except Exception:
-                    pass
-                add(cmds)
-
-    # -- line config ------------------------------------------------------
-    add(base.get("line_config", ""))
-
-    # -- banner -----------------------------------------------------------
-    banner = base.get("banner", "").strip()
-    if banner:
-        parts.append(f"banner login ^\n{banner}\n^")
-
-    # -- end --------------------------------------------------------------
-    parts.append("end")
-
-    return "\n\n".join(parts) + "\n"
+    sections = render_config_sections(model, profile, roles, base, sw)
+    return "\n\n".join(s for s in sections.values() if s) + "\n"
 
 
 # ===================================================================
@@ -780,6 +768,7 @@ class GenerateTab(ttk.Frame):
         self.app = app
         self.current_step = 0
         self.pa_rows = []          # port-assignment rows in step 2
+        self._sections = {}        # populated after each generate
         self._build()
 
     # ------------------------------------------------------------------ build
@@ -977,6 +966,21 @@ class GenerateTab(ttk.Frame):
         paned.add(right, weight=1)
         ttk.Label(right, text="Config Preview",
                   style="Sec.TLabel").pack(anchor="w", padx=4, pady=(4, 0))
+
+        # quick-copy toolbar
+        qc_fr = ttk.Frame(right)
+        qc_fr.pack(fill="x", padx=4, pady=(2, 0))
+        ttk.Label(qc_fr, text="Copy section:",
+                  style="Hint.TLabel").pack(side="left", padx=(0, 4))
+        self._qc_buttons = {}
+        for _sec_name in ("Global / Base", "VLANs", "Interfaces",
+                          "Management", "Line Config", "Banner / End"):
+            btn = ttk.Button(
+                qc_fr, text=_sec_name, state="disabled",
+                command=lambda n=_sec_name: self._copy_section(n))
+            btn.pack(side="left", padx=2)
+            self._qc_buttons[_sec_name] = btn
+
         self.preview = scrolledtext.ScrolledText(
             right, wrap="none", font=("Consolas", 10),
             bg=C["bg_input"], fg=C["green"], insertbackground=C["fg"],
@@ -1092,6 +1096,9 @@ class GenerateTab(ttk.Frame):
         self.preview.configure(state="normal")
         self.preview.delete("1.0", "end")
         self.preview.configure(state="disabled")
+        self._sections = {}
+        for btn in self._qc_buttons.values():
+            btn.configure(state="disabled")
         self._show_step(1)
 
     def _on_display_mode_changed(self):
@@ -1185,8 +1192,11 @@ class GenerateTab(ttk.Frame):
         profile["port_assignments"] = self._get_pa_list()
 
         try:
-            cfg = render_config(self.app.models[mn], profile,
-                                self.app.roles, self.app.base, sw)
+            self._sections = render_config_sections(
+                self.app.models[mn], profile,
+                self.app.roles, self.app.base, sw)
+            cfg = "\n\n".join(
+                s for s in self._sections.values() if s) + "\n"
         except Exception as exc:
             _dialog("Render Error", str(exc), "error")
             return
@@ -1195,6 +1205,9 @@ class GenerateTab(ttk.Frame):
         self.preview.delete("1.0", "end")
         self.preview.insert("1.0", cfg)
         self.preview.configure(state="disabled")
+        for name, btn in self._qc_buttons.items():
+            state = "normal" if self._sections.get(name, "").strip() else "disabled"
+            btn.configure(state=state)
         self.app._push_recent("profiles", pn)
 
     def _save(self):
@@ -1204,7 +1217,7 @@ class GenerateTab(ttk.Frame):
             return
         hostname = self.hostname.get().strip() or "switch_config"
         template = self.app.base.get("filename_template",
-                                     "{{ hostname }}_config")
+                                     "{{ hostname }}_{{ model }}_{{ profile }}")
         initial = _apply_filename_template(
             template,
             hostname=hostname,
@@ -1212,7 +1225,7 @@ class GenerateTab(ttk.Frame):
             profile=self.profile_cb.get(),
         )
         path = filedialog.asksaveasfilename(
-            defaultextension=".txt", initialfile=f"{initial}.txt",
+            defaultextension=".txt", initialfile=initial,
             filetypes=[("Text", "*.txt"), ("All", "*.*")])
         if path:
             with open(path, "w", encoding="utf-8") as f:
@@ -1228,6 +1241,15 @@ class GenerateTab(ttk.Frame):
         self.clipboard_clear()
         self.clipboard_append(txt)
         _dialog("Copied", "Config copied to clipboard.")
+
+    def _copy_section(self, name):
+        text = self._sections.get(name, "").strip()
+        if not text:
+            _dialog("Empty", f"The '{name}' section is empty.", "warning")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        _dialog("Copied", f"'{name}' copied to clipboard.")
 
 
 # ===================================================================
@@ -1771,7 +1793,7 @@ class BaseTab(ttk.Frame):
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.fields["filename_template"] = _field(
             form, "Filename Template",
-            b.get("filename_template", "{{ hostname }}_config"))
+            b.get("filename_template", "{{ hostname }}_{{ model }}_{{ profile }}"))
 
         # text-area sections - order matches a typical IOS config
         sections = [
