@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+from datetime import date
 import tkinter as tk
 import zipfile
 from tkinter import ttk, filedialog, scrolledtext
@@ -403,6 +404,24 @@ def _copy_name(name, existing):
         n += 1
         candidate = f"{name} (copy {n})"
     return candidate
+
+
+def _apply_filename_template(template, *, hostname="", model="", profile=""):
+    """Expand {{ var }} placeholders in a filename template.
+
+    Supported variables: hostname, model, profile, date (YYYY-MM-DD).
+    Returns a sanitized string safe for use as a file name.
+    """
+    today = date.today().strftime("%Y-%m-%d")
+    subs = {"hostname": hostname, "model": model,
+            "profile": profile, "date": today}
+    result = template
+    for key, val in subs.items():
+        result = result.replace("{{ " + key + " }}", val)
+        result = result.replace("{{" + key + "}}", val)
+    # remove characters invalid in file names on Windows and Unix
+    result = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", result).strip()
+    return result or "config"
 
 
 def _dialog(title, msg, kind="info"):
@@ -1183,9 +1202,17 @@ class GenerateTab(ttk.Frame):
         if not txt:
             _dialog("Empty", "Generate a config first.")
             return
-        name = self.hostname.get().strip() or "switch_config"
+        hostname = self.hostname.get().strip() or "switch_config"
+        template = self.app.base.get("filename_template",
+                                     "{{ hostname }}_config")
+        initial = _apply_filename_template(
+            template,
+            hostname=hostname,
+            model=self.model_cb.get(),
+            profile=self.profile_cb.get(),
+        )
         path = filedialog.asksaveasfilename(
-            defaultextension=".txt", initialfile=f"{name}_config.txt",
+            defaultextension=".txt", initialfile=f"{initial}.txt",
             filetypes=[("Text", "*.txt"), ("All", "*.*")])
         if path:
             with open(path, "w", encoding="utf-8") as f:
@@ -1734,6 +1761,17 @@ class BaseTab(ttk.Frame):
         _section(form, "Credentials")
         self.fields["local_username"] = _field(
             form, "Local Username", b.get("local_username", "admin"))
+
+        # output settings
+        _section(form, "Output Settings")
+        ttk.Label(form,
+                  text="  Filename template used when saving generated configs.\n"
+                  "  Available variables: {{ hostname }}, {{ model }}, "
+                  "{{ profile }}, {{ date }}",
+                  style="Hint.TLabel").pack(anchor="w", padx=5)
+        self.fields["filename_template"] = _field(
+            form, "Filename Template",
+            b.get("filename_template", "{{ hostname }}_config"))
 
         # text-area sections - order matches a typical IOS config
         sections = [

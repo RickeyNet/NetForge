@@ -11,5 +11,6 @@
   "line_config": "line con 0\nexec-timeout 9 0\nline vty 0 4\nexec-timeout 9 0\ntransport input ssh\nline vty 5 15\nexec-timeout 0 0\ntransport input none\nexit",
   "banner": "",
   "disabled_port_template": "description //Disabled Port\nswitchport access vlan {{ blackhole_vlan }}\nswitchport mode access\nshutdown\nspanning-tree bpduguard enable",
-  "port_display_mode": "range"
+  "port_display_mode": "range",
+  "filename_template": "{{ hostname }}_config"
 }

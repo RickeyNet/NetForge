@@ -36,8 +36,8 @@ Feature ideas based on the current app structure and product scope.
 - [ ] Add a config diff view
   Compare the newly generated config against a previously saved config or the current preview so engineers can see exactly what changed.
 
-- [ ] Add output naming templates
-  Support file naming patterns like `{{ hostname }}_{{ profile }}_{{ date }}` when saving generated configs or batch output.
+- [x] Add output naming templates
+  Support file naming patterns like `{{ hostname }}_{{ profile }}` when saving generated configs or batch output.
 
 - [ ] Add quick-copy actions for sections
   Copy only the management VLAN block, only interface configs, or only the base/global sections instead of always copying the full config.
