@@ -2330,9 +2330,18 @@ class App:
                                    f"File not found:\n{path}")
             return
         try:
-            os.startfile(path)
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
         except Exception as exc:
             messagebox.showerror("Open Error", str(exc))
+            return
+        # navigate to Generate Config tab, step 3, and load into preview
+        self.nb.select(0)
+        self.gen_tab._show_step(2)
+        self.gen_tab.preview.configure(state="normal")
+        self.gen_tab.preview.delete("1.0", "end")
+        self.gen_tab.preview.insert("1.0", text)
+        self.gen_tab.preview.configure(state="disabled")
 
     # -------------------------------------------------------------------------
 
