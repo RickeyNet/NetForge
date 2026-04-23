@@ -592,6 +592,12 @@ class _CheckList(tk.Frame):
         if total > ch:
             self._canvas.yview_moveto(y / total)
 
+    def select_all(self):
+        """Check all checkboxes. If all are already checked, uncheck all."""
+        all_checked = all(v.get() for v in self._vars.values()) if self._vars else False
+        for v in self._vars.values():
+            v.set(not all_checked)
+
 
 # ===================================================================
 #  CONFIG RENDERER
@@ -980,14 +986,16 @@ class GenerateTab(ttk.Frame):
         qc_fr = ttk.Frame(right)
         qc_fr.pack(fill="x", padx=4, pady=(2, 0))
         ttk.Label(qc_fr, text="Copy section:",
-                  style="Hint.TLabel").pack(side="left", padx=(0, 4))
+                  style="Hint.TLabel").grid(row=0, column=0, padx=(0, 4))
         self._qc_buttons = {}
-        for _sec_name in ("Global / Base", "VLANs", "Interfaces",
-                          "Management", "Line Config", "Banner / End"):
+        _qc_sec_names = ("Global / Base", "VLANs", "Interfaces",
+                         "Management", "Line Config", "Banner / End")
+        for _col, _sec_name in enumerate(_qc_sec_names, start=1):
+            qc_fr.columnconfigure(_col, weight=1, uniform="qcbtn")
             btn = ttk.Button(
                 qc_fr, text=_sec_name, state="disabled",
                 command=lambda n=_sec_name: self._copy_section(n))
-            btn.pack(side="left", padx=2)
+            btn.grid(row=0, column=_col, padx=2, sticky="ew")
             self._qc_buttons[_sec_name] = btn
 
         self.preview = scrolledtext.ScrolledText(
@@ -1284,9 +1292,10 @@ class ModelsTab(ttk.Frame):
         self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
-        ttk.Button(bf, text="New",       command=self._new).pack(side="left", padx=2)
-        ttk.Button(bf, text="Duplicate", command=self._duplicate).pack(side="left", padx=2)
-        ttk.Button(bf, text="Delete",    command=self._delete,
+        ttk.Button(bf, text="New",        command=self._new).pack(side="left", padx=2)
+        ttk.Button(bf, text="Duplicate",  command=self._duplicate).pack(side="left", padx=2)
+        ttk.Button(bf, text="Select All", command=self.lb.select_all).pack(side="left", padx=2)
+        ttk.Button(bf, text="Delete",     command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
         # -- right: edit --
@@ -1447,9 +1456,10 @@ class RolesTab(ttk.Frame):
         self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
-        ttk.Button(bf, text="New",       command=self._new).pack(side="left", padx=2)
-        ttk.Button(bf, text="Duplicate", command=self._duplicate).pack(side="left", padx=2)
-        ttk.Button(bf, text="Delete",    command=self._delete,
+        ttk.Button(bf, text="New",        command=self._new).pack(side="left", padx=2)
+        ttk.Button(bf, text="Duplicate",  command=self._duplicate).pack(side="left", padx=2)
+        ttk.Button(bf, text="Select All", command=self.lb.select_all).pack(side="left", padx=2)
+        ttk.Button(bf, text="Delete",     command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
         # -- right: edit --
@@ -1558,9 +1568,10 @@ class ProfilesTab(ttk.Frame):
         self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
-        ttk.Button(bf, text="New",       command=self._new).pack(side="left", padx=2)
-        ttk.Button(bf, text="Duplicate", command=self._duplicate).pack(side="left", padx=2)
-        ttk.Button(bf, text="Delete",    command=self._delete,
+        ttk.Button(bf, text="New",        command=self._new).pack(side="left", padx=2)
+        ttk.Button(bf, text="Duplicate",  command=self._duplicate).pack(side="left", padx=2)
+        ttk.Button(bf, text="Select All", command=self.lb.select_all).pack(side="left", padx=2)
+        ttk.Button(bf, text="Delete",     command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
         # -- right: edit --
