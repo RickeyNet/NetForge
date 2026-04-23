@@ -17,7 +17,7 @@ import sys
 from datetime import date
 import tkinter as tk
 import zipfile
-from tkinter import ttk, filedialog, scrolledtext
+from tkinter import colorchooser, ttk, filedialog, scrolledtext
 from jinja2 import Environment
 
 VERSION = "1.3.0"
@@ -107,7 +107,39 @@ THEMES = {
         "red_hover":    "#39ff14",
         "sel_bg":       "#ffd700",
     },
+    "light": {
+        "name":         "Light",
+        "bg":           "#f0f0eb",
+        "bg2":          "#e2e2dc",
+        "bg_input":     "#ffffff",
+        "fg":           "#1e1e1e",
+        "fg_dim":       "#6a6a6a",
+        "accent":       "#0066cc",
+        "accent_hover": "#0055aa",
+        "border":       "#c0bfb5",
+        "green":        "#1a6e1a",
+        "red":          "#cc3333",
+        "red_hover":    "#aa2222",
+        "sel_bg":       "#cce0ff",
+    },
 }
+
+# Ordered list of (key, display-label) pairs that define a complete theme.
+# Used by the custom theme editor to render one color row per entry.
+THEME_KEYS = [
+    ("bg",           "Background"),
+    ("bg2",          "Panel Background"),
+    ("bg_input",     "Input Background"),
+    ("fg",           "Foreground"),
+    ("fg_dim",       "Foreground Dim"),
+    ("accent",       "Accent"),
+    ("accent_hover", "Accent Hover"),
+    ("border",       "Border / Selection"),
+    ("green",        "Config Text"),
+    ("red",          "Danger / Delete"),
+    ("red_hover",    "Danger Hover"),
+    ("sel_bg",       "Item Highlight"),
+]
 
 # Active colour palette - starts with default, updated by _load_theme()
 C = dict(THEMES["default"])
@@ -119,11 +151,17 @@ def _load_theme():
     tid = saved.get("theme", "default")
     if tid in THEMES:
         C.update(THEMES[tid])
+    else:
+        custom = saved.get("custom_themes", {})
+        if tid in custom:
+            C.update(custom[tid])
 
 
 def _save_theme(tid):
-    """Persist the selected theme id."""
-    save_json("theme.json", {"theme": tid})
+    """Persist the selected theme id, preserving any custom_themes data."""
+    saved = load_json("theme.json", {})
+    saved["theme"] = tid
+    save_json("theme.json", saved)
 
 
 def apply_theme(root):
@@ -494,6 +532,288 @@ def _dark_listbox(parent, **kw):
                       selectforeground=C["fg"],
                       selectmode="extended",
                       relief="flat", bd=2, **kw)
+
+
+# ===================================================================
+#  CUSTOM THEME EDITOR
+# ===================================================================
+class _ThemeEditorDialog:
+    """Modal dialog for creating and editing custom themes."""
+
+    def __init__(self, app, on_close=None):
+        self.app      = app
+        self.on_close = on_close
+        self._custom      = self._load_custom()   # tid → theme dict
+        self._selected_id = None
+        self._color_vars  = {}   # key → StringVar
+        self._swatches    = {}   # key → tk.Label (colored square)
+
+        dlg = tk.Toplevel()
+        self.dlg = dlg
+        dlg.title("Custom Theme Editor")
+        dlg.configure(bg=C["bg"])
+        dlg.resizable(True, True)
+        dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", self._close)
+
+        # ── outer layout ─────────────────────────────────────────────
+        outer = ttk.Frame(dlg, padding=10)
+        outer.pack(fill="both", expand=True)
+
+        # left: list + CRUD buttons
+        left = ttk.Frame(outer)
+        left.pack(side="left", fill="y", padx=(0, 12))
+
+        ttk.Label(left, text="Custom Themes",
+                  style="Sec.TLabel").pack(anchor="w", pady=(0, 4))
+        self.lb = tk.Listbox(
+            left, font=("Consolas", 10),
+            bg=C["bg_input"], fg=C["fg"],
+            selectbackground=C["border"], selectforeground=C["fg"],
+            selectmode="browse", relief="flat", bd=2, width=22, height=16)
+        self.lb.pack(fill="both", expand=True)
+        self.lb.bind("<<ListboxSelect>>", self._on_select)
+
+        bf = ttk.Frame(left)
+        bf.pack(fill="x", pady=(6, 0))
+        ttk.Button(bf, text="New",
+                   command=self._new).pack(side="left", padx=2)
+        ttk.Button(bf, text="Duplicate",
+                   command=self._dup).pack(side="left", padx=2)
+        ttk.Button(bf, text="Delete", style="Del.TButton",
+                   command=self._delete).pack(side="left", padx=2)
+
+        # right: editor form
+        right = ttk.Frame(outer)
+        right.pack(side="left", fill="both", expand=True)
+
+        ttk.Label(right, text="Theme Name").grid(
+            row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        self.name_e = ttk.Entry(right, width=26)
+        self.name_e.grid(row=0, column=1, columnspan=2,
+                         sticky="ew", pady=(0, 6))
+
+        for row_i, (key, label) in enumerate(THEME_KEYS, start=1):
+            var = tk.StringVar()
+            self._color_vars[key] = var
+
+            ttk.Label(right, text=label).grid(
+                row=row_i, column=0, sticky="w", padx=(0, 8), pady=2)
+
+            swatch = tk.Label(right, width=3, relief="groove",
+                              cursor="hand2", bg=C["bg_input"])
+            swatch.grid(row=row_i, column=1, padx=(0, 4), pady=2, sticky="ns")
+            self._swatches[key] = swatch
+
+            ent = ttk.Entry(right, textvariable=var, width=10)
+            ent.grid(row=row_i, column=2, sticky="w", pady=2)
+
+            var.trace_add("write", lambda *_, k=key: self._sync_swatch(k))
+            swatch.bind("<Button-1>", lambda e, k=key: self._pick_color(k))
+
+        right.columnconfigure(0, weight=1)
+
+        # ── footer buttons ────────────────────────────────────────────
+        footer = ttk.Frame(dlg, padding=(10, 0, 10, 10))
+        footer.pack(fill="x")
+        ttk.Button(footer, text="Preview",
+                   command=self._preview).pack(side="left", padx=2)
+        ttk.Button(footer, text="Save Theme",
+                   command=self._save_theme).pack(side="left", padx=2)
+        ttk.Button(footer, text="Close",
+                   command=self._close).pack(side="right")
+
+        self._refresh_list()
+        # pre-select the active custom theme if there is one, else blank slate
+        active_tid = load_json("theme.json", {}).get("theme", "default")
+        if active_tid in self._custom:
+            self._on_select_by_tid(active_tid)
+        elif self._custom:
+            self._on_select_by_tid(next(iter(self._custom)))
+        else:
+            self._new()   # seed editor with current active colours
+
+        dlg.update_idletasks()
+        try:
+            rx = (app.root.winfo_x()
+                  + (app.root.winfo_width()  - dlg.winfo_width())  // 2)
+            ry = (app.root.winfo_y()
+                  + (app.root.winfo_height() - dlg.winfo_height()) // 2)
+            dlg.geometry(f"+{max(0, rx)}+{max(0, ry)}")
+        except Exception:
+            pass
+
+        dlg.wait_window()
+
+    # ── persistence ───────────────────────────────────────────────────
+
+    def _load_custom(self):
+        saved = load_json("theme.json", {})
+        return dict(saved.get("custom_themes", {}))
+
+    def _persist(self):
+        saved = load_json("theme.json", {})
+        saved["custom_themes"] = self._custom
+        save_json("theme.json", saved)
+
+    # ── list management ───────────────────────────────────────────────
+
+    def _refresh_list(self):
+        self.lb.delete(0, "end")
+        for tid, t in self._custom.items():
+            self.lb.insert("end", t.get("name", tid))
+        if self._selected_id and self._selected_id in self._custom:
+            tids = list(self._custom.keys())
+            idx  = tids.index(self._selected_id)
+            self.lb.selection_set(idx)
+            self.lb.see(idx)
+
+    def _on_select(self, _=None):
+        sel = self.lb.curselection()
+        if not sel:
+            return
+        tid = list(self._custom.keys())[sel[0]]
+        self._on_select_by_tid(tid)
+
+    def _on_select_by_tid(self, tid):
+        if tid not in self._custom:
+            return
+        self._selected_id = tid
+        tids = list(self._custom.keys())
+        idx  = tids.index(tid)
+        self.lb.selection_clear(0, "end")
+        self.lb.selection_set(idx)
+        self.lb.see(idx)
+        t = self._custom[tid]
+        self.name_e.delete(0, "end")
+        self.name_e.insert(0, t.get("name", tid))
+        for key, var in self._color_vars.items():
+            var.set(t.get(key, ""))
+
+    # ── color helpers ─────────────────────────────────────────────────
+
+    def _sync_swatch(self, key):
+        val = self._color_vars[key].get().strip()
+        try:
+            self._swatches[key].configure(bg=val)
+        except tk.TclError:
+            pass
+
+    def _pick_color(self, key):
+        current = self._color_vars[key].get().strip() or C["bg"]
+        try:
+            result = colorchooser.askcolor(
+                color=current, title=f"Pick color — {key}",
+                parent=self.dlg)
+        except Exception:
+            return
+        if result and result[1]:
+            self._color_vars[key].set(result[1])
+
+    # ── unique ID helper ──────────────────────────────────────────────
+
+    def _unique_tid(self, base):
+        tid = base
+        n   = 2
+        while tid in self._custom or tid in THEMES:
+            tid = f"{base} {n}"
+            n  += 1
+        return tid
+
+    # ── CRUD ──────────────────────────────────────────────────────────
+
+    def _new(self):
+        self.lb.selection_clear(0, "end")
+        self._selected_id = None
+        self.name_e.delete(0, "end")
+        self.name_e.insert(0, "My Theme")
+        for key in self._color_vars:
+            self._color_vars[key].set(C.get(key, ""))
+
+    def _dup(self):
+        sel = self.lb.curselection()
+        if not sel:
+            _dialog("No Selection", "Select a theme to duplicate.", "warning")
+            return
+        tid      = list(self._custom.keys())[sel[0]]
+        data     = dict(self._custom[tid])
+        existing = [t.get("name", k) for k, t in self._custom.items()]
+        new_name = _copy_name(data.get("name", tid), existing)
+        new_tid  = self._unique_tid(new_name)
+        data["name"]          = new_name
+        self._custom[new_tid] = data
+        self._selected_id     = new_tid
+        self._refresh_list()
+
+    def _delete(self):
+        sel = self.lb.curselection()
+        if not sel:
+            return
+        tid  = list(self._custom.keys())[sel[0]]
+        name = self._custom[tid].get("name", tid)
+        if _ask("Delete Theme", f"Delete custom theme '{name}'?"):
+            del self._custom[tid]
+            self._persist()
+            self._selected_id = None
+            self.name_e.delete(0, "end")
+            for var in self._color_vars.values():
+                var.set("")
+            self._refresh_list()
+            # if this was the active theme, revert to default
+            saved = load_json("theme.json", {})
+            if saved.get("theme") == tid:
+                self.app._switch_theme("default")
+
+    def _save_theme(self):
+        name = self.name_e.get().strip()
+        if not name:
+            _dialog("Missing", "Enter a theme name.", "warning")
+            return
+        colors = {}
+        for key, var in self._color_vars.items():
+            val = var.get().strip()
+            if not val:
+                _dialog("Missing Color",
+                        f"The '{key}' color is empty.", "warning")
+                return
+            colors[key] = val
+        colors["name"] = name
+        tid = self._selected_id
+        if not tid or tid not in self._custom:
+            tid = self._unique_tid(name)
+        self._custom[tid] = colors
+        self._selected_id = tid
+        self._persist()
+        self._refresh_list()
+        _dialog("Saved", f"Theme '{name}' saved.")
+
+    def _preview(self):
+        """Apply the editor's current colors as a live preview."""
+        colors = {k: v.get().strip() for k, v in self._color_vars.items()}
+        colors["name"] = self.name_e.get().strip() or "Preview"
+        for key, val in colors.items():
+            if key == "name":
+                continue
+            if not val:
+                _dialog("Missing Color",
+                        f"The '{key}' color is empty.", "warning")
+                return
+            try:
+                self.dlg.winfo_rgb(val)
+            except tk.TclError:
+                _dialog("Invalid Color",
+                        f"'{val}' is not a valid color for '{key}'.",
+                        "warning")
+                return
+        C.update(colors)
+        apply_theme(self.app.root)
+        self.app._refresh_menubar_colors()
+        self.app._rebuild_tabs()
+
+    def _close(self):
+        self.dlg.destroy()
+        if self.on_close:
+            self.on_close()
 
 
 class _CheckList(tk.Frame):
@@ -2458,15 +2778,11 @@ class App:
         file_mb.configure(menu=file_menu)
         self._rebuild_recent_menus()
 
-        theme_mb = tk.Menubutton(self.menubar_frame, text="Theme", **menu_kw)
-        theme_mb.pack(side="left")
-        theme_menu = tk.Menu(theme_mb, **drop_kw)
         self._theme_var = tk.StringVar(value=self._current_theme_id())
-        for tid, t in THEMES.items():
-            theme_menu.add_radiobutton(
-                label=t["name"], variable=self._theme_var, value=tid,
-                command=lambda tid=tid: self._switch_theme(tid))
-        theme_mb.configure(menu=theme_menu)
+        self._theme_mb = tk.Menubutton(self.menubar_frame, text="Theme",
+                                       **menu_kw)
+        self._theme_mb.pack(side="left")
+        self._build_theme_menu()
 
         # load data
         self.models   = load_json("models.json",        {})
@@ -2657,13 +2973,37 @@ class App:
         saved = load_json("theme.json", {})
         return saved.get("theme", "default")
 
-    def _switch_theme(self, tid):
-        if tid not in THEMES:
-            return
-        C.update(THEMES[tid])
-        _save_theme(tid)
-        apply_theme(self.root)
-        # refresh custom menu bar colours
+    def _build_theme_menu(self):
+        """Build (or rebuild) the Theme drop-down, including custom themes."""
+        drop_kw = dict(tearoff=0, bg=C["bg2"], fg=C["fg"],
+                       activebackground=C["border"],
+                       activeforeground=C["fg"])
+        theme_menu = tk.Menu(self._theme_mb, **drop_kw)
+        # built-in themes
+        for tid, t in THEMES.items():
+            theme_menu.add_radiobutton(
+                label=t["name"], variable=self._theme_var, value=tid,
+                command=lambda tid=tid: self._switch_theme(tid))
+        # custom themes
+        custom = load_json("theme.json", {}).get("custom_themes", {})
+        if custom:
+            theme_menu.add_separator()
+            for tid, t in custom.items():
+                theme_menu.add_radiobutton(
+                    label=t.get("name", tid),
+                    variable=self._theme_var, value=tid,
+                    command=lambda tid=tid: self._switch_theme(tid))
+        theme_menu.add_separator()
+        theme_menu.add_command(label="Edit Custom Themes…",
+                               command=self._open_theme_editor)
+        self._theme_mb.configure(menu=theme_menu)
+        self._theme_menu = theme_menu
+
+    def _open_theme_editor(self):
+        _ThemeEditorDialog(self, on_close=self._build_theme_menu)
+
+    def _refresh_menubar_colors(self):
+        """Re-apply current C colours to every widget in the menu bar."""
         self.menubar_frame.configure(bg=C["bg2"])
         for w in self.menubar_frame.winfo_children():
             w.configure(bg=C["bg2"], fg=C["fg"],
@@ -2678,13 +3018,23 @@ class App:
                         activeforeground=C["fg"])
             except Exception:
                 pass
-        # update cascade recent menu colours
         _cascade_kw = dict(bg=C["bg2"], fg=C["fg"],
                            activebackground=C["border"],
                            activeforeground=C["fg"])
         for _m in (self._recent_profiles_menu, self._recent_zips_menu,
                    self._recent_configs_menu):
             _m.configure(**_cascade_kw)
+
+    def _switch_theme(self, tid):
+        all_t = {**THEMES,
+                 **load_json("theme.json", {}).get("custom_themes", {})}
+        if tid not in all_t:
+            return
+        C.update(all_t[tid])
+        _save_theme(tid)
+        self._theme_var.set(tid)
+        apply_theme(self.root)
+        self._refresh_menubar_colors()
         self._rebuild_tabs()
 
 

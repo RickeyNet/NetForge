@@ -73,7 +73,7 @@ Feature ideas based on the current app structure and product scope.
 - [ ] Add keyboard shortcuts
   Shortcuts for generate, copy, save, next/back step, and quick navigation between tabs would speed up daily use.
 
-- [ ] Add dark/light theme polish and custom themes
+- [x] Add dark/light theme polish and custom themes
   A simple theme editor or JSON-driven theme import would let teams standardize the UI without changing code.
 
 ## Longer-Term Ideas

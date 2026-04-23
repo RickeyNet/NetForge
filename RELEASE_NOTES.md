@@ -41,11 +41,32 @@
 - Check multiple items and click **Delete** to remove them all at once
 - Single-item delete still works by selecting (clicking) an item without checking it
 
+## New Feature: Select All Button
+
+- Models, Roles, and Profiles tabs now each have a **Select All** button
+- Clicking it checks all checkboxes at once; clicking again unchecks all (toggle behavior)
+- Works together with the multi-select Delete to quickly remove an entire list
+
+## New Feature: Custom Theme Editor
+
+- A new **Edit Custom Themes…** option is available at the bottom of the **Theme** menu
+- The editor lets you create, duplicate, and delete custom color themes without touching any code
+- Each of the 12 palette colors has a labeled text field and a clickable swatch that opens the system color picker — swatches update live as you type hex values
+- **Preview** applies your colors to the running app immediately without saving
+- **Save Theme** persists the theme to `theme.json`; it appears instantly as a new entry in the Theme menu under a separator below the built-in themes
+- Custom themes survive restarts and are included in settings export/import ZIP files
+
+## New Feature: Light Theme
+
+- A new built-in **Light** theme is now available in the Theme menu
+- Off-white background with blue accent, suitable as a clean light-mode alternative to the existing dark themes
+
 ## UI Improvements
 
 - **Read-only config preview** — the config preview pane is now read-only; it can no longer be accidentally edited
-- **Themed dialogs** — all info, warning, and error message boxes replaced with fully themed custom dialogs (`_dialog` and `_ask`) that match the active theme
+- **Themed dialogs** — all info, warning, and error message boxes replaced with fully themed custom dialogs that match the active theme
 - **Config preview cleared on back** — navigating back from Step 3 to Step 2 now clears the preview pane and disables the section copy buttons
+- **Responsive section copy toolbar** — the Copy section buttons now shrink and grow with the window instead of overflowing off-screen at smaller widths
 
 ---
 
