@@ -17,3 +17,7 @@ build/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Source workbooks and packaged template ZIPs (track the unpacked JSON instead)
+*.xlsx
+template_packs/*.zip

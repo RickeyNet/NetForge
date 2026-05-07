@@ -1,0 +1,37 @@
+{
+  "local_username": "local.admin",
+  "filename_template": "{{ hostname }}_{{ profile }}_{{ model }}_{{ work_order }}",
+  "global_services": "no service config\nno service finger\nno service tcp-small-servers\nno service udp-small-servers\nno service pad\nno service call-home\nno cns config initial\nno cns exec\nno cns image\nservice password-encryption\nservice timestamps log datetime msec utc show-timezone\nservice unsupported-transceiver\nno errdisable detect cause gbic-invalid\nerrdisable flap-setting cause link-flap max-flaps 10 time 10\nerrdisable recovery cause link-flap\nfile privilege 15\nudld enable\nno cdp run\nno ip name-server\nno ip domain lookup\nlogin block-for 900 attempts 3 within 120\nno ip boot server\nno ip bootp server\nno ip dns server\nno ip finger\nno ip rcmd rcp-enable\nno ip rcmd rsh-enable\nno ip gratuitous-arps\nno ip http server\nno ip http secure-server\nip http timeout-policy idle 300 life 600 requests 1\nip tcp synwait-time 10\nip tcp path-mtu-discovery\nmemory free low-watermark processor 8199",
+  "mgmt_vrf": "",
+  "logging": "logging host <SYSLOG_IP_1>\nlogging host <SYSLOG_IP_2>\nlogging on\nlogging trap notifications\nlogin on-failure log\nlogin on-success log\nlogging buffered 102400 informational\nlogging count\nlogging history warnings\nlogging history size 20\nlogging userinfo\nlogging origin-id hostname\n!\narchive\nlog config\nlogging enable\nnotify syslog contenttype plaintext\nhidekeys\nlogging size 1000\nexit\nexit",
+  "aaa": "aaa new-model\n!\naaa common-criteria policy PASSWORD_POLICY\nnumeric-count 1\nspecial-case 1\nchar-changes 8\nmin-length 15\nmax-length 127\nupper-case 1\nlower-case 1\nexit\n!\naaa session-id common\n!\nradius server RADIUS1\naddress ipv4 <RADIUS_IP_1> auth-port 1812 acct-port 1813\nkey 7 <RADIUS_KEY_1>\n!\nradius server RADIUS2\naddress ipv4 <RADIUS_IP_2> auth-port 1812 acct-port 1813\nkey 7 <RADIUS_KEY_2>\n!\naaa group server radius RADIUS_GROUP\nserver name RADIUS1\nserver name RADIUS2\nexit\n!\nip radius source-interface vlan <MGMT_VLAN>\naaa authentication login default group RADIUS_GROUP local\naaa authorization exec default group RADIUS_GROUP local if-authenticated",
+  "security": "spanning-tree mode rapid-pvst\nspanning-tree loopguard default\nspanning-tree extend system-id",
+  "ssh": "ip ssh version 2\nip ssh dh min size 2048\nip ssh time-out 60\nip ssh authentication-retries 3\nip ssh server algorithm encryption aes256-gcm aes256-ctr aes192-ctr aes128-gcm aes128-ctr\nip ssh client algorithm encryption aes256-gcm aes256-ctr aes192-ctr aes128-gcm aes128-ctr\nip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256\nip ssh client algorithm mac hmac-sha2-512 hmac-sha2-256\ncrypto key generate rsa general-keys modulus 2048",
+  "switching": "vtp mode off\ntransceiver type all\n monitoring\nexit\ndiagnostic bootup level minimal\nplatform punt-keepalive disable-kernel-core",
+  "mgmt_port": "",
+  "line_config": "line vty 0 4\n access-class SWITCH_MGMT in vrf-also\n session-timeout 5\n exec-timeout 5 0\n transport input ssh\n transport output ssh\n logging synchronous\nexit\nline vty 5 98\n access-class SWITCH_MGMT in vrf-also\n  transport input none\n  no exec\nexit\nline con 0\n session-timeout 5\n exec-timeout 5 0\n logging synchronous\n timeout login response 120\n stopbits 1\nexit",
+  "banner": "****************************** WARNING BANNER *******************************\n\n*****************************************************************************",
+  "disabled_port_template": "description //Disabled Access\nswitchport mode access\nswitchport nonegotiate\nswitchport access vlan {{ blackhole_vlan }}\nswitchport port-security\nswitchport port-security mac-address sticky\nswitchport port-security maximum 1\nswitchport block unicast\nspanning-tree guard root\nspanning-tree bpduguard enable\nspanning-tree portfast\nstorm-control broadcast level bps 1g\nstorm-control unicast level bps 1g\nshutdown",
+  "custom_sections": [
+    {
+      "name": "Switch Management ACL",
+      "position": "pre-interface",
+      "commands": "ip access-list extended SWITCH_MGMT\n 10 deny icmp any any fragments log-input\n 20 permit tcp host {{ mgmt_acl_host_1 }} any eq 22 log\n 30 permit tcp host {{ mgmt_acl_host_2 }} any eq 22 log\n 40 permit tcp host {{ mgmt_acl_host_3 }} any eq 22 log\n 50 permit tcp host {{ mgmt_acl_host_4 }} any eq 22 log\n 60 permit tcp host {{ mgmt_acl_host_5 }} any eq 22 log\n 70 permit tcp host {{ mgmt_acl_host_6 }} any eq 22 log\n 80 permit tcp host {{ mgmt_acl_host_7 }} any eq 22 log\n 90 permit tcp host {{ mgmt_acl_host_8 }} any eq 22 log\n 100 permit tcp host {{ mgmt_acl_host_9 }} any eq 22 log\n 110 permit tcp host {{ mgmt_acl_host_10 }} any eq 22 log\n 120 deny ip any any log-input\nexit"
+    },
+    {
+      "name": "DHCP and IGMP Snooping",
+      "position": "pre-interface",
+      "commands": "no ip igmp snooping\nip dhcp snooping\nip dhcp snooping vlan {{ dhcp_snooping_vlans }}"
+    },
+    {
+      "name": "NTP",
+      "position": "post-interface",
+      "commands": "ntp authentication-key 125 sha1 {{ ntp_key }} 7\nntp authenticate\nntp trusted-key 125\nntp server {{ ntp_server_1 }} key 125 prefer\nntp server {{ ntp_server_2 }} key 125\n!\nclock timezone UTC 0"
+    },
+    {
+      "name": "SNMPv3",
+      "position": "post-interface",
+      "commands": "snmp-server view READ iso included\nsnmp-server view WRITE iso included\nsnmp-server group GROUP v3 priv read READ write WRITE\nsnmp-server user {{ snmp_user }} GROUP v3 auth sha-2 512 {{ snmp_auth_password }} priv aes 256 {{ snmp_priv_password }}\nsnmp-server host {{ snmp_host }} version 3 priv {{ snmp_user }}\nsnmp-server enable traps"
+    }
+  ]
+}
