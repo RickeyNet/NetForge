@@ -1001,6 +1001,11 @@ def render_config_sections(model, profile, roles, base, sw):
     l3 = []
     if layer3:
         l3.append("ip routing")
+        ospf_cfg = profile.get("ospf", {}) or {}
+        ospf_pid_for_iface = (
+            (str(ospf_cfg.get("process_id") or "1")).strip() or "1"
+            if ospf_cfg.get("enabled") else None
+        )
 
         if mgmt_style == "loopback":
             lb = profile.get("loopback0", {}) or {}
@@ -1049,6 +1054,7 @@ def render_config_sections(model, profile, roles, base, sw):
             ip = (ru.get("ip") or "").strip()
             mask = (ru.get("mask") or "").strip()
             mtu = (str(ru.get("mtu") or "")).strip()
+            area = (str(ru.get("ospf_area") or "")).strip()
             lines = [f"interface {iface}"]
             if desc:
                 lines.append(f"description //{desc}")
@@ -1057,6 +1063,8 @@ def render_config_sections(model, profile, roles, base, sw):
                 lines.append(f"mtu {mtu}")
             if ip and mask:
                 lines.append(f"ip address {ip} {mask}")
+            if area and ospf_pid_for_iface:
+                lines.append(f"ip ospf {ospf_pid_for_iface} area {area}")
             lines.append("no shutdown")
             lines.append("exit")
             l3.append("\n".join(lines))
@@ -2210,6 +2218,7 @@ class ProfilesTab(ttk.Frame):
         ttk.Label(uh, text="Description", width=14).pack(side="left", padx=1)
         ttk.Label(uh, text="IP", width=15).pack(side="left", padx=1)
         ttk.Label(uh, text="Mask", width=15).pack(side="left", padx=1)
+        ttk.Label(uh, text="OSPF Area", width=10).pack(side="left", padx=1)
         ttk.Label(uh, text="MTU", width=6).pack(side="left", padx=1)
         ttk.Button(uh, text="+ Add Uplink",
                    command=self._add_uplink).pack(side="right")
@@ -2370,8 +2379,9 @@ class ProfilesTab(ttk.Frame):
         desc  = ttk.Entry(row, width=14);  desc.pack(side="left", padx=1)
         ip    = ttk.Entry(row, width=15);  ip.pack(side="left", padx=1)
         mask  = ttk.Entry(row, width=15);  mask.pack(side="left", padx=1)
+        area  = ttk.Entry(row, width=10);  area.pack(side="left", padx=1)
         mtu   = ttk.Entry(row, width=6);   mtu.pack(side="left", padx=1)
-        for w in (iface, desc, ip, mask, mtu):
+        for w in (iface, desc, ip, mask, area, mtu):
             _attach_context_menu(w)
         ttk.Button(row, text="X", width=3, style="Del.TButton",
                    command=lambda: self._del_row(row, self.uplink_rows)
@@ -2381,9 +2391,11 @@ class ProfilesTab(ttk.Frame):
             desc.insert(0, data.get("description", ""))
             ip.insert(0, data.get("ip", ""))
             mask.insert(0, data.get("mask", ""))
+            area.insert(0, str(data.get("ospf_area", "") or ""))
             mtu.insert(0, str(data.get("mtu", "") or ""))
         self.uplink_rows.append({"frame": row, "iface": iface, "desc": desc,
-                                 "ip": ip, "mask": mask, "mtu": mtu})
+                                 "ip": ip, "mask": mask, "area": area,
+                                 "mtu": mtu})
 
     def _clear_ospf_nets(self):
         for r in self.ospf_net_rows:
@@ -2616,6 +2628,7 @@ class ProfilesTab(ttk.Frame):
                     "description": r["desc"].get().strip(),
                     "ip":          r["ip"].get().strip(),
                     "mask":        r["mask"].get().strip(),
+                    "ospf_area":   r["area"].get().strip(),
                     "mtu":         r["mtu"].get().strip(),
                 })
             data["routed_uplinks"] = uplinks

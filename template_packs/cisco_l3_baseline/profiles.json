@@ -1,0 +1,98 @@
+{
+  "Cisco L3 Baseline (example)": {
+    "domain_name": "",
+    "mgmt_vlan": "3",
+    "vlan_definitions": "vlan 3\n name SWITCH_MGMT\nexit\nvlan 10\n name USER_DATA\nexit\nvlan 20\n name VOICE\nexit\nvlan 66\n name NATIVE_BLACKHOLE\nexit\nvlan 67\n name DISABLED\nexit",
+    "role_variables": {
+      "blackhole_vlan": "67",
+      "native_vlan": "66",
+      "trunk_allowed": "2-4094",
+      "access_vlan": "10",
+      "ntp_server_1": "<NTP_IP_1>",
+      "ntp_server_2": "<NTP_IP_2>",
+      "ntp_key": "<NTP_KEY>",
+      "snmp_host": "<SNMP_HOST_IP>",
+      "snmp_user": "USER",
+      "snmp_auth_password": "<SNMP_AUTH_PASSWORD>",
+      "snmp_priv_password": "<SNMP_PRIV_PASSWORD>",
+      "dhcp_snooping_vlans": "10,20",
+      "mgmt_acl_host_1": "<MGMT_HOST_1>",
+      "mgmt_acl_host_2": "<MGMT_HOST_2>",
+      "mgmt_acl_host_3": "<MGMT_HOST_3>",
+      "mgmt_acl_host_4": "<MGMT_HOST_4>",
+      "mgmt_acl_host_5": "<MGMT_HOST_5>",
+      "mgmt_acl_host_6": "<MGMT_HOST_6>",
+      "mgmt_acl_host_7": "<MGMT_HOST_7>",
+      "mgmt_acl_host_8": "<MGMT_HOST_8>",
+      "mgmt_acl_host_9": "<MGMT_HOST_9>",
+      "mgmt_acl_host_10": "<MGMT_HOST_10>"
+    },
+    "port_assignments": [],
+    "layer3": true,
+    "mgmt_style": "loopback",
+    "loopback0": {
+      "ip": "<LOOPBACK_IP>",
+      "mask": "255.255.255.255",
+      "description": "Switch MGMT / Router-ID"
+    },
+    "svis": [
+      {
+        "vlan": "3",
+        "description": "SWITCH_MGMT",
+        "ip": "<MGMT_SVI_IP>",
+        "mask": "<MGMT_SVI_MASK>",
+        "helper_addresses": []
+      },
+      {
+        "vlan": "10",
+        "description": "USER_DATA",
+        "ip": "<USER_GATEWAY_IP>",
+        "mask": "<USER_MASK>",
+        "helper_addresses": ["<DHCP_HELPER_1>", "<DHCP_HELPER_2>"]
+      },
+      {
+        "vlan": "20",
+        "description": "VOICE",
+        "ip": "<VOICE_GATEWAY_IP>",
+        "mask": "<VOICE_MASK>",
+        "helper_addresses": ["<DHCP_HELPER_1>", "<DHCP_HELPER_2>"]
+      }
+    ],
+    "routed_uplinks": [
+      {
+        "interface": "GigabitEthernet1/0/1",
+        "description": "TO-CORE-A",
+        "ip": "<UPLINK_A_IP>",
+        "mask": "255.255.255.252",
+        "ospf_area": "0",
+        "mtu": "9100"
+      },
+      {
+        "interface": "GigabitEthernet1/0/2",
+        "description": "TO-CORE-B",
+        "ip": "<UPLINK_B_IP>",
+        "mask": "255.255.255.252",
+        "ospf_area": "0",
+        "mtu": "9100"
+      }
+    ],
+    "ospf": {
+      "enabled": true,
+      "process_id": "1",
+      "router_id": "<LOOPBACK_IP>",
+      "passive_default": true,
+      "passive_interfaces": [
+        "GigabitEthernet1/0/1",
+        "GigabitEthernet1/0/2"
+      ],
+      "networks": [
+        {
+          "network": "<LOOPBACK_IP>",
+          "wildcard": "0.0.0.0",
+          "area": "0"
+        }
+      ]
+    },
+    "static_routes": []
+  }
+}
