@@ -925,15 +925,36 @@ class _CheckList(tk.Frame):
 def render_config_sections(model, profile, roles, base, sw):
     """Return an ordered dict of named config sections.
 
-    Keys (in order): "Global / Base", "VLANs", "Interfaces",
-                     "Management", "Post-Interface", "Line Config",
-                     "Banner / End"
+    Keys (in order): "Global / Base", "VLANs", "L3 Interfaces",
+                     "Interfaces", "Management", "Post-Interface",
+                     "Routing", "Line Config", "Banner / End"
     Each value is a ready-to-paste block (empty string if nothing to show).
     Used by render_config() and by the quick-copy toolbar.
+
+    When ``profile["layer3"]`` is true the renderer adds two new sections
+    (L3 Interfaces, Routing) and lets ``profile["mgmt_style"]`` decide what
+    happens with the hard-coded SVI mgmt block.
     """
     env = Environment()
     role_vars = profile.get("role_variables", {})
     stack = model.get("stack_members", 1)
+    layer3 = bool(profile.get("layer3", False))
+    mgmt_style = profile.get("mgmt_style", "svi") if layer3 else "svi"
+
+    def _r(text):
+        try:
+            return env.from_string(text).render(**role_vars)
+        except Exception:
+            return text
+
+    # interfaces consumed by routed_uplinks must be skipped by the
+    # disabled-port pass and by role-based port assignments
+    routed_iface_names = set()
+    if layer3:
+        for ru in profile.get("routed_uplinks", []) or []:
+            n = (ru.get("interface") or "").strip()
+            if n:
+                routed_iface_names.add(n)
 
     def build(parts):
         return "\n\n".join(p.strip() for p in parts if p.strip())
@@ -972,11 +993,73 @@ def render_config_sections(model, profile, roles, base, sw):
         if cs.get("position") == "pre-interface":
             cmds = cs.get("commands", "").strip()
             if cmds:
-                try:
-                    cmds = env.from_string(cmds).render(**role_vars)
-                except Exception:
-                    pass
-                vl.append(cmds)
+                vl.append(_r(cmds))
+
+    # ── 2b  L3 Interfaces ───────────────────────────────────────────────
+    # Loopback0, SVIs (data/voice/etc.), and routed point-to-point uplinks.
+    # Only emitted when profile.layer3 is true.
+    l3 = []
+    if layer3:
+        l3.append("ip routing")
+
+        if mgmt_style == "loopback":
+            lb = profile.get("loopback0", {}) or {}
+            lb_ip = lb.get("ip") or sw.get("mgmt_ip", "")
+            lb_mask = lb.get("mask") or "255.255.255.255"
+            lb_desc = lb.get("description") or "Switch MGMT / Router-ID"
+            if lb_ip:
+                l3.append(
+                    f"interface Loopback0\n"
+                    f"description //{lb_desc}\n"
+                    f"ip address {lb_ip} {lb_mask}\n"
+                    f"exit"
+                )
+
+        for svi in profile.get("svis", []) or []:
+            vlan = (svi.get("vlan") or "").strip()
+            if not vlan:
+                continue
+            ip = (svi.get("ip") or "").strip()
+            mask = (svi.get("mask") or "").strip()
+            desc = (svi.get("description") or svi.get("name") or "").strip()
+            helpers_raw = svi.get("helper_addresses") or ""
+            if isinstance(helpers_raw, list):
+                helpers = [h.strip() for h in helpers_raw if str(h).strip()]
+            else:
+                helpers = [h.strip() for h in str(helpers_raw).split(",")
+                           if h.strip()]
+            lines = [f"interface Vlan{vlan}"]
+            if desc:
+                lines.append(f"description //{desc}")
+            if ip and mask:
+                lines.append(f"ip address {ip} {mask}")
+            else:
+                lines.append("no ip address")
+            for h in helpers:
+                lines.append(f"ip helper-address {h}")
+            lines.append("no shutdown")
+            lines.append("exit")
+            l3.append("\n".join(lines))
+
+        for ru in profile.get("routed_uplinks", []) or []:
+            iface = (ru.get("interface") or "").strip()
+            if not iface:
+                continue
+            desc = (ru.get("description") or "").strip()
+            ip = (ru.get("ip") or "").strip()
+            mask = (ru.get("mask") or "").strip()
+            mtu = (str(ru.get("mtu") or "")).strip()
+            lines = [f"interface {iface}"]
+            if desc:
+                lines.append(f"description //{desc}")
+            lines.append("no switchport")
+            if mtu:
+                lines.append(f"mtu {mtu}")
+            if ip and mask:
+                lines.append(f"ip address {ip} {mask}")
+            lines.append("no shutdown")
+            lines.append("exit")
+            l3.append("\n".join(lines))
 
     # ── 3  Interfaces ───────────────────────────────────────────────────
     ifaces = []
@@ -984,19 +1067,41 @@ def render_config_sections(model, profile, roles, base, sw):
     all_pgs = expand_port_groups_for_stack(
         model.get("port_groups", []), stack)
     if dis_tpl and all_pgs:
-        try:
-            rendered_dis = env.from_string(dis_tpl).render(**role_vars)
-        except Exception:
-            rendered_dis = dis_tpl
+        rendered_dis = _r(dis_tpl)
         for pg in all_pgs:
             if pg.get("prefix", "").startswith("GigabitEthernet0/"):
                 continue
-            if pg["start"] == pg["end"]:
-                hdr = f"interface {pg['prefix']}{pg['start']}"
-            else:
-                hdr = (f"interface range {pg['prefix']}"
-                       f"{pg['start']}-{pg['end']}")
-            ifaces.append(f"{hdr}\n{rendered_dis}\nexit")
+            # expand the range and skip any individual port that is
+            # claimed by a routed_uplink (those are emitted in the L3
+            # Interfaces section as routed ports, not L2 access ports)
+            single_ports = [
+                f"{pg['prefix']}{i}"
+                for i in range(pg["start"], pg["end"] + 1)
+            ]
+            # collapse consecutive kept ports back into ranges
+            run_start = None
+            run_end = None
+            for i, p in zip(range(pg["start"], pg["end"] + 1), single_ports):
+                if p in routed_iface_names:
+                    if run_start is not None:
+                        if run_start == run_end:
+                            hdr = f"interface {pg['prefix']}{run_start}"
+                        else:
+                            hdr = (f"interface range {pg['prefix']}"
+                                   f"{run_start}-{run_end}")
+                        ifaces.append(f"{hdr}\n{rendered_dis}\nexit")
+                        run_start = None
+                    continue
+                if run_start is None:
+                    run_start = i
+                run_end = i
+            if run_start is not None:
+                if run_start == run_end:
+                    hdr = f"interface {pg['prefix']}{run_start}"
+                else:
+                    hdr = (f"interface range {pg['prefix']}"
+                           f"{run_start}-{run_end}")
+                ifaces.append(f"{hdr}\n{rendered_dis}\nexit")
     ifaces.append("interface vlan1\nno ip address\nshutdown\nexit")
     mgmt_port_pgs = [pg for pg in model.get("port_groups", [])
                      if pg.get("prefix", "").startswith("GigabitEthernet0/")]
@@ -1022,6 +1127,9 @@ def render_config_sections(model, profile, roles, base, sw):
     for pa in profile.get("port_assignments", []):
         if not pa.get("role") or pa["role"] == "unassigned":
             continue
+        iface_name = pa.get("interfaces", "")
+        if iface_name in routed_iface_names:
+            continue
         role = roles.get(pa.get("role", ""), {})
         cmds = role.get("commands", "")
         try:
@@ -1029,18 +1137,26 @@ def render_config_sections(model, profile, roles, base, sw):
                 description=pa.get("description", ""), **role_vars)
         except Exception:
             rendered = cmds
-        iface_name = pa.get("interfaces", "")
         ifaces.append(f"interface {iface_name}\n{rendered}\nexit")
 
     # ── 4  Management VLAN & Gateway ────────────────────────────────────
-    mgmt_vlan = profile.get("mgmt_vlan", "1")
-    mgmt = [
-        f"interface vlan{mgmt_vlan}\n"
-        f"description //Switch MGMT\n"
-        f"ip address {sw['mgmt_ip']} {sw['mgmt_mask']}\n"
-        f"exit",
-        f"ip default-gateway {sw['default_gateway']}",
-    ]
+    # L2 default: SVI for the management VLAN + ip default-gateway.
+    # L3 mgmt_style="svi": same as L2 but no default-gateway (routing handles it).
+    # L3 mgmt_style="loopback" or "routed_uplink": this section is empty —
+    # the L3 Interfaces section already emitted Loopback0 / the routed uplink
+    # using sw['mgmt_ip']/sw['mgmt_mask'] (or profile.loopback0 if set).
+    mgmt = []
+    if not layer3 or mgmt_style == "svi":
+        mgmt_vlan = profile.get("mgmt_vlan", "1")
+        if sw.get("mgmt_ip") and sw.get("mgmt_mask"):
+            mgmt.append(
+                f"interface vlan{mgmt_vlan}\n"
+                f"description //Switch MGMT\n"
+                f"ip address {sw['mgmt_ip']} {sw['mgmt_mask']}\n"
+                f"exit"
+            )
+        if not layer3 and sw.get("default_gateway"):
+            mgmt.append(f"ip default-gateway {sw['default_gateway']}")
 
     # ── 5  Post-Interface Custom Sections ────────────────────────────────
     post = []
@@ -1048,11 +1164,51 @@ def render_config_sections(model, profile, roles, base, sw):
         if cs.get("position") == "post-interface":
             cmds = cs.get("commands", "").strip()
             if cmds:
-                try:
-                    cmds = env.from_string(cmds).render(**role_vars)
-                except Exception:
-                    pass
-                post.append(cmds)
+                post.append(_r(cmds))
+
+    # ── 5b  Routing (OSPF + static routes) ───────────────────────────────
+    routing = []
+    if layer3:
+        ospf = profile.get("ospf", {}) or {}
+        if ospf.get("enabled"):
+            pid = (str(ospf.get("process_id") or "1")).strip() or "1"
+            rid = (ospf.get("router_id") or "").strip()
+            networks = ospf.get("networks", []) or []
+            passive_default = bool(ospf.get("passive_default"))
+            passive_ifaces = ospf.get("passive_interfaces", []) or []
+            lines = [f"router ospf {pid}"]
+            if rid:
+                lines.append(f"router-id {rid}")
+            if passive_default:
+                lines.append("passive-interface default")
+                # listed interfaces become exceptions (no passive-interface ...)
+                for pi in passive_ifaces:
+                    pi = str(pi).strip()
+                    if pi:
+                        lines.append(f"no passive-interface {pi}")
+            else:
+                for pi in passive_ifaces:
+                    pi = str(pi).strip()
+                    if pi:
+                        lines.append(f"passive-interface {pi}")
+            for n in networks:
+                net = (n.get("network") or "").strip()
+                wc = (n.get("wildcard") or "").strip()
+                area = (str(n.get("area") or "0")).strip() or "0"
+                if net and wc:
+                    lines.append(f"network {net} {wc} area {area}")
+            lines.append("exit")
+            routing.append("\n".join(lines))
+        for sr in profile.get("static_routes", []) or []:
+            prefix = (sr.get("prefix") or "").strip()
+            mask = (sr.get("mask") or "").strip()
+            nh = (sr.get("next_hop") or "").strip()
+            desc = (sr.get("description") or "").strip()
+            if prefix and mask and nh:
+                line = f"ip route {prefix} {mask} {nh}"
+                if desc:
+                    line += f" name {desc.replace(' ', '_')}"
+                routing.append(line)
 
     # ── 6  Line Config ───────────────────────────────────────────────────
     lc = [base.get("line_config", "")]
@@ -1067,9 +1223,11 @@ def render_config_sections(model, profile, roles, base, sw):
     return {
         "Global / Base":  build(gb),
         "VLANs":          build(vl),
+        "L3 Interfaces":  build(l3),
         "Interfaces":     build(ifaces),
         "Management":     build(mgmt),
         "Post-Interface": build(post),
+        "Routing":        build(routing),
         "Line Config":    build(lc),
         "Banner / End":   build(bn),
     }
@@ -1080,7 +1238,10 @@ def render_config(model, profile, roles, base, sw):
 
     *model*    - switch model dict   (port_groups, provision)
     *profile*  - site profile dict   (vlan_definitions, role_variables,
-                                      port_assignments, mgmt_vlan)
+                                      port_assignments, mgmt_vlan, and
+                                      optionally layer3 / mgmt_style /
+                                      loopback0 / svis / routed_uplinks /
+                                      ospf / static_routes)
     *roles*    - all roles dict      {name: {commands: ...}}
     *base*     - base settings dict  (text-area sections)
     *sw*       - per-switch dict     (hostname, enable_secret, admin_password,
@@ -1308,8 +1469,9 @@ class GenerateTab(ttk.Frame):
         ttk.Label(qc_fr, text="Copy section:",
                   style="Hint.TLabel").grid(row=0, column=0, padx=(0, 4))
         self._qc_buttons = {}
-        _qc_sec_names = ("Global / Base", "VLANs", "Interfaces",
-                         "Management", "Line Config", "Banner / End")
+        _qc_sec_names = ("Global / Base", "VLANs", "L3 Interfaces",
+                         "Interfaces", "Management", "Routing",
+                         "Line Config", "Banner / End")
         for _col, _sec_name in enumerate(_qc_sec_names, start=1):
             qc_fr.columnconfigure(_col, weight=1, uniform="qcbtn")
             btn = ttk.Button(
