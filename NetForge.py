@@ -922,6 +922,107 @@ class _CheckList(tk.Frame):
 # ===================================================================
 #  CONFIG RENDERER
 # ===================================================================
+def _render_acl(acl):
+    """Render one named ACL (extended or standard) from a structured dict."""
+    name = (acl.get("name") or "").strip()
+    if not name:
+        return ""
+    acl_type = (acl.get("type") or "extended").strip() or "extended"
+    lines = [f"ip access-list {acl_type} {name}"]
+    for r in acl.get("rules", []) or []:
+        action = (r.get("action") or "").strip()
+        if action == "remark":
+            text = (r.get("text") or "").strip()
+            if text:
+                lines.append(f" remark {text}")
+            continue
+        if action not in ("permit", "deny"):
+            continue
+        proto = (r.get("protocol") or "ip").strip() or "ip"
+        src = (r.get("source") or "").strip()
+        src_wc = (r.get("source_wildcard") or "").strip()
+        dst = (r.get("dest") or "").strip()
+        dst_wc = (r.get("dest_wildcard") or "").strip()
+        parts = [f" {action}", proto]
+        if src.lower() == "any" or not src:
+            parts.append("any" if src.lower() == "any" else "")
+        else:
+            parts.append(src)
+            if src_wc:
+                parts.append(src_wc)
+        if dst.lower() == "any" or not dst:
+            parts.append("any" if dst.lower() == "any" else "")
+        else:
+            parts.append(dst)
+            if dst_wc:
+                parts.append(dst_wc)
+        if r.get("log"):
+            parts.append("log")
+        lines.append(" ".join(p for p in parts if p))
+    lines.append("exit")
+    return "\n".join(lines)
+
+
+def _render_bgp(profile, sw):
+    """Render the router bgp + ISP default-route + Null0 advertisement block.
+
+    Peers are the union of profile-level (site-wide) peers and per-switch
+    peers from sw['bgp']['peers']. Each peer carries its own remote-as so
+    a single switch can talk to multiple upstreams with different ASNs.
+    The profile-level 'peer_asn' is only used as a fallback for any peer
+    row that left the ASN blank.
+    """
+    bgp_p = profile.get("bgp") or {}
+    if not bgp_p.get("enabled"):
+        return ""
+    bgp_sw = sw.get("bgp") or {}
+    local_asn = str(bgp_p.get("local_asn") or "").strip()
+    default_peer_asn = str(bgp_p.get("peer_asn") or "").strip()
+    isp_gateway   = (bgp_sw.get("isp_gateway") or "").strip()
+    user_network  = (bgp_sw.get("user_network") or "").strip()
+    user_mask     = (bgp_sw.get("user_mask") or "").strip()
+    if not local_asn:
+        return ""
+
+    profile_peers = bgp_p.get("peers") or []
+    switch_peers  = bgp_sw.get("peers") or []
+    all_peers = list(profile_peers) + list(switch_peers)
+
+    # Drop duplicates (same peer IP) — site peer wins, per-switch can
+    # still override password/desc by appearing again with the same IP
+    seen = {}
+    for p in all_peers:
+        ip = (p.get("peer_ip") or "").strip()
+        if not ip:
+            continue
+        seen[ip] = p
+    deduped = list(seen.values())
+
+    lines = [f"no router bgp {local_asn}",
+             f"router bgp {local_asn}",
+             " bgp log-neighbor-changes"]
+    if user_network and user_mask:
+        lines.append(f" network {user_network} mask {user_mask}")
+    for p in deduped:
+        ip = (p.get("peer_ip") or "").strip()
+        asn = str(p.get("peer_asn") or "").strip() or default_peer_asn
+        pwd = (p.get("password") or "").strip()
+        desc = (p.get("description") or "").strip()
+        if asn:
+            lines.append(f" neighbor {ip} remote-as {asn}")
+        if desc:
+            lines.append(f" neighbor {ip} description {desc}")
+        if pwd:
+            lines.append(f" neighbor {ip} password {pwd}")
+    lines.append(" exit")
+    if isp_gateway:
+        lines.append(f"ip default-gateway {isp_gateway}")
+        lines.append(f"ip route 0.0.0.0 0.0.0.0 {isp_gateway}")
+    if user_network and user_mask:
+        lines.append(f"ip route {user_network} {user_mask} Null0")
+    return "\n".join(lines)
+
+
 def render_config_sections(model, profile, roles, base, sw):
     """Return an ordered dict of named config sections.
 
@@ -1171,6 +1272,14 @@ def render_config_sections(model, profile, roles, base, sw):
             if cmds:
                 post.append(_r(cmds))
 
+    # Profile-defined ACLs (named, structured) — rendered after custom
+    # sections so they sit in the post-interface block alongside other
+    # site-wide policy.
+    for acl in profile.get("acls", []) or []:
+        rendered = _render_acl(acl)
+        if rendered:
+            post.append(rendered)
+
     # ── 5b  Routing (OSPF + static routes) ───────────────────────────────
     # OSPF process / networks / passive config come from the profile
     # (site-wide). Router-ID and static routes come from sw (per-switch).
@@ -1207,6 +1316,11 @@ def render_config_sections(model, profile, roles, base, sw):
                     lines.append(f"network {net} {wc} area {area}")
             lines.append("exit")
             routing.append("\n".join(lines))
+
+        bgp_block = _render_bgp(profile, sw)
+        if bgp_block:
+            routing.append(bgp_block)
+
         for sr in sw.get("static_routes", []) or []:
             prefix = (sr.get("prefix") or "").strip()
             mask = (sr.get("mask") or "").strip()
@@ -1541,6 +1655,44 @@ class GenerateTab(ttk.Frame):
         self.l3_static_frame = ttk.Frame(self.l3_static_lf)
         self.l3_static_frame.pack(fill="x")
 
+        # BGP per-switch values (only shown when profile has BGP enabled)
+        self.bgp_lf = ttk.LabelFrame(self.l3_frame, text="BGP", padding=5)
+        self.bgp_lf.pack(fill="x", padx=5, pady=4)
+        ttk.Label(self.bgp_lf, style="Hint.TLabel",
+                  text="  Per-switch ISP/User network values + peers unique\n"
+                       "  to this switch. Site-wide peers come from the\n"
+                       "  profile and are emitted automatically."
+                  ).pack(anchor="w", padx=2, pady=(0, 4))
+        self.bgp_isp_ip        = _field(self.bgp_lf, "ISP Interface IP")
+        self.bgp_isp_mask      = _field(self.bgp_lf, "ISP Interface Mask",
+                                        "255.255.255.252")
+        self.bgp_isp_gateway   = _field(self.bgp_lf, "ISP Gateway")
+        self.bgp_user_network  = _field(self.bgp_lf, "User Network (advertised)")
+        self.bgp_user_mask     = _field(self.bgp_lf, "User Network Mask",
+                                        "255.255.255.0")
+        self.bgp_circuit_id    = _field(self.bgp_lf, "Circuit ID")
+
+        # Per-switch peers (added on top of profile peers)
+        peers_lf = ttk.LabelFrame(self.bgp_lf, text="Switch Peers", padding=5)
+        peers_lf.pack(fill="x", padx=2, pady=(4, 0))
+        ph = ttk.Frame(peers_lf); ph.pack(fill="x")
+        for col in range(4):
+            ph.columnconfigure(col, weight=1, uniform="swpeers")
+        ttk.Label(ph, text="Peer IP", anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=1)
+        ttk.Label(ph, text="Remote ASN", anchor="w").grid(
+            row=0, column=1, sticky="ew", padx=1)
+        ttk.Label(ph, text="Password", anchor="w").grid(
+            row=0, column=2, sticky="ew", padx=1)
+        ttk.Label(ph, text="Description", anchor="w").grid(
+            row=0, column=3, sticky="ew", padx=1)
+        ttk.Button(ph, text="+ Add Peer",
+                   command=self._add_sw_bgp_peer).grid(
+                       row=0, column=4, padx=(6, 1))
+        self.sw_peer_frame = ttk.Frame(peers_lf)
+        self.sw_peer_frame.pack(fill="x")
+        self.sw_peer_rows = []
+
         # -- right: preview --
         right = ttk.Frame(paned)
         paned.add(right, weight=2)
@@ -1785,6 +1937,7 @@ class GenerateTab(ttk.Frame):
             self.l3_frame.pack_forget()
             self._clear_l3_ip_rows()
             self._clear_l3_statics()
+            self._clear_sw_bgp_peers()
             return
 
         # L3 frame is on. Hide everything first, then re-pack the
@@ -1793,7 +1946,7 @@ class GenerateTab(ttk.Frame):
         # mgmt_style / ospf_enabled we end up with.
         self.l3_frame.pack(fill="x", padx=5, pady=2)
         for sub in (self.lb_lf, self.rid_lf, self.l3_ip_lf,
-                    self.l3_static_lf):
+                    self.l3_static_lf, self.bgp_lf):
             sub.pack_forget()
 
         # Loopback0 only used when mgmt rides Loopback0.
@@ -1806,6 +1959,11 @@ class GenerateTab(ttk.Frame):
 
         self.l3_ip_lf.pack(fill="x", padx=5, pady=4)
         self.l3_static_lf.pack(fill="x", padx=5, pady=4)
+
+        if bool((profile.get("bgp") or {}).get("enabled", False)):
+            self.bgp_lf.pack(fill="x", padx=5, pady=4)
+        else:
+            self._clear_sw_bgp_peers()
 
         self._populate_l3_ip_rows()
 
@@ -1877,6 +2035,44 @@ class GenerateTab(ttk.Frame):
                                   if r["frame"] is not frame]
         frame.destroy()
 
+    # -- per-switch BGP peers --
+    def _clear_sw_bgp_peers(self):
+        for r in self.sw_peer_rows:
+            r["frame"].destroy()
+        self.sw_peer_rows.clear()
+
+    def _add_sw_bgp_peer(self, data=None):
+        row = ttk.Frame(self.sw_peer_frame); row.pack(fill="x", pady=1)
+        for col in range(4):
+            row.columnconfigure(col, weight=1, uniform="swpeers")
+        ip_e   = ttk.Entry(row); ip_e.grid(  row=0, column=0, sticky="ew", padx=1)
+        asn_e  = ttk.Entry(row); asn_e.grid( row=0, column=1, sticky="ew", padx=1)
+        pwd_e  = ttk.Entry(row); pwd_e.grid( row=0, column=2, sticky="ew", padx=1)
+        desc_e = ttk.Entry(row); desc_e.grid(row=0, column=3, sticky="ew", padx=1)
+        for w in (ip_e, asn_e, pwd_e, desc_e):
+            _attach_context_menu(w)
+        ttk.Button(row, text="X", width=3, style="Del.TButton",
+                   command=lambda: self._del_sw_bgp_peer(row)
+                   ).grid(row=0, column=4, padx=(6, 1))
+        if data:
+            ip_e.insert(0, data.get("peer_ip", ""))
+            asn_e.insert(0, str(data.get("peer_asn", "") or ""))
+            pwd_e.insert(0, data.get("password", ""))
+            desc_e.insert(0, data.get("description", ""))
+        else:
+            # pre-fill ASN with the profile's default Peer ASN
+            pn = self.profile_cb.get()
+            if pn and pn in self.app.profiles:
+                bgp = (self.app.profiles[pn].get("bgp") or {})
+                asn_e.insert(0, str(bgp.get("peer_asn", "") or ""))
+        self.sw_peer_rows.append({"frame": row, "ip": ip_e, "asn": asn_e,
+                                  "pwd": pwd_e, "desc": desc_e})
+
+    def _del_sw_bgp_peer(self, frame):
+        self.sw_peer_rows[:] = [r for r in self.sw_peer_rows
+                                if r["frame"] is not frame]
+        frame.destroy()
+
     def _sw_dict(self):
         # ttk.Entry.get() works whether or not the widget is disabled
         sw = {
@@ -1910,6 +2106,22 @@ class GenerateTab(ttk.Frame):
             for r in self.l3_static_rows
             if r["prefix"].get().strip()
         ]
+        sw["bgp"] = {
+            "isp_ip":        self.bgp_isp_ip.get().strip(),
+            "isp_mask":      self.bgp_isp_mask.get().strip(),
+            "isp_gateway":   self.bgp_isp_gateway.get().strip(),
+            "user_network":  self.bgp_user_network.get().strip(),
+            "user_mask":     self.bgp_user_mask.get().strip(),
+            "circuit_id":    self.bgp_circuit_id.get().strip(),
+            "peers": [
+                {"peer_ip":     r["ip"].get().strip(),
+                 "peer_asn":    r["asn"].get().strip(),
+                 "password":    r["pwd"].get().strip(),
+                 "description": r["desc"].get().strip()}
+                for r in self.sw_peer_rows
+                if r["ip"].get().strip()
+            ],
+        }
         return sw
 
     def _get_pa_list(self):
@@ -2300,6 +2512,8 @@ class ProfilesTab(ttk.Frame):
         self.pa_rows  = []
         self.svi_rows = []
         self.ospf_net_rows = []
+        self.acl_blocks = []   # list of dicts: one per ACL editor block
+        self.bgp_peer_rows = []  # site-wide BGP peers
         self._build()
 
     def _build(self):
@@ -2417,13 +2631,27 @@ class ProfilesTab(ttk.Frame):
                        "  shared across all switches at the site."
                   ).pack(anchor="w", padx=2, pady=(0, 4))
         sh = ttk.Frame(self.svi_lf); sh.pack(fill="x")
-        ttk.Label(sh, text="VLAN", width=6).pack(side="left", padx=1)
-        ttk.Label(sh, text="Description", width=18).pack(side="left", padx=1)
-        ttk.Label(sh, text="IP", width=15).pack(side="left", padx=1)
-        ttk.Label(sh, text="Mask", width=15).pack(side="left", padx=1)
-        ttk.Label(sh, text="Helpers (CSV)", width=22).pack(side="left", padx=1)
+        # Grid: 0 vlan | 1 description | 2 ip | 3 mask | 4 helpers | 5 add btn
+        # Description and helpers get more weight than IP/mask since they
+        # hold longer values; vlan stays narrow. uniform="svi" makes header
+        # and row columns share the same widths.
+        sh.columnconfigure(0, weight=1, uniform="svi")
+        sh.columnconfigure(1, weight=3, uniform="svi")
+        sh.columnconfigure(2, weight=2, uniform="svi")
+        sh.columnconfigure(3, weight=2, uniform="svi")
+        sh.columnconfigure(4, weight=3, uniform="svi")
+        ttk.Label(sh, text="VLAN", anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=1)
+        ttk.Label(sh, text="Description", anchor="w").grid(
+            row=0, column=1, sticky="ew", padx=1)
+        ttk.Label(sh, text="IP", anchor="w").grid(
+            row=0, column=2, sticky="ew", padx=1)
+        ttk.Label(sh, text="Mask", anchor="w").grid(
+            row=0, column=3, sticky="ew", padx=1)
+        ttk.Label(sh, text="Helpers (CSV)", anchor="w").grid(
+            row=0, column=4, sticky="ew", padx=1)
         ttk.Button(sh, text="+ Add SVI",
-                   command=self._add_svi).pack(side="right")
+                   command=self._add_svi).grid(row=0, column=5, padx=(6, 1))
         self.svi_frame = ttk.Frame(self.svi_lf); self.svi_frame.pack(fill="x")
 
         # OSPF
@@ -2457,6 +2685,64 @@ class ProfilesTab(ttk.Frame):
                    command=self._add_ospf_net).pack(side="right")
         self.ospf_net_frame = ttk.Frame(self.ospf_lf)
         self.ospf_net_frame.pack(fill="x")
+
+        # BGP
+        self.bgp_lf = ttk.LabelFrame(self.l3_body, text="BGP", padding=5)
+        self.bgp_lf.pack(fill="x", padx=5, pady=4)
+        self.bgp_enabled = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.bgp_lf, text="Enable BGP",
+                        variable=self.bgp_enabled
+                        ).pack(anchor="w")
+        self.bgp_local_asn_e = _field(self.bgp_lf, "Local ASN", "65000")
+        self.bgp_peer_asn_e  = _field(self.bgp_lf, "Default Peer ASN", "65001")
+        ttk.Label(self.bgp_lf, style="Hint.TLabel",
+                  text="  Default Peer ASN pre-fills new peer rows below\n"
+                       "  and per-switch peers in Generate Config. Each peer\n"
+                       "  has its own ASN, so peers from different upstreams\n"
+                       "  are fine.\n"
+                       "  Per-switch ISP IP/gateway, user network, and\n"
+                       "  circuit ID are entered later in Generate Config."
+                  ).pack(anchor="w", padx=5, pady=(0, 4))
+
+        # Site-wide BGP peers (every switch built from this profile gets
+        # all of them, plus any per-switch additions from Generate Config)
+        self.bgp_peers_lf = ttk.LabelFrame(
+            self.bgp_lf, text="Site Peers", padding=5)
+        self.bgp_peers_lf.pack(fill="x", padx=2, pady=(4, 0))
+        ttk.Label(self.bgp_peers_lf, style="Hint.TLabel",
+                  text="  Peers shared across all switches at this site\n"
+                       "  (route reflectors, fabric peers, etc.).\n"
+                       "  Per-switch peers are added in Generate Config."
+                  ).pack(anchor="w", padx=2, pady=(0, 4))
+        ph = ttk.Frame(self.bgp_peers_lf); ph.pack(fill="x")
+        for col in range(4):
+            ph.columnconfigure(col, weight=1, uniform="bgppeers")
+        ttk.Label(ph, text="Peer IP", anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=1)
+        ttk.Label(ph, text="Remote ASN", anchor="w").grid(
+            row=0, column=1, sticky="ew", padx=1)
+        ttk.Label(ph, text="Password", anchor="w").grid(
+            row=0, column=2, sticky="ew", padx=1)
+        ttk.Label(ph, text="Description", anchor="w").grid(
+            row=0, column=3, sticky="ew", padx=1)
+        ttk.Button(ph, text="+ Add Peer",
+                   command=lambda: self._add_bgp_peer()
+                   ).grid(row=0, column=4, padx=(6, 1))
+        self.bgp_peer_frame = ttk.Frame(self.bgp_peers_lf)
+        self.bgp_peer_frame.pack(fill="x")
+
+        # ACLs (site-wide named access-lists)
+        self.acl_lf = ttk.LabelFrame(self.l3_body, text="Access Lists", padding=5)
+        self.acl_lf.pack(fill="x", padx=5, pady=4)
+        ttk.Label(self.acl_lf, style="Hint.TLabel",
+                  text="  Named ACLs rendered after the interfaces section.\n"
+                       "  Order matters — rules emit in the order shown."
+                  ).pack(anchor="w", padx=2, pady=(0, 4))
+        ttk.Button(self.acl_lf, text="+ Add ACL",
+                   command=lambda: self._add_acl_block()
+                   ).pack(anchor="w", pady=(0, 4))
+        self.acl_container = ttk.Frame(self.acl_lf)
+        self.acl_container.pack(fill="x")
 
         ttk.Button(form, text="Save Profile",
                    command=self._save).pack(padx=5, pady=10, anchor="w")
@@ -2534,16 +2820,21 @@ class ProfilesTab(ttk.Frame):
 
     def _add_svi(self, data=None):
         row = ttk.Frame(self.svi_frame); row.pack(fill="x", pady=1)
-        vlan = ttk.Entry(row, width=6);    vlan.pack(side="left", padx=1)
-        desc = ttk.Entry(row, width=18);   desc.pack(side="left", padx=1)
-        ip   = ttk.Entry(row, width=15);   ip.pack(side="left", padx=1)
-        mask = ttk.Entry(row, width=15);   mask.pack(side="left", padx=1)
-        hlp  = ttk.Entry(row, width=22);   hlp.pack(side="left", padx=1)
+        row.columnconfigure(0, weight=1, uniform="svi")
+        row.columnconfigure(1, weight=3, uniform="svi")
+        row.columnconfigure(2, weight=2, uniform="svi")
+        row.columnconfigure(3, weight=2, uniform="svi")
+        row.columnconfigure(4, weight=3, uniform="svi")
+        vlan = ttk.Entry(row); vlan.grid(row=0, column=0, sticky="ew", padx=1)
+        desc = ttk.Entry(row); desc.grid(row=0, column=1, sticky="ew", padx=1)
+        ip   = ttk.Entry(row); ip.grid(  row=0, column=2, sticky="ew", padx=1)
+        mask = ttk.Entry(row); mask.grid(row=0, column=3, sticky="ew", padx=1)
+        hlp  = ttk.Entry(row); hlp.grid( row=0, column=4, sticky="ew", padx=1)
         for w in (vlan, desc, ip, mask, hlp):
             _attach_context_menu(w)
         ttk.Button(row, text="X", width=3, style="Del.TButton",
                    command=lambda: self._del_row(row, self.svi_rows)
-                   ).pack(side="left", padx=2)
+                   ).grid(row=0, column=5, padx=(6, 1))
         if data:
             vlan.insert(0, data.get("vlan", ""))
             desc.insert(0, data.get("description", "") or data.get("name", ""))
@@ -2577,6 +2868,225 @@ class ProfilesTab(ttk.Frame):
             area.insert(0, str(data.get("area", "") or ""))
         self.ospf_net_rows.append({"frame": row, "net": net, "wc": wc,
                                    "area": area})
+
+    # -- ACL editor --
+    _ACL_ACTIONS = ("permit", "deny", "remark")
+
+    def _clear_acls(self):
+        for blk in self.acl_blocks:
+            blk["frame"].destroy()
+        self.acl_blocks.clear()
+
+    def _add_acl_block(self, data=None):
+        blk_frame = ttk.LabelFrame(self.acl_container, padding=5)
+        blk_frame.pack(fill="x", pady=(0, 6))
+
+        top = ttk.Frame(blk_frame); top.pack(fill="x")
+        ttk.Label(top, text="Name:").pack(side="left")
+        name_e = ttk.Entry(top, width=24); name_e.pack(side="left", padx=(4, 10))
+        _attach_context_menu(name_e)
+        ttk.Label(top, text="Type:").pack(side="left")
+        type_cb = ttk.Combobox(top, width=12, state="readonly",
+                               values=["extended", "standard"])
+        type_cb.bind("<MouseWheel>", lambda _e: "break")
+        type_cb.pack(side="left", padx=4)
+        type_cb.set("extended")
+
+        rule_rows = []
+        ttk.Button(top, text="X", width=3, style="Del.TButton",
+                   command=lambda f=blk_frame: self._del_acl_block(f)
+                   ).pack(side="right")
+
+        rules_frame = ttk.Frame(blk_frame)
+        rules_frame.pack(fill="x", pady=(4, 0))
+
+        btn_row = ttk.Frame(blk_frame); btn_row.pack(fill="x", pady=(4, 0))
+        block = {"frame": blk_frame, "name": name_e, "type": type_cb,
+                 "rules": rule_rows, "rules_frame": rules_frame}
+        ttk.Button(btn_row, text="+ Add Rule",
+                   command=lambda b=block: self._add_acl_rule(b)
+                   ).pack(side="left")
+
+        self.acl_blocks.append(block)
+
+        if data:
+            name_e.insert(0, data.get("name", ""))
+            type_cb.set(data.get("type", "extended") or "extended")
+            for rule in data.get("rules", []) or []:
+                self._add_acl_rule(block, rule)
+
+    def _del_acl_block(self, frame):
+        self.acl_blocks[:] = [b for b in self.acl_blocks
+                              if b["frame"] is not frame]
+        frame.destroy()
+
+    def _add_acl_rule(self, block, data=None):
+        row = ttk.Frame(block["rules_frame"]); row.pack(fill="x", pady=1)
+        # Grid columns:  0 action | 1 proto | 2 src | 3 src_wc |
+        #                4 dst    | 5 dst_wc | 6 log | 7 X
+        # Action / proto / log / X stay at their natural width; the four
+        # address columns share equal weight so the row fills the rules
+        # frame and stays the same length whether the action is permit,
+        # deny, or remark — and adapts when the window is narrow.
+        for col in (2, 3, 4, 5):
+            row.columnconfigure(col, weight=1, uniform="acladdrs")
+        action_cb = ttk.Combobox(row, width=8, state="readonly",
+                                 values=list(self._ACL_ACTIONS))
+        action_cb.bind("<MouseWheel>", lambda _e: "break")
+        action_cb.grid(row=0, column=0, sticky="ew", padx=1)
+        proto_e = ttk.Entry(row, width=4)
+        src_e   = ttk.Entry(row)
+        srcwc_e = ttk.Entry(row)
+        dst_e   = ttk.Entry(row)
+        dstwc_e = ttk.Entry(row)
+        proto_e.grid(row=0, column=1, sticky="ew", padx=1)
+        src_e.grid(  row=0, column=2, sticky="ew", padx=1)
+        srcwc_e.grid(row=0, column=3, sticky="ew", padx=1)
+        dst_e.grid(  row=0, column=4, sticky="ew", padx=1)
+        dstwc_e.grid(row=0, column=5, sticky="ew", padx=1)
+        log_var = tk.BooleanVar(value=False)
+        log_cb  = ttk.Checkbutton(row, text="log", variable=log_var)
+        log_cb.grid(row=0, column=6, sticky="w", padx=2)
+        for w in (proto_e, src_e, srcwc_e, dst_e, dstwc_e):
+            _attach_context_menu(w)
+        del_btn = ttk.Button(row, text="X", width=3, style="Del.TButton",
+                             command=lambda r=row, b=block:
+                                 self._del_acl_rule(r, b))
+        del_btn.grid(row=0, column=7, sticky="e", padx=2)
+
+        rule = {"frame": row, "action": action_cb, "proto": proto_e,
+                "src": src_e, "src_wc": srcwc_e,
+                "dst": dst_e, "dst_wc": dstwc_e, "log": log_var}
+
+        # When the action is 'remark', collapse the rule fields into a
+        # single text entry that spans columns 1–6 (everything between
+        # the action combobox and the delete button). Row width and
+        # sash alignment stay identical to permit/deny rows.
+        def _refresh_action_layout(*_):
+            act = action_cb.get() or "permit"
+            if act == "remark":
+                for w in (proto_e, src_e, srcwc_e, dst_e, dstwc_e, log_cb):
+                    w.grid_remove()
+                rmk = rule.get("remark")
+                if rmk is None:
+                    rmk = ttk.Entry(row)
+                    _attach_context_menu(rmk)
+                    rule["remark"] = rmk
+                rmk.grid(row=0, column=1, columnspan=6,
+                         sticky="ew", padx=1)
+            else:
+                rmk = rule.get("remark")
+                if rmk is not None:
+                    rmk.grid_remove()
+                proto_e.grid()
+                src_e.grid()
+                srcwc_e.grid()
+                dst_e.grid()
+                dstwc_e.grid()
+                log_cb.grid()
+
+        action_cb.bind("<<ComboboxSelected>>", _refresh_action_layout)
+
+        if data:
+            act = data.get("action", "permit") or "permit"
+            action_cb.set(act)
+            if act == "remark":
+                _refresh_action_layout()
+                rule["remark"].insert(0, data.get("text", ""))
+            else:
+                proto_e.insert(0, data.get("protocol", "ip") or "ip")
+                src_e.insert(0, data.get("source", ""))
+                srcwc_e.insert(0, data.get("source_wildcard", ""))
+                dst_e.insert(0, data.get("dest", ""))
+                dstwc_e.insert(0, data.get("dest_wildcard", ""))
+                log_var.set(bool(data.get("log", False)))
+        else:
+            action_cb.set("permit")
+            proto_e.insert(0, "ip")
+
+        block["rules"].append(rule)
+
+    def _del_acl_rule(self, row, block):
+        block["rules"][:] = [r for r in block["rules"] if r["frame"] is not row]
+        row.destroy()
+
+    # -- BGP peer rows --
+    def _clear_bgp_peers(self):
+        for r in self.bgp_peer_rows:
+            r["frame"].destroy()
+        self.bgp_peer_rows.clear()
+
+    def _add_bgp_peer(self, data=None):
+        row = ttk.Frame(self.bgp_peer_frame); row.pack(fill="x", pady=1)
+        for col in range(4):
+            row.columnconfigure(col, weight=1, uniform="bgppeers")
+        ip_e   = ttk.Entry(row); ip_e.grid(  row=0, column=0, sticky="ew", padx=1)
+        asn_e  = ttk.Entry(row); asn_e.grid( row=0, column=1, sticky="ew", padx=1)
+        pwd_e  = ttk.Entry(row); pwd_e.grid( row=0, column=2, sticky="ew", padx=1)
+        desc_e = ttk.Entry(row); desc_e.grid(row=0, column=3, sticky="ew", padx=1)
+        for w in (ip_e, asn_e, pwd_e, desc_e):
+            _attach_context_menu(w)
+        ttk.Button(row, text="X", width=3, style="Del.TButton",
+                   command=lambda: self._del_bgp_peer(row)
+                   ).grid(row=0, column=4, padx=(6, 1))
+        if data:
+            ip_e.insert(0, data.get("peer_ip", ""))
+            asn_e.insert(0, str(data.get("peer_asn", "") or ""))
+            pwd_e.insert(0, data.get("password", ""))
+            desc_e.insert(0, data.get("description", ""))
+        else:
+            # pre-fill new rows with the profile-level default Peer ASN
+            asn_e.insert(0, self.bgp_peer_asn_e.get().strip())
+        self.bgp_peer_rows.append({"frame": row, "ip": ip_e, "asn": asn_e,
+                                   "pwd": pwd_e, "desc": desc_e})
+
+    def _del_bgp_peer(self, frame):
+        self.bgp_peer_rows[:] = [r for r in self.bgp_peer_rows
+                                 if r["frame"] is not frame]
+        frame.destroy()
+
+    def _collect_bgp_peers(self):
+        out = []
+        for r in self.bgp_peer_rows:
+            ip = r["ip"].get().strip()
+            if not ip:
+                continue
+            out.append({
+                "peer_ip":     ip,
+                "peer_asn":    r["asn"].get().strip(),
+                "password":    r["pwd"].get().strip(),
+                "description": r["desc"].get().strip(),
+            })
+        return out
+
+    def _collect_acls(self):
+        out = []
+        for blk in self.acl_blocks:
+            name = blk["name"].get().strip()
+            if not name:
+                continue
+            acl = {"name": name,
+                   "type": blk["type"].get() or "extended",
+                   "rules": []}
+            for r in blk["rules"]:
+                act = r["action"].get() or "permit"
+                if act == "remark":
+                    text = r.get("remark")
+                    text = text.get().strip() if text is not None else ""
+                    if text:
+                        acl["rules"].append({"action": "remark", "text": text})
+                else:
+                    acl["rules"].append({
+                        "action": act,
+                        "protocol": r["proto"].get().strip() or "ip",
+                        "source": r["src"].get().strip(),
+                        "source_wildcard": r["src_wc"].get().strip(),
+                        "dest": r["dst"].get().strip(),
+                        "dest_wildcard": r["dst_wc"].get().strip(),
+                        "log": bool(r["log"].get()),
+                    })
+            out.append(acl)
+        return out
 
     # -- actions --
     def _on_select(self, name=None):
@@ -2623,6 +3133,20 @@ class ProfilesTab(ttk.Frame):
         for n in ospf.get("networks", []) or []:
             self._add_ospf_net(n)
 
+        bgp = p.get("bgp", {}) or {}
+        self.bgp_enabled.set(bool(bgp.get("enabled", False)))
+        self.bgp_local_asn_e.delete(0, "end")
+        self.bgp_local_asn_e.insert(0, str(bgp.get("local_asn", "") or ""))
+        self.bgp_peer_asn_e.delete(0, "end")
+        self.bgp_peer_asn_e.insert(0, str(bgp.get("peer_asn", "") or ""))
+        self._clear_bgp_peers()
+        for peer in bgp.get("peers", []) or []:
+            self._add_bgp_peer(peer)
+
+        self._clear_acls()
+        for acl in p.get("acls", []) or []:
+            self._add_acl_block(acl)
+
         self._on_layer3_toggle()
 
     def _new(self):
@@ -2641,6 +3165,11 @@ class ProfilesTab(ttk.Frame):
         self.ospf_passive_default.set(False)
         self.ospf_passive_e.delete(0, "end")
         self._clear_ospf_nets()
+        self.bgp_enabled.set(False)
+        self.bgp_local_asn_e.delete(0, "end"); self.bgp_local_asn_e.insert(0, "65000")
+        self.bgp_peer_asn_e.delete(0, "end"); self.bgp_peer_asn_e.insert(0, "65001")
+        self._clear_bgp_peers()
+        self._clear_acls()
         self._on_layer3_toggle()
 
     def _duplicate(self):
@@ -2745,6 +3274,16 @@ class ProfilesTab(ttk.Frame):
                 "passive_interfaces":  passive_ifaces,
                 "networks":            networks,
             }
+            if self.bgp_enabled.get() or self.bgp_local_asn_e.get().strip():
+                data["bgp"] = {
+                    "enabled":   self.bgp_enabled.get(),
+                    "local_asn": self.bgp_local_asn_e.get().strip(),
+                    "peer_asn":  self.bgp_peer_asn_e.get().strip(),
+                    "peers":     self._collect_bgp_peers(),
+                }
+            acls = self._collect_acls()
+            if acls:
+                data["acls"] = acls
 
         self.app.profiles[name] = data
         save_json("profiles.json", self.app.profiles)

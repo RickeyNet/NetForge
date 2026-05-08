@@ -21,3 +21,6 @@ Desktop.ini
 # Source workbooks and packaged template ZIPs (track the unpacked JSON instead)
 *.xlsx
 template_packs/*.zip
+
+# Redacted reference templates (local-only, not for distribution)
+redacted_*.txt
