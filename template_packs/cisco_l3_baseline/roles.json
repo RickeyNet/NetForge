@@ -8,6 +8,10 @@
   "L2 Trunk + DHCP Snooping Trust (Hardened)": {
     "commands": "description {{ description }}\nswitchport mode trunk\nswitchport nonegotiate\nswitchport trunk native vlan {{ native_vlan }}\nswitchport trunk allowed vlan {{ trunk_allowed }}\nstorm-control broadcast level bps 1g\nstorm-control unicast level bps 1g\nspanning-tree guard root\nip dhcp snooping trust\nno shutdown"
   },
+  "L3 Routed Uplink (Hardened)": {
+    "requires_ip": true,
+    "commands": "description {{ description }}\nno switchport\nmtu 9100\nip address {{ ip }} {{ mask }}\nip ospf {{ ospf_pid }} area 0\nip ospf network point-to-point\nno ip redirects\nno ip proxy-arp\nno shutdown"
+  },
   "Private VLAN Promiscuous": {
     "commands": "description {{ description }}\nswitchport private-vlan mapping {{ pvlan_primary }} {{ pvlan_isolated }}\nswitchport mode private-vlan promiscuous\nspanning-tree portfast\nspanning-tree bpduguard enable\nno shut"
   },

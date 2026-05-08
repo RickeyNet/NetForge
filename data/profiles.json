@@ -4,5 +4,22 @@
     "vlan_definitions": "interface vlan1\nno ip address\nshutdown\nexit",
     "role_variables": {},
     "port_assignments": []
+  },
+  "Layer 3": {
+    "domain_name": "",
+    "mgmt_vlan": "",
+    "vlan_definitions": "",
+    "role_variables": {},
+    "port_assignments": [],
+    "layer3": true,
+    "mgmt_style": "loopback",
+    "svis": [],
+    "ospf": {
+      "enabled": true,
+      "process_id": "1",
+      "passive_default": false,
+      "passive_interfaces": [],
+      "networks": []
+    }
   }
 }

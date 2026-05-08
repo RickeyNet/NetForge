@@ -125,6 +125,15 @@ A hardened Layer 3 distribution-switch baseline for Cisco Catalyst 9300
 running IOS XE. Mgmt rides Loopback0 and OSPF area 0 reaches it through
 two routed uplinks; SVIs act as default gateways for user/voice VLANs.
 
+The pack splits config along two seams:
+
+- **Site profile** owns site-wide things — VLAN definitions, SVI
+  gateway IPs (shared across all switches at the site), OSPF
+  process settings, port-to-role mappings.
+- **Generate Config Step 3** owns per-switch things — Loopback0 IP,
+  routed-uplink IPs, OSPF router-id (defaults to Loopback0), static
+  routes.
+
 ### What's covered
 
 **Base Settings text-areas** — same hardened policies as the L2 pack
@@ -138,43 +147,43 @@ logging, SSH, line config, banner, custom sections), plus L3 globals:
 snooping, NTP, SNMPv3). The DHCP-snooping VLAN list is widened to
 `10,20` (data + voice).
 
+**Roles** — same hardened L2 roles as the L2 pack, plus one new role:
+- `L3 Routed Uplink (Hardened)` — has `requires_ip: true`, so when
+  you assign a port to it, Generate Config Step 3 prompts for the
+  IP/mask. Hardened command set: `no switchport`, `mtu 9100`,
+  `ip address {{ ip }} {{ mask }}`,
+  `ip ospf {{ ospf_pid }} area 0`, `ip ospf network point-to-point`,
+  `no ip redirects`, `no ip proxy-arp`, `no shutdown`.
+
 **Profile** — `Cisco L3 Baseline (example)` with `layer3=true`,
 `mgmt_style=loopback`, and:
-- Loopback0 with `<LOOPBACK_IP>/32` for mgmt + OSPF router-id.
 - VLAN definitions for VLANs 3, 10, 20, 66 (native blackhole),
   67 (disabled).
-- Three SVIs — VLAN 3 (mgmt SVI for any L2 stragglers), VLAN 10
-  (USER_DATA, with helper-addresses), VLAN 20 (VOICE, with helpers).
-- Two routed uplinks (G1/0/1 → CORE-A, G1/0/2 → CORE-B) with `mtu 9100`
-  and `ip ospf 1 area 0`.
-- OSPF process 1, `<LOOPBACK_IP>` as router-id, `passive-interface
-  default` with the two uplinks marked active. Loopback0 is advertised
-  via `network <LOOPBACK_IP> 0.0.0.0 area 0`.
-- No static routes (use the structured editor to add a fallback default
-  if your design needs one).
-
-**Roles** — same as the L2 pack. A routed L3 switch still has access
-ports for users; routed uplinks are configured directly via the
-*Routed Uplinks* grid in the profile, not via roles.
+- Two SVIs — VLAN 10 (USER_DATA) and VLAN 20 (VOICE), each with
+  helper-address placeholders. SVI gateway IPs are profile-level
+  because they're the same on every switch at the site.
+- Port assignments — G1/0/1 → "L3 Routed Uplink (Hardened)" (CORE-A),
+  G1/0/2 → "L3 Routed Uplink (Hardened)" (CORE-B). Per-switch IPs
+  for these are entered in Generate Config.
+- OSPF process 1, `passive-interface default` with the two uplinks
+  marked active. `networks` is empty by default — add per-site
+  network statements, or rely on per-interface `ip ospf 1 area 0`
+  on the uplinks (already in the role) to bring up adjacencies.
 
 **Models** — unchanged from NetForge defaults.
 
-### What you need to fill in per site
+### What you fill in: profile vs. per-switch
 
-**1. Profile fields (Site Profiles → Cisco L3 Baseline (example)):**
+**1. Profile fields (Site Profiles → Cisco L3 Baseline (example)) — site-wide:**
 
 | Field | What it is |
 |---|---|
-| Loopback0 → IP | Switch loopback address (used for mgmt and OSPF router-id). The `<LOOPBACK_IP>` placeholder also appears in the OSPF router-id and a `network` statement — replace all three. |
-| SVIs → VLAN 3 IP/Mask | Mgmt SVI gateway (only if you keep an L2 mgmt SVI alongside the loopback). |
-| SVIs → VLAN 10 IP/Mask + Helpers | User VLAN gateway and DHCP helper addresses. |
-| SVIs → VLAN 20 IP/Mask + Helpers | Voice VLAN gateway and DHCP helper addresses. |
-| Routed Uplinks → IP/Mask | Per-uplink point-to-point /30 addresses to the upstream cores. |
-| OSPF → Router ID | Replace `<LOOPBACK_IP>` with the same IP you used for Loopback0. |
-| OSPF → Networks | Already includes Loopback0. Add user/voice subnets if you want them advertised. |
-| Role Variables | Same NTP / SNMP / mgmt-ACL host placeholders as the L2 pack. |
+| SVIs → VLAN 10 IP/Mask + Helpers | User VLAN gateway IP and DHCP helper addresses (same on every switch at the site). |
+| SVIs → VLAN 20 IP/Mask + Helpers | Voice VLAN gateway IP and DHCP helper addresses. |
+| OSPF → Networks (optional) | Add `network` statements if you prefer them over the per-interface `ip ospf` already in the L3 role. |
+| Role Variables | NTP / SNMP / mgmt-ACL host placeholders (same as the L2 pack). |
 
-**2. Base Settings find-and-replace.** Same as L2:
+**2. Base Settings find-and-replace** — same as L2:
 
 | Section | Replace |
 |---|---|
@@ -185,11 +194,16 @@ Note: AAA / NTP / SNMP all use `Loopback0` as their source-interface,
 so RADIUS, syslog, NTP, and SNMP must be reachable from the loopback
 (your OSPF advertisements and core ACLs need to allow it).
 
-**3. Generate Config (per-switch fields):**
-- *Loopback0 IP* — same value you put in the profile's Loopback0 field
-  (or override per switch).
-- *Default Gateway* — disabled when `layer3=true`. OSPF or static
-  routes provide the path of last resort instead.
+**3. Generate Config Step 3 — per-switch:**
+
+| Field | What it is |
+|---|---|
+| Loopback0 → IP | This switch's loopback. Used by mgmt traffic and OSPF router-id. |
+| Loopback0 → Mask | Default `255.255.255.255`. |
+| OSPF → Router ID | Optional. Defaults to the Loopback0 IP. |
+| Routed Interface IPs | Auto-populated grid: one row per port assigned to an L3 role in Step 2. Fill in IP and mask for each uplink. |
+| Static Routes | Optional. Add a fallback default or specific routes here. |
+| Default Gateway | Disabled in this pack (`mgmt_style=loopback`) — mgmt traffic rides Loopback0, not a default-gateway. |
 
 ### What's *not* in this pack
 
@@ -199,26 +213,38 @@ so RADIUS, syslog, NTP, and SNMP must be reachable from the loopback
 - **OSPF authentication** — bare OSPF, no MD5 / SHA auth. Add via
   base_settings or per-interface custom commands once a v2 schema
   exposes per-interface auth fields.
-- **Static-route examples** — the profile ships an empty list. Use
-  the *Static Routes* grid in the profile editor to add a fallback
-  default or specific routes.
+- **OSPF network statements for SVIs/Loopback0** — networks list is
+  empty by default. The role-based per-interface `ip ospf 1 area 0`
+  on the uplinks brings up neighbor adjacencies, but you'll need
+  network statements (or `ip ospf 1 area 0` on each SVI/Loopback0)
+  if you want LSAs for the user/voice/loopback subnets. Easiest:
+  add `network <subnet> <wildcard> area 0` lines to the profile's
+  OSPF Networks grid.
 
 ### Verifying the import
 
 After importing, open *Generate Config*, pick the L3 example profile
-and a 9300 model, fill in switch details (notice the *Loopback0 IP*
-label and the disabled *Default Gateway* field), and click **Preview**.
-Spot-check the new "L3 Interfaces" and "Routing" sections:
+and a 9300 model. In Step 2, leave the seeded port assignments alone
+(G1/0/1 and G1/0/2 should already be set to "L3 Routed Uplink
+(Hardened)"). Move to Step 3 — the *Layer 3 Details* section should
+appear, with a *Routed Interface IPs* grid pre-populated with rows
+for G1/0/1 and G1/0/2.
+
+Fill in: hostname, secret, admin password, domain, Loopback0 IP,
+and uplink IPs. Click **Preview**. Spot-check:
 
 1. `ip routing` appears at the top of *L3 Interfaces*.
-2. Loopback0 has the per-switch mgmt IP with a /32 mask.
+2. Loopback0 has the per-switch IP with a /32 mask.
 3. SVIs render with `ip helper-address` for VLANs 10 and 20.
-4. Routed uplinks have `no switchport`, `mtu 9100`, and
-   `ip ospf 1 area 0`.
+4. The two routed uplinks appear in the *Interfaces* section
+   (not L3 Interfaces) with `no switchport`, `mtu 9100`,
+   `ip ospf 1 area 0`, `ip ospf network point-to-point`,
+   `no ip redirects`, `no ip proxy-arp`, and the per-switch IP.
 5. The disabled-port range starts at G1/0/3 (uplinks G1/0/1 and
    G1/0/2 are correctly excluded).
 6. The *Routing* section contains `router ospf 1` with
    `passive-interface default` and `no passive-interface` exceptions
-   for the two uplinks.
+   for the two uplinks. `router-id` matches the Loopback0 IP you
+   entered.
 7. The *Management* section is empty (mgmt rides Loopback0, not an
    SVI + default-gateway).
