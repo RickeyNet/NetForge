@@ -54,10 +54,15 @@
       "networks": []
     },
     "bgp": {
-      "enabled": true,
-      "local_asn": "65000",
-      "peer_asn": "65001",
-      "peers": []
+      "instances": [
+        {
+          "local_asn": "65000",
+          "peer_asn": "65001",
+          "slots": [
+            { "peer_asn": "65001", "description": "ISP_Peer" }
+          ]
+        }
+      ]
     },
     "acls": [
       {
