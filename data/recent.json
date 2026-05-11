@@ -1,5 +1,6 @@
 {
   "profiles": [
+    "BGP Edge",
     "test"
   ],
   "zips": [],

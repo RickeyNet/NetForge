@@ -236,6 +236,37 @@ def save_json(name, data):
         json.dump(data, f, indent=2)
 
 
+def load_base_settings():
+    """Load base_settings.json and normalize to the multi-base shape:
+        {"sets": {<name>: {...}, ...}, "default": <name>}
+    Legacy flat dicts are migrated into a single entry named "Base"."""
+    raw = load_json("base_settings.json", {})
+    if isinstance(raw, dict) and isinstance(raw.get("sets"), dict):
+        sets = {k: v for k, v in raw["sets"].items() if isinstance(v, dict)}
+        if not sets:
+            sets = {"Base": {}}
+        default = raw.get("default") if raw.get("default") in sets \
+            else next(iter(sets))
+        return {"sets": sets, "default": default}
+    # Legacy flat shape (or empty) — wrap as a single "Base" entry.
+    flat = raw if isinstance(raw, dict) else {}
+    return {"sets": {"Base": flat}, "default": "Base"}
+
+
+def resolve_base(base_root, name=None):
+    """Return the base-settings dict matching *name*, falling back to the
+    default entry when the name is missing or unknown."""
+    sets = (base_root or {}).get("sets") or {}
+    if name and name in sets:
+        return sets[name]
+    default = (base_root or {}).get("default")
+    if default and default in sets:
+        return sets[default]
+    if sets:
+        return next(iter(sets.values()))
+    return {}
+
+
 # Apply saved theme preference now that load_json is available
 _load_theme()
 
@@ -1107,6 +1138,43 @@ def render_config_sections(model, profile, roles, base, sw):
     gb.append(base.get("ssh", ""))
     gb.append(base.get("switching", ""))
 
+    # Per-profile services: DNS name-servers, NTP, clock settings.
+    services = profile.get("services", {}) or {}
+    dns_servers = services.get("dns_servers") or []
+    if isinstance(dns_servers, str):
+        dns_servers = [s.strip() for s in dns_servers.split(",") if s.strip()]
+    if dns_servers:
+        gb.append("ip name-server " + " ".join(dns_servers))
+
+    tz = (services.get("clock_timezone") or "").strip()
+    if tz:
+        gb.append(f"clock timezone {tz}")
+    summer = (services.get("clock_summer_time") or "").strip()
+    if summer:
+        gb.append(f"clock summer-time {summer}")
+
+    ntp = services.get("ntp") or {}
+    ntp_servers = ntp.get("servers") or []
+    if isinstance(ntp_servers, str):
+        ntp_servers = [s.strip() for s in ntp_servers.split(",") if s.strip()]
+    if ntp_servers:
+        ntp_lines = []
+        source = (ntp.get("source_interface") or "").strip()
+        if source:
+            ntp_lines.append(f"ntp source {source}")
+        key_id = (ntp.get("auth_key_id") or "").strip()
+        key = (ntp.get("auth_key") or "").strip()
+        if key_id and key:
+            ntp_lines.append("ntp authenticate")
+            ntp_lines.append(f"ntp authentication-key {key_id} md5 {key}")
+            ntp_lines.append(f"ntp trusted-key {key_id}")
+        for s in ntp_servers:
+            if key_id and key:
+                ntp_lines.append(f"ntp server {s} key {key_id}")
+            else:
+                ntp_lines.append(f"ntp server {s}")
+        gb.append("\n".join(ntp_lines))
+
     # ── 2  VLANs ────────────────────────────────────────────────────────
     vl = []
     vl.append(profile.get("vlan_definitions", ""))
@@ -1138,12 +1206,14 @@ def render_config_sections(model, profile, roles, base, sw):
                     f"exit"
                 )
 
+        svi_ips = sw.get("svi_ips", {}) or {}
         for svi in profile.get("svis", []) or []:
             vlan = (svi.get("vlan") or "").strip()
             if not vlan:
                 continue
-            ip = (svi.get("ip") or "").strip()
-            mask = (svi.get("mask") or "").strip()
+            per_sw = svi_ips.get(vlan, {}) or {}
+            ip = (per_sw.get("ip") or "").strip()
+            mask = (per_sw.get("mask") or "").strip()
             desc = (svi.get("description") or svi.get("name") or "").strip()
             helpers_raw = svi.get("helper_addresses") or ""
             if isinstance(helpers_raw, list):
@@ -1516,7 +1586,7 @@ class GenerateTab(ttk.Frame):
             values=["Range", "Individual Ports"])
         self.pa_display_cb.bind("<MouseWheel>", lambda _e: "break")
         self.pa_display_cb.pack(side="left", padx=6)
-        cur = self.app.base.get("port_display_mode", "range")
+        cur = resolve_base(self.app.base).get("port_display_mode", "range")
         self.pa_display_cb.set(
             "Individual Ports" if cur == "listed" else "Range")
         self.pa_display_cb.bind("<<ComboboxSelected>>",
@@ -1645,6 +1715,29 @@ class GenerateTab(ttk.Frame):
         self.l3_ip_frame = ttk.Frame(self.l3_ip_lf)
         self.l3_ip_frame.pack(fill="x")
 
+        # Per-SVI IPs (auto-populated from profile.svis)
+        self.svi_ip_lf = ttk.LabelFrame(
+            self.l3_frame, text="SVI IPs", padding=5)
+        self.svi_ip_lf.pack(fill="x", padx=5, pady=4)
+        ttk.Label(self.svi_ip_lf, style="Hint.TLabel",
+                  text="  One row per SVI defined in the profile.\n"
+                       "  Includes user/voice VLANs and any ISP-VLAN\n"
+                       "  SVI carrying the public uplink IP."
+                  ).pack(anchor="w", padx=2, pady=(0, 4))
+        sih = ttk.Frame(self.svi_ip_lf); sih.pack(fill="x")
+        sih.columnconfigure(0, weight=2, uniform="sviip")
+        sih.columnconfigure(1, weight=1, uniform="sviip")
+        sih.columnconfigure(2, weight=1, uniform="sviip")
+        ttk.Label(sih, text="VLAN", anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=1)
+        ttk.Label(sih, text="IP", anchor="w").grid(
+            row=0, column=1, sticky="ew", padx=1)
+        ttk.Label(sih, text="Mask", anchor="w").grid(
+            row=0, column=2, sticky="ew", padx=1)
+        self.svi_ip_frame = ttk.Frame(self.svi_ip_lf)
+        self.svi_ip_frame.pack(fill="x")
+        self.svi_ip_rows = []
+
         # Static routes
         self.l3_static_lf = ttk.LabelFrame(
             self.l3_frame, text="Static Routes", padding=5)
@@ -1676,10 +1769,11 @@ class GenerateTab(ttk.Frame):
                   ).pack(anchor="w", padx=2, pady=(0, 4))
         self.bgp_inst_container = ttk.Frame(self.bgp_lf)
         self.bgp_inst_container.pack(fill="x")
-        # Each entry: dict with isp_ip / isp_mask / isp_gateway /
-        # user_network / user_mask / circuit_id Entries, plus a list of
-        # peer row dicts and the frame the block is packed into. Built
-        # dynamically when a BGP-enabled profile is selected.
+        # Each entry: dict with isp_gateway / user_network / user_mask /
+        # circuit_id Entries, plus a list of peer row dicts and the frame
+        # the block is packed into. Built dynamically when a BGP-enabled
+        # profile is selected. The ISP-facing IP now comes from the SVI
+        # for the ISP VLAN (entered in the SVI IPs section).
         self.bgp_inst_blocks = []
 
         # -- right: preview --
@@ -1907,24 +2001,19 @@ class GenerateTab(ttk.Frame):
     def _apply_l3_visibility(self, profile):
         """Show/hide the Layer 3 Details frame and its sub-sections
         based on the profile's layer3 flag, mgmt_style, and ospf.enabled.
-        Default Gateway is required for SVI mgmt (IOS still needs
-        ``ip default-gateway`` for off-subnet mgmt traffic) and only
-        suppressed for loopback / routed_uplink modes."""
+        Default Gateway is always editable — it's required on every
+        device regardless of mgmt_style."""
         layer3 = bool(profile.get("layer3", False))
         mgmt_style = profile.get("mgmt_style", "svi") if layer3 else "svi"
         ospf_enabled = bool((profile.get("ospf") or {}).get("enabled", False))
 
-        # Default Gateway availability
-        if not layer3 or mgmt_style == "svi":
-            self._gateway_label.configure(text="Default Gateway")
-            self.gateway.configure(state="normal")
-        else:
-            self._gateway_label.configure(text="Default Gw (unused)")
-            self.gateway.configure(state="disabled")
+        self._gateway_label.configure(text="Default Gateway")
+        self.gateway.configure(state="normal")
 
         if not layer3:
             self.l3_frame.pack_forget()
             self._clear_l3_ip_rows()
+            self._clear_svi_ip_rows()
             self._clear_l3_statics()
             self._clear_bgp_inst_blocks()
             return
@@ -1935,7 +2024,7 @@ class GenerateTab(ttk.Frame):
         # mgmt_style / ospf_enabled we end up with.
         self.l3_frame.pack(fill="x", padx=5, pady=2)
         for sub in (self.lb_lf, self.rid_lf, self.l3_ip_lf,
-                    self.l3_static_lf, self.bgp_lf):
+                    self.svi_ip_lf, self.l3_static_lf, self.bgp_lf):
             sub.pack_forget()
 
         # Loopback0 only used when mgmt rides Loopback0.
@@ -1947,6 +2036,14 @@ class GenerateTab(ttk.Frame):
             self.rid_lf.pack(fill="x", padx=5, pady=4)
 
         self.l3_ip_lf.pack(fill="x", padx=5, pady=4)
+
+        # SVI IPs section only when the profile actually defines SVIs.
+        if profile.get("svis"):
+            self.svi_ip_lf.pack(fill="x", padx=5, pady=4)
+            self._populate_svi_ip_rows(profile)
+        else:
+            self._clear_svi_ip_rows()
+
         self.l3_static_lf.pack(fill="x", padx=5, pady=4)
 
         bgp_instances = (profile.get("bgp") or {}).get("instances") or []
@@ -1994,6 +2091,39 @@ class GenerateTab(ttk.Frame):
                 mask.insert(0, existing[iface][1])
             self.l3_ip_rows.append({"frame": row, "iface_name": iface,
                                     "ip": ip, "mask": mask})
+
+    def _clear_svi_ip_rows(self):
+        for r in self.svi_ip_rows:
+            r["frame"].destroy()
+        self.svi_ip_rows.clear()
+
+    def _populate_svi_ip_rows(self, profile):
+        """One row per SVI defined in the profile. Preserves any IPs
+        the user already typed for the same VLAN."""
+        existing = {r["vlan"]: (r["ip"].get(), r["mask"].get())
+                    for r in self.svi_ip_rows}
+        self._clear_svi_ip_rows()
+        for svi in profile.get("svis", []) or []:
+            vlan = (svi.get("vlan") or "").strip()
+            if not vlan:
+                continue
+            desc = (svi.get("description") or "").strip()
+            label = f"Vlan{vlan}" + (f" — {desc}" if desc else "")
+            row = ttk.Frame(self.svi_ip_frame); row.pack(fill="x", pady=1)
+            row.columnconfigure(0, weight=2, uniform="sviip")
+            row.columnconfigure(1, weight=1, uniform="sviip")
+            row.columnconfigure(2, weight=1, uniform="sviip")
+            ttk.Label(row, text=label, anchor="w").grid(
+                row=0, column=0, sticky="ew", padx=1)
+            ip = ttk.Entry(row); ip.grid(row=0, column=1, sticky="ew", padx=1)
+            mask = ttk.Entry(row); mask.grid(row=0, column=2, sticky="ew", padx=1)
+            _attach_context_menu(ip)
+            _attach_context_menu(mask)
+            if vlan in existing:
+                ip.insert(0, existing[vlan][0])
+                mask.insert(0, existing[vlan][1])
+            self.svi_ip_rows.append({"frame": row, "vlan": vlan,
+                                     "ip": ip, "mask": mask})
 
     def _clear_l3_statics(self):
         for r in self.l3_static_rows:
@@ -2062,8 +2192,6 @@ class GenerateTab(ttk.Frame):
 
     def _snapshot_bgp_inst_block(self, blk):
         return {
-            "isp_ip":       blk["isp_ip"].get(),
-            "isp_mask":     blk["isp_mask"].get(),
             "isp_gateway":  blk["isp_gateway"].get(),
             "user_network": blk["user_network"].get(),
             "user_mask":    blk["user_mask"].get(),
@@ -2082,8 +2210,6 @@ class GenerateTab(ttk.Frame):
             text=f"BGP {local_asn}", padding=5)
         f.pack(fill="x", padx=2, pady=(4, 0))
 
-        isp_ip       = _field(f, "ISP Interface IP")
-        isp_mask     = _field(f, "ISP Interface Mask", "255.255.255.252")
         isp_gateway  = _field(f, "ISP Gateway")
         user_network = _field(f, "User Network (advertised)")
         user_mask    = _field(f, "User Network Mask", "255.255.255.0")
@@ -2120,8 +2246,6 @@ class GenerateTab(ttk.Frame):
             "frame":        f,
             "local_asn":    local_asn,
             "default_peer_asn": default_peer_asn,
-            "isp_ip":       isp_ip,
-            "isp_mask":     isp_mask,
             "isp_gateway":  isp_gateway,
             "user_network": user_network,
             "user_mask":    user_mask,
@@ -2138,9 +2262,6 @@ class GenerateTab(ttk.Frame):
                                   prev_peers.get((asn_text, desc_text)))
 
         if prev:
-            isp_ip.insert(0, prev.get("isp_ip", ""))
-            isp_mask.delete(0, "end")
-            isp_mask.insert(0, prev.get("isp_mask", "") or "255.255.255.252")
             isp_gateway.insert(0, prev.get("isp_gateway", ""))
             user_network.insert(0, prev.get("user_network", ""))
             user_mask.delete(0, "end")
@@ -2198,6 +2319,11 @@ class GenerateTab(ttk.Frame):
                               "mask": r["mask"].get().strip()}
             for r in self.l3_ip_rows
         }
+        sw["svi_ips"] = {
+            r["vlan"]: {"ip": r["ip"].get().strip(),
+                        "mask": r["mask"].get().strip()}
+            for r in self.svi_ip_rows
+        }
         sw["static_routes"] = [
             {"prefix":      r["prefix"].get().strip(),
              "mask":        r["mask"].get().strip(),
@@ -2209,8 +2335,6 @@ class GenerateTab(ttk.Frame):
         sw["bgp_instances"] = [
             {
                 "local_asn":    blk["local_asn"],
-                "isp_ip":       blk["isp_ip"].get().strip(),
-                "isp_mask":     blk["isp_mask"].get().strip(),
                 "isp_gateway":  blk["isp_gateway"].get().strip(),
                 "user_network": blk["user_network"].get().strip(),
                 "user_mask":    blk["user_mask"].get().strip(),
@@ -2253,7 +2377,7 @@ class GenerateTab(ttk.Frame):
         try:
             self._sections = render_config_sections(
                 self.app.models[mn], profile,
-                self.app.roles, self.app.base, sw)
+                self.app.roles, self.app.resolved_base(profile), sw)
             cfg = "\n\n".join(
                 s for s in self._sections.values() if s) + "\n"
         except Exception as exc:
@@ -2275,8 +2399,11 @@ class GenerateTab(ttk.Frame):
             _dialog("Empty", "Generate a config first.")
             return
         hostname = self.hostname.get().strip() or "switch_config"
-        template = self.app.base.get("filename_template",
-                                     "{{ hostname }}_{{ model }}_{{ profile }}")
+        pn = self.profile_cb.get()
+        base_for_template = self.app.resolved_base(self.app.profiles.get(pn, {}))
+        template = base_for_template.get(
+            "filename_template",
+            "{{ hostname }}_{{ model }}_{{ profile }}")
         initial = _apply_filename_template(
             template,
             hostname=hostname,
@@ -2645,6 +2772,18 @@ class ProfilesTab(ttk.Frame):
         self.domain_e = _field(form, "Domain Name")
         self.mgmt_vlan_e = _field(form, "Management VLAN ID")
 
+        # Base Settings selector — which base set this profile uses.
+        bs_row = ttk.Frame(form); bs_row.pack(fill="x", padx=5, pady=(2, 4))
+        ttk.Label(bs_row, text="Base Settings:").pack(side="left")
+        self.base_set_cb = ttk.Combobox(bs_row, width=30, state="readonly",
+                                        values=self.app.base_set_names())
+        self.base_set_cb.bind("<MouseWheel>", lambda _e: "break")
+        self.base_set_cb.pack(side="left", padx=(4, 0))
+        ttk.Label(form, style="Hint.TLabel",
+                  text="  Leave blank to use the default base set.\n"
+                       "  Edit base sets under the Base Settings tab."
+                  ).pack(anchor="w", padx=5, pady=(0, 4))
+
         # -- VLAN definitions (raw IOS) --
         _section(form, "VLAN Definitions")
         ttk.Label(form, style="Hint.TLabel",
@@ -2658,6 +2797,29 @@ class ProfilesTab(ttk.Frame):
                                   relief="flat", bd=2, wrap="word")
         self.vlans_text.pack(fill="x", padx=5, pady=4)
         _attach_context_menu(self.vlans_text)
+
+        # -- DNS / NTP services --
+        _section(form, "Services (DNS / NTP)")
+        ttk.Label(form, style="Hint.TLabel",
+                  text="  Site-wide name-server and NTP settings emitted in\n"
+                       "  the Global section. Multiple servers may be entered\n"
+                       "  as comma-separated lists."
+                  ).pack(anchor="w", padx=5, pady=(4, 0))
+
+        svc_lf = ttk.LabelFrame(form, text="DNS / NTP", padding=5)
+        svc_lf.pack(fill="x", padx=5, pady=5)
+
+        self.dns_servers_e = _field(svc_lf, "Name Server(s) (CSV)")
+        self.ntp_servers_e = _field(svc_lf, "NTP Server(s) (CSV)")
+        self.ntp_source_e  = _field(svc_lf, "NTP Source Interface")
+        self.clock_tz_e    = _field(svc_lf, "Clock Timezone (e.g. EST -5)")
+        self.clock_summer_e = _field(svc_lf, "Clock Summer-Time (optional)")
+        self.ntp_key_id_e  = _field(svc_lf, "NTP Auth Key ID")
+        self.ntp_key_e     = _field(svc_lf, "NTP Auth Key (MD5)")
+        ttk.Label(svc_lf, style="Hint.TLabel",
+                  text="  NTP authentication fields are optional — leave\n"
+                       "  blank to render unauthenticated `ntp server` lines."
+                  ).pack(anchor="w", padx=2, pady=(2, 0))
 
         # -- role variables --
         _section(form, "Role Variables")
@@ -2732,36 +2894,26 @@ class ProfilesTab(ttk.Frame):
 
         svi_hint = ttk.Frame(self.svi_lf); svi_hint.pack(fill="x", pady=(0, 4))
         ttk.Label(svi_hint, style="Hint.TLabel",
-                  text="  SVI IPs are the user/voice gateways — typically\n"
-                       "  shared across all switches at the site."
+                  text="  Define the VLANs that need an SVI on every\n"
+                       "  switch at the site. IP and mask are entered\n"
+                       "  per-switch in Generate Config."
                   ).pack(side="left", anchor="w", padx=2)
         ttk.Button(svi_hint, text="+ Add SVI",
                    command=self._add_svi
                    ).pack(side="right", anchor="ne", padx=(6, 1))
 
         sh = ttk.Frame(self.svi_lf); sh.pack(fill="x")
-        # Grid: 0 vlan | 1 description | 2 ip | 3 mask | 4 helpers | 5 spacer
-        # Description and helpers get more weight than IP/mask since they
-        # hold longer values; vlan stays narrow. uniform="svi" makes header
-        # and row columns share the same widths. Column 5 is a fixed-width
-        # spacer matching the row's X-button column so header labels end
-        # at the same x as their entries.
+        # Grid: 0 vlan | 1 description | 2 helpers | 3 spacer (X col).
         sh.columnconfigure(0, weight=1, uniform="svi")
         sh.columnconfigure(1, weight=3, uniform="svi")
-        sh.columnconfigure(2, weight=2, uniform="svi")
-        sh.columnconfigure(3, weight=2, uniform="svi")
-        sh.columnconfigure(4, weight=3, uniform="svi")
+        sh.columnconfigure(2, weight=3, uniform="svi")
         ttk.Label(sh, text="VLAN", anchor="w").grid(
             row=0, column=0, sticky="ew", padx=1)
         ttk.Label(sh, text="Description", anchor="w").grid(
             row=0, column=1, sticky="ew", padx=1)
-        ttk.Label(sh, text="IP", anchor="w").grid(
-            row=0, column=2, sticky="ew", padx=1)
-        ttk.Label(sh, text="Mask", anchor="w").grid(
-            row=0, column=3, sticky="ew", padx=1)
         ttk.Label(sh, text="Helpers (CSV)", anchor="w").grid(
-            row=0, column=4, sticky="ew", padx=1)
-        ttk.Frame(sh, width=30).grid(row=0, column=5, padx=(6, 1))
+            row=0, column=2, sticky="ew", padx=1)
+        ttk.Frame(sh, width=30).grid(row=0, column=3, padx=(6, 1))
         self.svi_frame = ttk.Frame(self.svi_lf); self.svi_frame.pack(fill="x")
 
         # OSPF
@@ -2907,30 +3059,24 @@ class ProfilesTab(ttk.Frame):
         row = ttk.Frame(self.svi_frame); row.pack(fill="x", pady=1)
         row.columnconfigure(0, weight=1, uniform="svi")
         row.columnconfigure(1, weight=3, uniform="svi")
-        row.columnconfigure(2, weight=2, uniform="svi")
-        row.columnconfigure(3, weight=2, uniform="svi")
-        row.columnconfigure(4, weight=3, uniform="svi")
+        row.columnconfigure(2, weight=3, uniform="svi")
         vlan = ttk.Entry(row); vlan.grid(row=0, column=0, sticky="ew", padx=1)
         desc = ttk.Entry(row); desc.grid(row=0, column=1, sticky="ew", padx=1)
-        ip   = ttk.Entry(row); ip.grid(  row=0, column=2, sticky="ew", padx=1)
-        mask = ttk.Entry(row); mask.grid(row=0, column=3, sticky="ew", padx=1)
-        hlp  = ttk.Entry(row); hlp.grid( row=0, column=4, sticky="ew", padx=1)
-        for w in (vlan, desc, ip, mask, hlp):
+        hlp  = ttk.Entry(row); hlp.grid( row=0, column=2, sticky="ew", padx=1)
+        for w in (vlan, desc, hlp):
             _attach_context_menu(w)
         ttk.Button(row, text="X", width=3, style="Del.TButton",
                    command=lambda: self._del_row(row, self.svi_rows)
-                   ).grid(row=0, column=5, padx=(6, 1))
+                   ).grid(row=0, column=3, padx=(6, 1))
         if data:
             vlan.insert(0, data.get("vlan", ""))
             desc.insert(0, data.get("description", "") or data.get("name", ""))
-            ip.insert(0, data.get("ip", ""))
-            mask.insert(0, data.get("mask", ""))
             helpers = data.get("helper_addresses", "")
             if isinstance(helpers, list):
                 helpers = ", ".join(str(h) for h in helpers)
             hlp.insert(0, helpers or "")
         self.svi_rows.append({"frame": row, "vlan": vlan, "desc": desc,
-                              "ip": ip, "mask": mask, "hlp": hlp})
+                              "hlp": hlp})
 
     def _clear_ospf_nets(self):
         for r in self.ospf_net_rows:
@@ -3261,6 +3407,33 @@ class ProfilesTab(ttk.Frame):
         self.mgmt_vlan_e.delete(0, "end")
         self.mgmt_vlan_e.insert(0, p.get("mgmt_vlan", ""))
 
+        self.base_set_cb["values"] = self.app.base_set_names()
+        self.base_set_cb.set(p.get("base_set", "") or "")
+
+        svc = p.get("services", {}) or {}
+        dns_list = svc.get("dns_servers") or []
+        if isinstance(dns_list, list):
+            dns_list = ", ".join(str(x) for x in dns_list)
+        self.dns_servers_e.delete(0, "end")
+        self.dns_servers_e.insert(0, dns_list)
+
+        ntp = svc.get("ntp") or {}
+        ntp_list = ntp.get("servers") or []
+        if isinstance(ntp_list, list):
+            ntp_list = ", ".join(str(x) for x in ntp_list)
+        self.ntp_servers_e.delete(0, "end")
+        self.ntp_servers_e.insert(0, ntp_list)
+        self.ntp_source_e.delete(0, "end")
+        self.ntp_source_e.insert(0, ntp.get("source_interface", "") or "")
+        self.clock_tz_e.delete(0, "end")
+        self.clock_tz_e.insert(0, svc.get("clock_timezone", "") or "")
+        self.clock_summer_e.delete(0, "end")
+        self.clock_summer_e.insert(0, svc.get("clock_summer_time", "") or "")
+        self.ntp_key_id_e.delete(0, "end")
+        self.ntp_key_id_e.insert(0, ntp.get("auth_key_id", "") or "")
+        self.ntp_key_e.delete(0, "end")
+        self.ntp_key_e.insert(0, ntp.get("auth_key", "") or "")
+
         self.vlans_text.delete("1.0", "end")
         self.vlans_text.insert("1.0", p.get("vlan_definitions", ""))
 
@@ -3305,11 +3478,26 @@ class ProfilesTab(ttk.Frame):
 
         self._on_layer3_toggle()
 
+    def refresh_base_sets(self):
+        """Update the Base Settings dropdown values after the BaseTab
+        adds/removes/renames a set."""
+        cur = self.base_set_cb.get()
+        names = self.app.base_set_names()
+        self.base_set_cb["values"] = names
+        if cur and cur not in names:
+            self.base_set_cb.set("")
+
     def _new(self):
         self.lb.clear_selection()
         self.name_e.delete(0, "end")
         self.domain_e.delete(0, "end")
         self.mgmt_vlan_e.delete(0, "end")
+        self.base_set_cb["values"] = self.app.base_set_names()
+        self.base_set_cb.set("")
+        for w in (self.dns_servers_e, self.ntp_servers_e,
+                  self.ntp_source_e, self.clock_tz_e,
+                  self.clock_summer_e, self.ntp_key_id_e, self.ntp_key_e):
+            w.delete(0, "end")
         self.vlans_text.delete("1.0", "end")
         self._clear_vars(); self._clear_pa()
         # Layer 3 defaults for a new profile
@@ -3379,13 +3567,39 @@ class ProfilesTab(ttk.Frame):
         if old and old != name and old in self.app.profiles:
             del self.app.profiles[old]
 
+        dns_servers = [s.strip() for s in self.dns_servers_e.get().split(",")
+                       if s.strip()]
+        ntp_servers = [s.strip() for s in self.ntp_servers_e.get().split(",")
+                       if s.strip()]
+        services = {}
+        if dns_servers:
+            services["dns_servers"] = dns_servers
+        ntp_block = {}
+        if ntp_servers:
+            ntp_block["servers"] = ntp_servers
+        if self.ntp_source_e.get().strip():
+            ntp_block["source_interface"] = self.ntp_source_e.get().strip()
+        if self.ntp_key_id_e.get().strip():
+            ntp_block["auth_key_id"] = self.ntp_key_id_e.get().strip()
+        if self.ntp_key_e.get().strip():
+            ntp_block["auth_key"] = self.ntp_key_e.get().strip()
+        if ntp_block:
+            services["ntp"] = ntp_block
+        if self.clock_tz_e.get().strip():
+            services["clock_timezone"] = self.clock_tz_e.get().strip()
+        if self.clock_summer_e.get().strip():
+            services["clock_summer_time"] = self.clock_summer_e.get().strip()
+
         data = {
             "domain_name":      self.domain_e.get().strip(),
             "mgmt_vlan":        self.mgmt_vlan_e.get().strip(),
+            "base_set":         self.base_set_cb.get().strip(),
             "vlan_definitions": self.vlans_text.get("1.0", "end").strip(),
             "role_variables":   role_vars,
             "port_assignments": pas,
         }
+        if services:
+            data["services"] = services
 
         # Layer 3 (only persisted when enabled, to keep old profiles clean)
         if self.l3_enabled.get():
@@ -3401,8 +3615,6 @@ class ProfilesTab(ttk.Frame):
                 svis.append({
                     "vlan":             vlan,
                     "description":      r["desc"].get().strip(),
-                    "ip":               r["ip"].get().strip(),
-                    "mask":             r["mask"].get().strip(),
                     "helper_addresses": helpers,
                 })
             data["svis"] = svis
@@ -3444,27 +3656,55 @@ class ProfilesTab(ttk.Frame):
 #  TAB 5 - BASE SETTINGS
 # ===================================================================
 class BaseTab(ttk.Frame):
+    """Side-by-side editor for one or more named base-settings entries.
+    The on-disk shape is {"sets": {<name>: {...}}, "default": <name>}."""
+
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
-        self.fields = {}      # simple entry fields
-        self.text_areas = {}  # multi-line text sections
+        self.fields = {}      # simple entry fields, by key
+        self.text_areas = {}  # multi-line text sections, by key
         self.cs_rows = []     # custom config section rows
         self._build()
+        # select the default entry on first show
+        default = (self.app.base or {}).get("default")
+        names = self.app.base_set_names()
+        if default and default in names:
+            self.lb.select(default)
+        elif names:
+            self.lb.select(names[0])
 
     def _build(self):
-        scroll = ScrollFrame(self)
-        scroll.pack(fill="both", expand=True)
-        form = scroll.inner
+        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned.pack(fill="both", expand=True, padx=5, pady=5)
 
-        b = self.app.base
+        # -- left: list of base sets --
+        left = ttk.Frame(paned); paned.add(left, weight=0)
+        ttk.Label(left, text="Base Settings",
+                  style="Sec.TLabel").pack(anchor="w", padx=4, pady=4)
+        self.lb = _CheckList(left, on_click=self._on_select)
+        self.lb.pack(fill="both", expand=True, padx=4, pady=4)
+        bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
+        ttk.Button(bf, text="+ Add",      command=self._new).pack(side="left", padx=2)
+        ttk.Button(bf, text="Duplicate",  command=self._duplicate).pack(side="left", padx=2)
+        ttk.Button(bf, text="Set Default", command=self._set_default).pack(side="left", padx=2)
+        ttk.Button(bf, text="Delete",     command=self._delete,
+                   style="Del.TButton").pack(side="left", padx=2)
 
-        # simple field
+        # -- right: editor --
+        right = ScrollFrame(paned); paned.add(right, weight=1)
+        form = right.inner
+
+        _section(form, "Set Details")
+        self.name_e = _field(form, "Name")
+        self.default_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(form, text="Use as default for profiles without a base set",
+                        variable=self.default_var
+                        ).pack(anchor="w", padx=5, pady=(0, 6))
+
         _section(form, "Credentials")
-        self.fields["local_username"] = _field(
-            form, "Local Username", b.get("local_username", "admin"))
+        self.fields["local_username"] = _field(form, "Local Username", "admin")
 
-        # output settings
         _section(form, "Output Settings")
         ttk.Label(form,
                   text="  Filename template used when saving generated configs.\n"
@@ -3473,9 +3713,8 @@ class BaseTab(ttk.Frame):
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.fields["filename_template"] = _field(
             form, "Filename Template",
-            b.get("filename_template", "{{ hostname }}_{{ model }}_{{ profile }}"))
+            "{{ hostname }}_{{ model }}_{{ profile }}")
 
-        # text-area sections - order matches a typical IOS config
         sections = [
             ("global_services", "Global Services",
              "no service pad, service timestamps, platform commands, etc."),
@@ -3501,26 +3740,21 @@ class BaseTab(ttk.Frame):
             _section(form, title)
             ttk.Label(form, text=f"  {hint}",
                       style="Hint.TLabel").pack(anchor="w", padx=5)
-            self.text_areas[key] = _textarea(form, "", b.get(key, ""), h=10)
+            self.text_areas[key] = _textarea(form, "", "", h=10)
 
-        # banner (just the text - app wraps with banner login ^ ... ^)
         _section(form, "Banner LOGIN")
         ttk.Label(form, text="  Enter the banner text only - the app adds "
                   "the 'banner login ^' wrapper.",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
-        self.text_areas["banner"] = _textarea(
-            form, "", b.get("banner", ""), h=20)
+        self.text_areas["banner"] = _textarea(form, "", "", h=20)
 
-        # disabled-port template
         _section(form, "Disabled Port Template")
         ttk.Label(form, text="  Commands applied to every port during the "
                   "'disable all' step.\n"
                   "  Use {{ blackhole_vlan }} or any profile variable.",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
-        self.text_areas["disabled_port_template"] = _textarea(
-            form, "", b.get("disabled_port_template", ""), h=10)
+        self.text_areas["disabled_port_template"] = _textarea(form, "", "", h=10)
 
-        # -- custom config sections (user-defined production blocks) --
         _section(form, "Custom Config Sections")
         ttk.Label(form,
                   text="  Add your own config sections (SNMP, NTP, QoS, "
@@ -3542,16 +3776,121 @@ class BaseTab(ttk.Frame):
         self.cs_container = ttk.Frame(form)
         self.cs_container.pack(fill="x", padx=5, pady=(2, 6))
 
-        # load existing custom sections
-        for cs in b.get("custom_sections", []):
-            self._add_cs(cs)
-
         ttk.Button(form, text="Save Base Settings",
                    command=self._save).pack(padx=5, pady=10, anchor="w")
 
-    # -- custom section helpers --
+        self._refresh()
+
+    # -- list helpers --
+    def _refresh(self):
+        names = self.app.base_set_names()
+        default = (self.app.base or {}).get("default")
+        # show " (default)" suffix on the default entry so users see it
+        labels = [(f"{n}  (default)" if n == default else n) for n in names]
+        # _CheckList uses labels as both display and key — to keep things
+        # simple we populate with raw names and rely on the editor header
+        # / Set Default button to convey which is the default.
+        self.lb.populate(names)
+
+    def _on_select(self, name=None):
+        if not name:
+            return
+        b = (self.app.base or {}).get("sets", {}).get(name, {}) or {}
+
+        self.name_e.delete(0, "end"); self.name_e.insert(0, name)
+        self.default_var.set(name == (self.app.base or {}).get("default"))
+
+        for key, widget in self.fields.items():
+            widget.delete(0, "end")
+            widget.insert(0, b.get(key, ""))
+        for key, widget in self.text_areas.items():
+            widget.delete("1.0", "end")
+            widget.insert("1.0", b.get(key, ""))
+
+        self._clear_cs()
+        for cs in b.get("custom_sections", []) or []:
+            self._add_cs(cs)
+
+    def _clear_cs(self):
+        for r in self.cs_rows:
+            r["frame"].destroy()
+        self.cs_rows.clear()
+
+    def _new(self):
+        names = self.app.base_set_names()
+        base_name = "New Base"
+        candidate = base_name
+        i = 1
+        while candidate in names:
+            i += 1
+            candidate = f"{base_name} {i}"
+        self.app.base.setdefault("sets", {})[candidate] = {}
+        if not self.app.base.get("default"):
+            self.app.base["default"] = candidate
+        save_json("base_settings.json", self.app.base)
+        self._refresh()
+        self.lb.select(candidate)
+
+    def _duplicate(self):
+        cur = self.lb.get_selected()
+        if not cur:
+            _dialog("No Selection", "Select a base set to duplicate.")
+            return
+        data = json.loads(json.dumps(
+            self.app.base["sets"].get(cur, {})))
+        names = self.app.base_set_names()
+        new_name = _copy_name(cur, self.app.base["sets"])
+        self.app.base["sets"][new_name] = data
+        save_json("base_settings.json", self.app.base)
+        self._refresh()
+        self.lb.select(new_name)
+
+    def _delete(self):
+        names = self.lb.get_checked()
+        if not names:
+            sel = self.lb.get_selected()
+            if not sel:
+                return
+            names = [sel]
+        if (self.app.base or {}).get("sets") and \
+                len(self.app.base["sets"]) - len(names) < 1:
+            _dialog("Delete",
+                    "Cannot delete every base set — at least one must remain.",
+                    "warning")
+            return
+        if len(names) == 1:
+            msg = f"Delete base set '{names[0]}'?"
+        else:
+            msg = f"Delete {len(names)} base sets?\n\n  " + "\n  ".join(names)
+        if not _ask("Delete", msg):
+            return
+        for name in names:
+            self.app.base["sets"].pop(name, None)
+        # If we removed the default, pick a new one (first alphabetically).
+        if self.app.base.get("default") not in self.app.base["sets"]:
+            remaining = sorted(self.app.base["sets"].keys(), key=str.lower)
+            self.app.base["default"] = remaining[0] if remaining else None
+        save_json("base_settings.json", self.app.base)
+        self._refresh()
+        # Re-select something so the editor isn't stale.
+        remaining = self.app.base_set_names()
+        if remaining:
+            self.lb.select(self.app.base.get("default") or remaining[0])
+        # Refresh other tabs so profile dropdowns reflect the change.
+        if hasattr(self.app, "profiles_tab"):
+            self.app.profiles_tab.refresh_base_sets()
+
+    def _set_default(self):
+        sel = self.lb.get_selected()
+        if not sel:
+            _dialog("No Selection", "Select a base set first.")
+            return
+        self.app.base["default"] = sel
+        save_json("base_settings.json", self.app.base)
+        self._refresh()
+        self.lb.select(sel)
+
     def _add_cs(self, data=None):
-        """Add a custom config section block."""
         frame = ttk.LabelFrame(self.cs_container, padding=5)
         frame.pack(fill="x", pady=(0, 6))
 
@@ -3595,19 +3934,24 @@ class BaseTab(ttk.Frame):
         frame.destroy()
 
     def _save(self):
+        new_name = self.name_e.get().strip()
+        if not new_name:
+            _dialog("Missing", "Enter a name for this base set.", "warning")
+            return
+
+        # collect current editor state into a dict
         data = {}
         for key, widget in self.fields.items():
             data[key] = widget.get().strip()
         for key, widget in self.text_areas.items():
             data[key] = widget.get("1.0", "end").strip()
-        # collect custom sections
         cs_list = []
         for r in self.cs_rows:
-            name = r["name"].get().strip()
-            if name:
+            cname = r["name"].get().strip()
+            if cname:
                 pos_val = r["position"].get()
                 cs_list.append({
-                    "name": name,
+                    "name": cname,
                     "position": ("pre-interface"
                                  if pos_val == "Before Interfaces"
                                  else "post-interface"),
@@ -3615,9 +3959,30 @@ class BaseTab(ttk.Frame):
                 })
         data["custom_sections"] = cs_list
 
-        self.app.base = data
-        save_json("base_settings.json", data)
-        _dialog("Saved", "Base settings saved.")
+        # rename if the user changed the name field
+        old = self.lb.get_selected()
+        sets = self.app.base.setdefault("sets", {})
+        if old and old != new_name and old in sets:
+            del sets[old]
+            if self.app.base.get("default") == old:
+                self.app.base["default"] = new_name
+        sets[new_name] = data
+
+        # default flag
+        if self.default_var.get():
+            self.app.base["default"] = new_name
+        elif self.app.base.get("default") == new_name and len(sets) > 1:
+            # User unchecked default on the current entry — pick another.
+            others = [n for n in sorted(sets.keys(), key=str.lower)
+                      if n != new_name]
+            self.app.base["default"] = others[0] if others else new_name
+
+        save_json("base_settings.json", self.app.base)
+        self._refresh()
+        self.lb.select(new_name)
+        if hasattr(self.app, "profiles_tab"):
+            self.app.profiles_tab.refresh_base_sets()
+        _dialog("Saved", f"Base set '{new_name}' saved.")
 
 
 # ===================================================================
@@ -4126,7 +4491,7 @@ class App:
         self.models   = load_json("models.json",        {})
         self.roles    = load_json("roles.json",          {})
         self.profiles = load_json("profiles.json",       {})
-        self.base     = load_json("base_settings.json",  {})
+        self.base     = load_base_settings()
 
         # tabs
         self.nb = ttk.Notebook(root)
@@ -4206,7 +4571,7 @@ class App:
         self.models   = load_json("models.json",       {})
         self.roles    = load_json("roles.json",         {})
         self.profiles = load_json("profiles.json",      {})
-        self.base     = load_json("base_settings.json", {})
+        self.base     = load_base_settings()
         self._rebuild_tabs()
         _dialog("Imported",
                 "Settings imported successfully.\nAll tabs have been refreshed.")
@@ -4284,6 +4649,18 @@ class App:
         self.gen_tab.preview.configure(state="disabled")
 
     # -------------------------------------------------------------------------
+
+    def base_set_names(self):
+        """Sorted list of available base-settings entries."""
+        return sorted((self.base or {}).get("sets", {}).keys(),
+                      key=str.lower)
+
+    def resolved_base(self, profile):
+        """Return the base dict that should be used for *profile*. Falls
+        back to the default entry when the profile's base_set is missing
+        or unknown."""
+        name = (profile or {}).get("base_set") or None
+        return resolve_base(self.base, name)
 
     def _rebuild_tabs(self):
         """Destroy and recreate all tabs to reflect imported data or theme."""
