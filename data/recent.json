@@ -1,7 +1,7 @@
 {
   "profiles": [
-    "Layer 3",
     "BGP Edge",
+    "Layer 3",
     "test"
   ],
   "zips": [],

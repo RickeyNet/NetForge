@@ -12,10 +12,13 @@
     "commands": "description {{ description }}\nswitchport trunk allowed vlan {{ trunk_allowed }}\nswitchport mode trunk\nswitchport nonegotiate\nno shutdown"
   },
   "Access Port": {
-    "commands": "description {{ description }}\nswitchport access vlan {{ access_vlan }}\nswitchport mode access\nno shutdown\nspanning-tree portfast\nspanning-tree bpduguard enable"
+    "commands": "description {{ description }}\nswitchport access vlan {{ user_vlan }}\nswitchport mode access\nno shutdown\nspanning-tree portfast\nspanning-tree bpduguard enable"
   },
   "Routed Uplink": {
     "commands": "desc //Routed Uplink\nno switchport\nip address {{ip}} {{mask}}\nno shut",
     "requires_ip": true
+  },
+  "Access Uplink": {
+    "commands": "description {{ description }}\nswitchport access vlan {{ uplink_vlan }}\nswitchport mode access\nno shutdown\nspanning-tree portfast\nspanning-tree bpduguard enable"
   }
 }

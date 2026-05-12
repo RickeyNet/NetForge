@@ -12,7 +12,28 @@
       "enable_secret": "testenable"
     },
     "layer3": true,
-    "mgmt_style": "loopback",
+    "l3_sections": {
+      "loopback": {
+        "enabled": true,
+        "ip": "",
+        "mask": "255.255.255.255",
+        "description": "Switch MGMT / Router-ID"
+      },
+      "routed_mgmt": {
+        "enabled": true,
+        "interface": "",
+        "ip": "",
+        "mask": "255.255.255.252",
+        "description": "Routed Mgmt Uplink"
+      },
+      "mgmt_svi": {
+        "enabled": true,
+        "vlan": "2",
+        "ip": "",
+        "mask": "255.255.255.248",
+        "description": "Switch MGMT"
+      }
+    },
     "default_routed_mask": "255.255.255.252",
     "svis": [],
     "ospf": {
@@ -28,7 +49,10 @@
     "mgmt_vlan": "2",
     "base_set": "Base",
     "vlan_definitions": "interface vlan1\nno ip address\nshutdown\nexit\n\nvlan 2\n name mgmt\nexit\n\nvlan 4\n name User\nexit",
-    "role_variables": {},
+    "role_variables": {
+      "uplink_vlan": "2",
+      "user_vlan": "3"
+    },
     "port_assignments": [],
     "credentials": {
       "local_username": "testusername",
@@ -36,18 +60,41 @@
       "enable_secret": "testenable"
     },
     "layer3": true,
-    "mgmt_style": "routed_uplink",
+    "l3_sections": {
+      "loopback": {
+        "enabled": true,
+        "ip": "",
+        "mask": "255.255.255.255",
+        "description": "Switch MGMT / Router-ID"
+      },
+      "routed_mgmt": {
+        "enabled": false,
+        "interface": "",
+        "ip": "",
+        "mask": "255.255.255.252",
+        "description": "Routed Uplink"
+      },
+      "mgmt_svi": {
+        "enabled": false,
+        "vlan": "",
+        "ip": "",
+        "mask": "",
+        "description": "Switch MGMT"
+      }
+    },
     "default_routed_mask": "255.255.255.252",
     "svis": [
       {
         "vlan": "2",
         "description": "Uplink_to_ISP",
-        "helper_addresses": []
+        "helper_addresses": [],
+        "mask": "255.255.255.252"
       },
       {
         "vlan": "3",
         "description": "User_Gateway",
-        "helper_addresses": []
+        "helper_addresses": [],
+        "mask": "255.255.255.0"
       }
     ],
     "ospf": {
