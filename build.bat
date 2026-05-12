@@ -29,6 +29,6 @@ if exist "dist\NetForge.exe" (
     echo BUILD SUCCEEDED
     echo Output: dist\NetForge\NetForge_v%VER%.exe
 ) else (
-    echo BUILD FAILED — check output above for errors
+    echo BUILD FAILED - check output above for errors
 )
 pause

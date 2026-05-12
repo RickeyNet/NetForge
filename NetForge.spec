@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for NetForge — single-file Windows executable."""
+"""PyInstaller spec for NetForge - single-file Windows executable."""
 
 import os
 

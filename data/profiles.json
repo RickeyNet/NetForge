@@ -13,6 +13,7 @@
     },
     "layer3": true,
     "mgmt_style": "loopback",
+    "default_routed_mask": "255.255.255.252",
     "svis": [],
     "ospf": {
       "enabled": false,
@@ -36,6 +37,7 @@
     },
     "layer3": true,
     "mgmt_style": "routed_uplink",
+    "default_routed_mask": "255.255.255.252",
     "svis": [
       {
         "vlan": "2",

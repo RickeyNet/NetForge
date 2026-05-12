@@ -2,19 +2,19 @@
 
 A standalone Windows desktop application for generating initial configurations for Cisco switches.
 
-NetForge lets network engineers define switch models, interface roles, site profiles, and base IOS settings as reusable presets — then generate complete, ready-to-paste configurations through a simple 3-step wizard.
+NetForge lets network engineers define switch models, interface roles, site profiles, and base IOS settings as reusable presets - then generate complete, ready-to-paste configurations through a simple 3-step wizard.
 
 ## Features
 
-- **3-Step Config Wizard** — Select model & site, review port assignments, enter switch details, generate
-- **Switch Models** — Define hardware port groups with stack support (up to 4 members)
-- **Interface Roles** — Reusable per-port IOS command templates with Jinja2 variables
-- **Site Profiles** — VLAN definitions, role variables, and default port assignments per site
-- **Base Settings** — Global IOS commands shared across all switches (AAA, SSH, STP, security, etc.)
-- **Disabled Port Template** — Automatic security baseline applied to all unassigned ports
-- **Built-in How-To Guide** — Step-by-step setup instructions with IOS command examples
-- **Dark Mode UI** — Easy on the eyes during long configuration sessions
-- **Fully Offline** — No network connections, no telemetry, no external services
+- **3-Step Config Wizard** - Select model & site, review port assignments, enter switch details, generate
+- **Switch Models** - Define hardware port groups with stack support (up to 4 members)
+- **Interface Roles** - Reusable per-port IOS command templates with Jinja2 variables
+- **Site Profiles** - VLAN definitions, role variables, and default port assignments per site
+- **Base Settings** - Global IOS commands shared across all switches (AAA, SSH, STP, security, etc.)
+- **Disabled Port Template** - Automatic security baseline applied to all unassigned ports
+- **Built-in How-To Guide** - Step-by-step setup instructions with IOS command examples
+- **Dark Mode UI** - Easy on the eyes during long configuration sessions
+- **Fully Offline** - No network connections, no telemetry, no external services
 
 ## Quick Start
 
@@ -54,10 +54,10 @@ Or simply run `build.bat`. The output will be at `dist/NetForge.exe`.
 
 Complete the setup tabs in this order (one-time):
 
-1. **Base Settings** — Global IOS commands shared by all switches
-2. **Switch Models** — Hardware definitions (port groups, stack size, provision type)
-3. **Interface Roles** — Reusable per-port command templates with `{{ variable }}` placeholders
-4. **Site Profiles** — VLANs, variable values, and default port assignments
+1. **Base Settings** - Global IOS commands shared by all switches
+2. **Switch Models** - Hardware definitions (port groups, stack size, provision type)
+3. **Interface Roles** - Reusable per-port command templates with `{{ variable }}` placeholders
+4. **Site Profiles** - VLANs, variable values, and default port assignments
 
 Then use the **Generate Config** tab for daily use.
 

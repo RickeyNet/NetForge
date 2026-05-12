@@ -1,4 +1,102 @@
-# NetForge v1.3.0 — Release Notes
+# NetForge v1.4.0 - Release Notes
+
+## Major Feature: Layer 3 Support
+
+NetForge now generates full Layer 3 configurations alongside the existing Layer 2 workflows. Site Profiles gain a new **Enable Layer 3** toggle that unlocks an L3 editor and tells the generator to emit routing-related blocks.
+
+### Management Style
+- Each Layer 3 profile picks how the switch's management IP is assigned:
+  - **svi** - Management rides an SVI (same as L2). Emits `interface vlan<mgmt_vlan>` with the IP from Step 3.
+  - **loopback** - Mgmt rides Loopback0. The wizard prompts for Loopback0 IP/Mask in Step 3.
+  - **routed_uplink** - Mgmt rides one of the routed uplinks. No mgmt SVI is emitted.
+- `ip default-gateway` is always emitted when a Default Gateway is set, regardless of mgmt_style.
+
+### Routed Interfaces (Requires IP)
+- Interface Roles now have a **Requires IP** checkbox - tick it for roles that turn an interface into an L3 routed port (no switchport).
+- When a port is assigned to a Requires-IP role, the wizard's Step 3 grows an extra grid for per-switch IP/mask entry.
+- Use `{{ ip }}` and `{{ mask }}` as placeholders in the role template.
+- The Site Profile's new **Default Routed Mask** pre-fills the Mask column of every routed-interface row in Step 3 (useful for sites with uniform /30 point-to-points).
+
+### SVIs
+- Define VLANs that need an SVI on every switch at the site, with description and optional DHCP helper addresses.
+- IPs and masks are entered per-switch in Generate Config Step 3 under **SVI IPs**.
+- DHCP helpers render as `ip helper-address ...` lines.
+
+### OSPF
+- Per-profile OSPF block: process ID, passive-interface default toggle, passive interface list, and one or more `network ... area ...` statements.
+- Router-ID is set per switch in Step 3 and defaults to the Loopback0 IP.
+
+### BGP
+- One or more BGP instances per profile, each rendering its own `router bgp <local_asn>` block.
+- Each instance defines **Peer Slots** (remote ASN + description) that describe BGP neighbours present on every switch at the site.
+- Per-switch values (neighbour IP, MD5 key, circuit ID) are filled in during Generate Config Step 3.
+
+### Named Extended ACLs
+- Profile-level structured ACL editor produces `ip access-list extended <name>` blocks.
+- Each rule is either a remark (free-form comment) or a permit/deny with protocol, source + wildcard, destination + wildcard, and optional `log`.
+- ACLs render in the post-interface section of the generated config.
+
+### Static Routes + Auto Default Route
+- Per-switch static routes are entered in Step 3 (prefix, mask, next-hop, optional description).
+- When a Layer 3 device has a Default Gateway set and no user-supplied 0.0.0.0/0 entry, NetForge auto-emits `ip route 0.0.0.0 0.0.0.0 <gateway>`.
+
+## New Feature: Multiple Base Settings Sets
+
+- The Base Settings tab now supports multiple named sets, managed from a side-by-side list panel.
+- Buttons: **+ Add**, **Duplicate**, **Set Default**, **Delete**.
+- Each Site Profile picks one set via a **Base Settings** dropdown. If the named set is missing at generate time, the app falls back to the entry marked as default.
+- Lets you keep different AAA / SSH / banner blocks per deployment type (corporate / lab / DMZ) and select the right one per profile.
+
+## New Feature: Profile-Level Services (DNS, NTP, Clock)
+
+Per-profile values render directly as IOS commands so different sites can point at different infrastructure without duplicating Base sets:
+
+- **DNS Servers** - comma-separated name-server IPs, becomes `ip name-server ...` lines
+- **NTP Servers** - comma-separated NTP server IPs, becomes `ntp server ...` lines
+- **NTP Source Interface** - optional `ntp source <iface>`
+- **NTP Auth Key ID + Key** - optional MD5 authenticated NTP
+- **Clock Timezone** - free-form `clock timezone ...` value (e.g. `EST -5`)
+- **Clock Summer-Time** - free-form `clock summer-time ...` value (e.g. `EDT recurring`)
+
+## New Feature: Profile Credential Defaults
+
+- Each Site Profile can carry optional defaults for **Local Username**, **Local User Password**, and **Enable Secret**.
+- Selecting a profile pre-fills the matching fields in Generate Config Step 3.
+- The wizard always lets you override per switch; per-switch edits are not written back to the profile.
+- The renderer prefers per-switch `local_username` over the Base set's default.
+
+## New Feature: Local Username Field in Step 3
+
+- Step 3 (Switch Details) gains a **Local Username** field alongside Enable Secret / Admin Password so the active user is visible and editable per switch.
+
+## New Theme: Voyager
+
+- Deep navy-blue background with warm orange accents - inspired by a starry-sky aesthetic.
+
+## Theme Refinement: Sandstone
+
+- Sandstone has been darkened and rebalanced for a more cohesive look:
+  - Deeper olive-drab background with progressively darker panels and inputs (proper recessed hierarchy)
+  - Warm cream foreground with muted khaki hints
+  - Warm terracotta orange accent (replaces the previous maroon/dusty rose)
+  - Darker borders for crisp panel definition
+
+## UI Improvements
+
+- **Sticky Save Profile button** - the Save Profile button on the Site Profiles tab is now pinned as a footer so it stays visible as the Layer 3 body grows.
+- **Header / row alignment** - column headers in BGP Peer Slots, SVIs, and OSPF Networks now line up with their entry rows; "+ Add" buttons moved to the section hint row so they no longer disrupt the column grid.
+- **Section hint text** - relocated long format hints from field-label parentheticals into section hints so labels like Clock Timezone, Clock Summer-Time, and NTP Auth Key are no longer truncated.
+- **Em-dash cleanup** - replaced all em-dash characters with hyphens across docs and source for consistent typography in environments without Unicode rendering.
+
+## Bug Fixes
+
+- **Default gateway on Layer 3 devices** - `ip default-gateway` is now emitted in all `mgmt_style` modes when a value is set (previously gated to L2 / mgmt_style=svi only).
+- **Routed Uplink template** - fixed a mismatched-brace typo in the bundled Routed Uplink role so per-switch `{{ ip }}` / `{{ mask }}` substitutions actually land in the config.
+- **Role-template errors surface** - if a role template fails to render, the interface block now contains an `! ERROR rendering role '<name>': <exc>` comment instead of silently emitting the unrendered template.
+
+---
+
+# NetForge v1.3.0 - Release Notes
 
 ## New Feature: Work Order Number Field
 
@@ -51,7 +149,7 @@
 
 - A new **Edit Custom Themes…** option is available at the bottom of the **Theme** menu
 - The editor lets you create, duplicate, and delete custom color themes without touching any code
-- Each of the 12 palette colors has a labeled text field and a clickable swatch that opens the system color picker — swatches update live as you type hex values
+- Each of the 12 palette colors has a labeled text field and a clickable swatch that opens the system color picker - swatches update live as you type hex values
 - **Preview** applies your colors to the running app immediately without saving
 - **Save Theme** persists the theme to `theme.json`; it appears instantly as a new entry in the Theme menu under a separator below the built-in themes
 - Custom themes survive restarts and are included in settings export/import ZIP files
@@ -63,18 +161,18 @@
 
 ## UI Improvements
 
-- **Read-only config preview** — the config preview pane is now read-only; it can no longer be accidentally edited
-- **Themed dialogs** — all info, warning, and error message boxes replaced with fully themed custom dialogs that match the active theme
-- **Config preview cleared on back** — navigating back from Step 3 to Step 2 now clears the preview pane and disables the section copy buttons
-- **Responsive section copy toolbar** — the Copy section buttons now shrink and grow with the window instead of overflowing off-screen at smaller widths
+- **Read-only config preview** - the config preview pane is now read-only; it can no longer be accidentally edited
+- **Themed dialogs** - all info, warning, and error message boxes replaced with fully themed custom dialogs that match the active theme
+- **Config preview cleared on back** - navigating back from Step 3 to Step 2 now clears the preview pane and disables the section copy buttons
+- **Responsive section copy toolbar** - the Copy section buttons now shrink and grow with the window instead of overflowing off-screen at smaller widths
 
 ---
 
-# NetForge v1.2.2 — Release Notes
+# NetForge v1.2.2 - Release Notes
 
 ## Fix: OOB Management Port (GigabitEthernet0/0) on C9300
 
-- The disabled port template (which contains `switchport` commands) is no longer applied to the OOB management port — GigabitEthernet0/0 is a routed interface that does not accept switchport commands
+- The disabled port template (which contains `switchport` commands) is no longer applied to the OOB management port - GigabitEthernet0/0 is a routed interface that does not accept switchport commands
 - The `mgmt_port` base setting now renders with the correct `interface GigabitEthernet0/0` header
 
 ## New Feature: OOB Management Port IP Assignment
@@ -90,7 +188,7 @@
 
 ---
 
-# NetForge v1.2.0 — Release Notes
+# NetForge v1.2.0 - Release Notes
 
 ## Bug Fix: Management Port on C9200 Models
 
@@ -116,9 +214,9 @@
 
 ## UI Improvements
 
-- **Themed combo dropdowns** — combobox dropdown lists now match the active theme instead of showing a white system default
-- **Themed menu bar** — replaced the native Windows menu bar with a custom frame-based menu bar that fully respects theme colors
-- **Guide headings** — heading text in the How-To Guide now uses the theme accent color instead of hardcoded white, improving readability on light themes
+- **Themed combo dropdowns** - combobox dropdown lists now match the active theme instead of showing a white system default
+- **Themed menu bar** - replaced the native Windows menu bar with a custom frame-based menu bar that fully respects theme colors
+- **Guide headings** - heading text in the How-To Guide now uses the theme accent color instead of hardcoded white, improving readability on light themes
 
 ## Wizard: Back Button Clears Preview
 
@@ -127,12 +225,12 @@
 
 ---
 
-# NetForge v1.1.0 — Release Notes
+# NetForge v1.1.0 - Release Notes
 
 ## New Feature: Theme Selector
 
 - Added a **Theme** menu in the menu bar for switching between colour themes
-- Themes apply instantly — all tabs, menus, and widgets update in place
+- Themes apply instantly - all tabs, menus, and widgets update in place
 - Selected theme is saved to `data/theme.json` and persists across sessions
 - Theme preference is included in Settings Export/Import
 
@@ -145,22 +243,22 @@
 
 ---
 
-# NetForge v1.0.1 — Release Notes
+# NetForge v1.0.1 - Release Notes
 
 ## New Feature: Custom Config Sections in Base Settings
 
 - Add your own IOS config sections (SNMP, NTP, QoS, DHCP Snooping, ACLs, etc.) directly in Base Settings
 - Each custom section includes a name, position control (before or after interfaces), and a raw IOS command block
 - Sections are included in every generated config
-- Supports Jinja2 `{{ variable }}` placeholders — values are pulled from the Site Profile's Role Variables
+- Supports Jinja2 `{{ variable }}` placeholders - values are pulled from the Site Profile's Role Variables
 - Add as many sections as needed using the "+ Add Section" button
 
 ---
 
-# NetForge v1.0.0 — Release Notes
+# NetForge v1.0.0 - Release Notes
 
 ## Overview
-NetForge is a standalone Windows desktop application for generating initial configurations for Cisco switches. It provides a dark-themed GUI wizard where network engineers define switch models, interface roles, site profiles, and base IOS settings as reusable presets — then generate complete, ready-to-paste configurations in seconds.
+NetForge is a standalone Windows desktop application for generating initial configurations for Cisco switches. It provides a dark-themed GUI wizard where network engineers define switch models, interface roles, site profiles, and base IOS settings as reusable presets - then generate complete, ready-to-paste configurations in seconds.
 
 ## Features
 
@@ -172,7 +270,7 @@ NetForge is a standalone Windows desktop application for generating initial conf
 
 ### Switch Models
 - Define any Cisco switch model with its port groups (prefix, start, end)
-- Stack support — automatically replicates port groups across stack members (up to 4)
+- Stack support - automatically replicates port groups across stack members (up to 4)
 - Provision type for `switch X provision` commands
 
 ### Interface Roles
@@ -195,7 +293,7 @@ NetForge is a standalone Windows desktop application for generating initial conf
 - **Platform:** Windows (standalone .exe via PyInstaller)
 - **Dependencies:** Python, Tkinter, Jinja2
 - **Data storage:** Local JSON files in `data/` directory
-- **Fully offline** — no network connections, no telemetry, no external services
+- **Fully offline** - no network connections, no telemetry, no external services
 - **Dark mode UI** with Segoe UI / Consolas fonts
 
 ## Pre-loaded Data

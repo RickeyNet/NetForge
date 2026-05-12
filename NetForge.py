@@ -79,18 +79,18 @@ THEMES = {
     },
     "sandstone": {
         "name":         "Sandstone",
-        "bg":           "#868f76",
-        "bg2":          "#a3ac9a",
-        "bg_input":     "#adab99",
-        "fg":           "#4a4a3a",
-        "fg_dim":       "#4b4938",
-        "accent":       "#5c2e2e",
-        "accent_hover": "#a06c6c",
-        "border":       "#b0ad94",
-        "green":        "#5a7a4a",
-        "red":          "#851616",
-        "red_hover":    "#703B3B",
-        "sel_bg":       "#4b493d",
+        "bg":           "#4f5544",
+        "bg2":          "#3e4337",
+        "bg_input":     "#2e3128",
+        "fg":           "#d8d2bc",
+        "fg_dim":       "#9a9480",
+        "accent":       "#c97b3a",
+        "accent_hover": "#e0934a",
+        "border":       "#2a2d23",
+        "green":        "#a3b878",
+        "red":          "#a83e3e",
+        "red_hover":    "#c25555",
+        "sel_bg":       "#5c6450",
     },
     "chris": {
         "name":         "Chris",
@@ -106,6 +106,21 @@ THEMES = {
         "red":          "#00ffff",
         "red_hover":    "#39ff14",
         "sel_bg":       "#ffd700",
+    },
+    "voyager": {
+        "name":         "Voyager",
+        "bg":           "#0f1a3d",
+        "bg2":          "#19234d",
+        "bg_input":     "#070d24",
+        "fg":           "#e6ebf5",
+        "fg_dim":       "#7d89b0",
+        "accent":       "#f5a623",
+        "accent_hover": "#ffb840",
+        "border":       "#1f2a5c",
+        "green":        "#7dd3a0",
+        "red":          "#e05555",
+        "red_hover":    "#e87070",
+        "sel_bg":       "#1f2a5c",
     },
     "light": {
         "name":         "Light",
@@ -248,7 +263,7 @@ def load_base_settings():
         default = raw.get("default") if raw.get("default") in sets \
             else next(iter(sets))
         return {"sets": sets, "default": default}
-    # Legacy flat shape (or empty) — wrap as a single "Base" entry.
+    # Legacy flat shape (or empty) - wrap as a single "Base" entry.
     flat = raw if isinstance(raw, dict) else {}
     return {"sets": {"Base": flat}, "default": "Base"}
 
@@ -734,7 +749,7 @@ class _ThemeEditorDialog:
         current = self._color_vars[key].get().strip() or C["bg"]
         try:
             result = colorchooser.askcolor(
-                color=current, title=f"Pick color — {key}",
+                color=current, title=f"Pick color - {key}",
                 parent=self.dlg)
         except Exception:
             return
@@ -1188,7 +1203,7 @@ def render_config_sections(model, profile, roles, base, sw):
 
     # ── 2b  L3 Interfaces ───────────────────────────────────────────────
     # Loopback0 (per-switch from sw) and SVIs (site-wide gateways from
-    # the profile). Routed uplinks are NOT emitted here — they live in
+    # the profile). Routed uplinks are NOT emitted here - they live in
     # the Interfaces section because they're driven by port_assignments
     # using a role with requires_ip=True.
     l3 = []
@@ -1331,7 +1346,7 @@ def render_config_sections(model, profile, roles, base, sw):
     # ── 4  Management VLAN & Gateway ────────────────────────────────────
     # The mgmt SVI is only emitted for L2 or L3+mgmt_style=svi; loopback /
     # routed_uplink modes provide their mgmt IP via the L3 Interfaces
-    # section instead. ip default-gateway is always emitted when set —
+    # section instead. ip default-gateway is always emitted when set -
     # IOS uses it for off-subnet mgmt traffic regardless of mgmt_style.
     mgmt = []
     if not layer3 or mgmt_style == "svi":
@@ -1354,7 +1369,7 @@ def render_config_sections(model, profile, roles, base, sw):
             if cmds:
                 post.append(_r(cmds))
 
-    # Profile-defined ACLs (named, structured) — rendered after custom
+    # Profile-defined ACLs (named, structured) - rendered after custom
     # sections so they sit in the post-interface block alongside other
     # site-wide policy.
     for acl in profile.get("acls", []) or []:
@@ -1403,16 +1418,25 @@ def render_config_sections(model, profile, roles, base, sw):
         if bgp_block:
             routing.append(bgp_block)
 
+        user_has_default_route = False
         for sr in sw.get("static_routes", []) or []:
             prefix = (sr.get("prefix") or "").strip()
             mask = (sr.get("mask") or "").strip()
             nh = (sr.get("next_hop") or "").strip()
             desc = (sr.get("description") or "").strip()
             if prefix and mask and nh:
+                if prefix == "0.0.0.0" and mask == "0.0.0.0":
+                    user_has_default_route = True
                 line = f"ip route {prefix} {mask} {nh}"
                 if desc:
                     line += f" name {desc.replace(' ', '_')}"
                 routing.append(line)
+
+        # Auto-generate a default route via the default gateway unless the
+        # user already supplied one in static routes.
+        dg = (sw.get("default_gateway") or "").strip()
+        if dg and not user_has_default_route:
+            routing.append(f"ip route 0.0.0.0 0.0.0.0 {dg}")
 
     # ── 6  Line Config ───────────────────────────────────────────────────
     lc = [base.get("line_config", "")]
@@ -1761,7 +1785,7 @@ class GenerateTab(ttk.Frame):
         self.l3_static_frame = ttk.Frame(self.l3_static_lf)
         self.l3_static_frame.pack(fill="x")
 
-        # BGP per-switch values — one block per profile BGP instance
+        # BGP per-switch values - one block per profile BGP instance
         self.bgp_lf = ttk.LabelFrame(self.l3_frame, text="BGP", padding=5)
         self.bgp_lf.pack(fill="x", padx=5, pady=4)
         ttk.Label(self.bgp_lf, style="Hint.TLabel",
@@ -1836,7 +1860,7 @@ class GenerateTab(ttk.Frame):
             _dialog("Missing", "Select a site profile.", "warning")
             return
         self._populate_step2(mn, pn)
-        # auto-fill from profile defaults — values stay editable, edits
+        # auto-fill from profile defaults - values stay editable, edits
         # are per-switch and never written back to the profile.
         profile = self.app.profiles[pn]
         domain = profile.get("domain_name", "")
@@ -2012,7 +2036,7 @@ class GenerateTab(ttk.Frame):
     def _apply_l3_visibility(self, profile):
         """Show/hide the Layer 3 Details frame and its sub-sections
         based on the profile's layer3 flag, mgmt_style, and ospf.enabled.
-        Default Gateway is always editable — it's required on every
+        Default Gateway is always editable - it's required on every
         device regardless of mgmt_style."""
         layer3 = bool(profile.get("layer3", False))
         mgmt_style = profile.get("mgmt_style", "svi") if layer3 else "svi"
@@ -2075,10 +2099,15 @@ class GenerateTab(ttk.Frame):
         """Walk the current Step 2 port assignments and create one row
         in the Routed Interface IPs grid for each port assigned to a
         role with requires_ip=True. Preserves any IPs the user already
-        typed for the same interface."""
+        typed for the same interface. Pre-fills the Mask column from
+        the profile's default_routed_mask when the user hasn't typed
+        one for that interface yet."""
         existing = {r["iface_name"]: (r["ip"].get(), r["mask"].get())
                     for r in self.l3_ip_rows}
         self._clear_l3_ip_rows()
+        pn = self.profile_cb.get()
+        profile = self.app.profiles.get(pn, {}) or {}
+        default_mask = (profile.get("default_routed_mask") or "").strip()
         for r in self.pa_rows:
             iface = r["iface"].get().strip()
             role_name = r["role"].get() or ""
@@ -2100,6 +2129,8 @@ class GenerateTab(ttk.Frame):
             if iface in existing:
                 ip.insert(0, existing[iface][0])
                 mask.insert(0, existing[iface][1])
+            if not mask.get() and default_mask:
+                mask.insert(0, default_mask)
             self.l3_ip_rows.append({"frame": row, "iface_name": iface,
                                     "ip": ip, "mask": mask})
 
@@ -2119,7 +2150,7 @@ class GenerateTab(ttk.Frame):
             if not vlan:
                 continue
             desc = (svi.get("description") or "").strip()
-            label = f"Vlan{vlan}" + (f" — {desc}" if desc else "")
+            label = f"Vlan{vlan}" + (f" - {desc}" if desc else "")
             row = ttk.Frame(self.svi_ip_frame); row.pack(fill="x", pady=1)
             row.columnconfigure(0, weight=2, uniform="sviip")
             row.columnconfigure(1, weight=1, uniform="sviip")
@@ -2320,7 +2351,7 @@ class GenerateTab(ttk.Frame):
             "oob_mask":        self.oob_mask.get().strip(),
             "work_order":      self.work_order.get().strip(),
         }
-        # L3 fields — only meaningful when the selected profile is L3,
+        # L3 fields - only meaningful when the selected profile is L3,
         # but always populated so the renderer can read them safely
         sw["loopback0_ip"]   = self.lb_ip.get().strip()
         sw["loopback0_mask"] = self.lb_mask.get().strip() or "255.255.255.255"
@@ -2793,7 +2824,7 @@ class ProfilesTab(ttk.Frame):
         self.domain_e = _field(form, "Domain Name")
         self.mgmt_vlan_e = _field(form, "Management VLAN ID")
 
-        # Base Settings selector — which base set this profile uses.
+        # Base Settings selector - which base set this profile uses.
         bs_row = ttk.Frame(form); bs_row.pack(fill="x", padx=5, pady=(2, 4))
         ttk.Label(bs_row, text="Base Settings:").pack(side="left")
         self.base_set_cb = ttk.Combobox(bs_row, width=30, state="readonly",
@@ -2855,7 +2886,7 @@ class ProfilesTab(ttk.Frame):
         self.ntp_key_id_e   = _field(svc_lf, "NTP Auth Key ID")
         self.ntp_key_e      = _field(svc_lf, "NTP Auth Key (MD5)")
         ttk.Label(svc_lf, style="Hint.TLabel",
-                  text="  NTP authentication fields are optional — leave\n"
+                  text="  NTP authentication fields are optional - leave\n"
                        "  blank to render unauthenticated `ntp server` lines."
                   ).pack(anchor="w", padx=2, pady=(2, 0))
 
@@ -2926,6 +2957,19 @@ class ProfilesTab(ttk.Frame):
                        "  routed_uplink = mgmt rides one of the routed uplinks."
                   ).pack(anchor="w", padx=5, pady=(0, 4))
 
+        # Default routed-interface subnet mask - pre-fills the Mask column
+        # of every routed-interface row in Generate Config Step 3.
+        rm = ttk.Frame(self.l3_body); rm.pack(fill="x", padx=5, pady=2)
+        ttk.Label(rm, text="Default Routed Mask", width=22, anchor="w"
+                  ).pack(side="left")
+        self.default_routed_mask_e = ttk.Entry(rm)
+        self.default_routed_mask_e.pack(side="left", fill="x", expand=True)
+        _attach_context_menu(self.default_routed_mask_e)
+        ttk.Label(self.l3_body, style="Hint.TLabel",
+                  text="  Pre-fills the Mask column for each routed\n"
+                       "  interface in Generate Config Step 3."
+                  ).pack(anchor="w", padx=5, pady=(0, 4))
+
         # SVIs (site-wide gateways)
         self.svi_lf = ttk.LabelFrame(self.l3_body, text="SVIs", padding=5)
         self.svi_lf.pack(fill="x", padx=5, pady=4)
@@ -2990,7 +3034,7 @@ class ProfilesTab(ttk.Frame):
         self.ospf_net_frame = ttk.Frame(self.ospf_lf)
         self.ospf_net_frame.pack(fill="x")
 
-        # BGP — one or more instances, each rendered as its own
+        # BGP - one or more instances, each rendered as its own
         # `router bgp <asn>` block. Same +Add/X pattern as ACLs.
         self.bgp_outer_lf = ttk.LabelFrame(
             self.l3_body, text="BGP", padding=5)
@@ -3011,7 +3055,7 @@ class ProfilesTab(ttk.Frame):
         self.acl_lf.pack(fill="x", padx=5, pady=4)
         ttk.Label(self.acl_lf, style="Hint.TLabel",
                   text="  Named ACLs rendered after the interfaces section.\n"
-                       "  Order matters — rules emit in the order shown."
+                       "  Order matters - rules emit in the order shown."
                   ).pack(anchor="w", padx=2, pady=(0, 4))
         ttk.Button(self.acl_lf, text="+ Add ACL",
                    command=lambda: self._add_acl_block()
@@ -3194,7 +3238,7 @@ class ProfilesTab(ttk.Frame):
         # Action / proto / log / X stay at their natural width; the four
         # address columns share equal weight so the row fills the rules
         # frame and stays the same length whether the action is permit,
-        # deny, or remark — and adapts when the window is narrow.
+        # deny, or remark - and adapts when the window is narrow.
         for col in (2, 3, 4, 5):
             row.columnconfigure(col, weight=1, uniform="acladdrs")
         action_cb = ttk.Combobox(row, width=8, state="readonly",
@@ -3492,6 +3536,9 @@ class ProfilesTab(ttk.Frame):
         # Layer 3
         self.l3_enabled.set(bool(p.get("layer3", False)))
         self.mgmt_style_cb.set(p.get("mgmt_style", "svi") or "svi")
+        self.default_routed_mask_e.delete(0, "end")
+        self.default_routed_mask_e.insert(
+            0, p.get("default_routed_mask", "") or "")
 
         self._clear_svis()
         for svi in p.get("svis", []) or []:
@@ -3548,6 +3595,7 @@ class ProfilesTab(ttk.Frame):
         # Layer 3 defaults for a new profile
         self.l3_enabled.set(False)
         self.mgmt_style_cb.set("svi")
+        self.default_routed_mask_e.delete(0, "end")
         self._clear_svis()
         self.ospf_enabled.set(False)
         self.ospf_pid_e.delete(0, "end"); self.ospf_pid_e.insert(0, "1")
@@ -3660,6 +3708,9 @@ class ProfilesTab(ttk.Frame):
         if self.l3_enabled.get():
             data["layer3"] = True
             data["mgmt_style"] = self.mgmt_style_cb.get() or "svi"
+            drm = self.default_routed_mask_e.get().strip()
+            if drm:
+                data["default_routed_mask"] = drm
             svis = []
             for r in self.svi_rows:
                 vlan = r["vlan"].get().strip()
@@ -3842,7 +3893,7 @@ class BaseTab(ttk.Frame):
         default = (self.app.base or {}).get("default")
         # show " (default)" suffix on the default entry so users see it
         labels = [(f"{n}  (default)" if n == default else n) for n in names]
-        # _CheckList uses labels as both display and key — to keep things
+        # _CheckList uses labels as both display and key - to keep things
         # simple we populate with raw names and rely on the editor header
         # / Set Default button to convey which is the default.
         self.lb.populate(names)
@@ -3910,7 +3961,7 @@ class BaseTab(ttk.Frame):
         if (self.app.base or {}).get("sets") and \
                 len(self.app.base["sets"]) - len(names) < 1:
             _dialog("Delete",
-                    "Cannot delete every base set — at least one must remain.",
+                    "Cannot delete every base set - at least one must remain.",
                     "warning")
             return
         if len(names) == 1:
@@ -4027,7 +4078,7 @@ class BaseTab(ttk.Frame):
         if self.default_var.get():
             self.app.base["default"] = new_name
         elif self.app.base.get("default") == new_name and len(sets) > 1:
-            # User unchecked default on the current entry — pick another.
+            # User unchecked default on the current entry - pick another.
             others = [n for n in sorted(sets.keys(), key=str.lower)
                       if n != new_name]
             self.app.base["default"] = others[0] if others else new_name
@@ -4085,14 +4136,16 @@ class GuideTab(ttk.Frame):
         heading("How To Use This App")
         body(
             "This app generates ready-to-paste initial configurations for "
-            "Cisco switches. There are two phases:\n\n"
+            "Cisco switches and routers (Layer 2 access, Layer 3 distribution, "
+            "and L3 edge/BGP). There are two phases:\n\n"
             "ONE-TIME SETUP  (tabs 2-5)\n"
             "Define your switch models, interface roles, site profiles, and "
             "base settings. This only needs to be done once - after that the "
             "definitions are saved and reused.\n\n"
             "DAILY USE  (tab 1 - Generate Config)\n"
             "Pick a model, pick a profile, review port assignments, enter "
-            "the per-switch details (hostname, IPs, passwords), click "
+            "the per-switch details (hostname, IPs, passwords, SVI IPs, "
+            "routed-interface IPs, BGP descriptions, etc.), click "
             "Generate, then copy or save the config.")
 
         # ---- Recommended order ----
@@ -4103,8 +4156,30 @@ class GuideTab(ttk.Frame):
             "1.  Base Settings   - Global IOS commands shared by all switches\n"
             "2.  Switch Models   - Hardware definitions (port groups)\n"
             "3.  Interface Roles - Reusable per-port command templates\n"
-            "4.  Site Profiles   - VLANs, variables, and port assignments\n"
+            "4.  Site Profiles   - VLANs, services, L3, and port assignments\n"
             "5.  Generate Config - Use the wizard to build a config")
+
+        # ---- Menu Bar ----
+        heading("Menu Bar")
+        body(
+            "The application has a small menu bar across the top with two "
+            "menus:\n\n"
+            "File\n"
+            "  Export Settings...    Save all your models, roles, profiles, "
+            "base settings, and theme as a single ZIP. Use this to back up or "
+            "share your setup with teammates.\n"
+            "  Import Settings...    Load a previously exported ZIP. "
+            "Overwrites the current data.\n"
+            "  Recent Profiles       Jump straight to a recently used site "
+            "profile in the wizard.\n"
+            "  Recent Settings ZIPs  Re-import a recent settings backup.\n"
+            "  Recent Configs        Re-open a previously generated config "
+            "file in the preview pane.\n\n"
+            "Theme\n"
+            "  Pick a built-in theme (Default, Coral, Sandstone, Chris, "
+            "Voyager, Light) or one of your custom themes. Choose "
+            "'Edit Custom Themes...' to create, edit, duplicate, or delete "
+            "your own colour palettes.")
 
         # ---- Step 1: Base Settings ----
         heading("Step 1 - Base Settings Tab")
@@ -4116,8 +4191,24 @@ class GuideTab(ttk.Frame):
             "Sections include: Global Services, Management VRF, Logging, "
             "AAA, Security, SSH/Crypto, Switching Features, Management Port, "
             "Line Configuration, Banner, Disabled Port Template, and "
-            "Custom Config Sections for production extras like SNMP, NTP, "
+            "Custom Config Sections for production extras like SNMP, "
             "QoS, DHCP Snooping, ACLs, etc.")
+
+        subheading("Multiple Base Sets")
+        body(
+            "The Base Settings tab supports multiple named sets. The list on "
+            "the left shows every set you have defined. Use the buttons to "
+            "manage them:\n\n"
+            "  + Add        Create a new base set (gives you a clean editor).\n"
+            "  Duplicate    Clone the selected set so you can tweak a copy.\n"
+            "  Set Default  Mark the selected set as the fallback used when "
+            "a Site Profile does not name a base set, or when the named one "
+            "is missing.\n"
+            "  Delete       Remove the selected set.\n\n"
+            "Each Site Profile picks one base set in the 'Base Settings' "
+            "dropdown on the Site Profiles tab. This lets you keep different "
+            "AAA / SSH / banner blocks for, say, corporate vs. lab vs. "
+            "DMZ sites and select the right one per profile.")
 
         subheading("Global Services Example")
         code(
@@ -4197,12 +4288,10 @@ class GuideTab(ttk.Frame):
             "snmp-server location {{ site_location }}\n"
             "snmp-server contact {{ contact_email }}")
 
-        subheading("Custom Section Example: NTP")
-        code(
-            "ntp server 10.0.0.1\n"
-            "ntp server 10.0.0.2\n"
-            "clock timezone EST -5\n"
-            "clock summer-time EDT recurring")
+        body(
+            "Note: DNS name-servers, NTP servers, clock timezone, and "
+            "summer-time are now configured per-profile in the Site Profiles "
+            "tab under 'Services' instead of as a custom Base section.")
 
         subheading("Custom Section Example: DHCP Snooping")
         code(
@@ -4319,6 +4408,20 @@ class GuideTab(ttk.Frame):
             "no shutdown\n"
             "spanning-tree portfast\n"
             "spanning-tree bpduguard enable")
+
+        subheading("Routed Interfaces (Requires IP)")
+        body(
+            "Tick the 'Requires IP' checkbox for roles that turn an interface "
+            "into a layer-3 routed port (no switchport). When a port is "
+            "assigned to a role with Requires IP, the wizard's Step 3 grows "
+            "an extra grid where you fill in the per-switch IP and mask for "
+            "that interface. Use {{ ip }} and {{ mask }} as placeholders in "
+            "the role template.")
+        code(
+            "desc //Routed Uplink\n"
+            "no switchport\n"
+            "ip address {{ ip }} {{ mask }}\n"
+            "no shut")
         body("Click 'Save Role' when done.")
 
         # ---- Step 4: Site Profiles ----
@@ -4334,7 +4437,44 @@ class GuideTab(ttk.Frame):
         body(
             "Give the profile a descriptive name. The Management VLAN ID is "
             "used to create the 'interface vlanXX' block where the switch's "
-            "management IP is assigned.")
+            "management IP is assigned (for L2 sites, or L3 sites using "
+            "mgmt_style = svi).")
+
+        subheading("Base Settings Selector")
+        body(
+            "Pick which Base set this profile should use. The dropdown is "
+            "populated from the Base Settings tab. If the named set is "
+            "missing at generate time, the app falls back to the default "
+            "set marked on the Base Settings tab.")
+
+        subheading("Services (DNS / NTP / Clock)")
+        body(
+            "These per-profile values render as IOS commands in the generated "
+            "config so different sites can point at different DNS/NTP "
+            "infrastructure without duplicating Base sets:\n\n"
+            "  DNS Servers          One or more name-server IPs, comma "
+            "separated. Becomes 'ip name-server ...' lines.\n"
+            "  NTP Servers          One or more NTP server IPs, comma "
+            "separated. Becomes 'ntp server ...' lines.\n"
+            "  NTP Source Interface Optional 'ntp source <iface>' line.\n"
+            "  NTP Auth Key ID +    Optional MD5 authenticated NTP. Both "
+            "  NTP Auth Key         fields are needed to enable authentication.\n"
+            "  Clock Timezone       Free-form 'clock timezone ...' value, "
+            "e.g. 'EST -5'.\n"
+            "  Clock Summer-Time    Free-form 'clock summer-time ...' value, "
+            "e.g. 'EDT recurring'.")
+
+        subheading("Credential Defaults")
+        body(
+            "Optional defaults that pre-fill the matching fields in Generate "
+            "Config Step 3 when this profile is selected:\n\n"
+            "  Local Username      Becomes 'username <name> ...'.\n"
+            "  Local User Password Plain or secret-style password for the "
+            "local user.\n"
+            "  Enable Secret       Privileged EXEC password.\n\n"
+            "These are defaults only - the wizard always lets you change "
+            "them per switch, and per-switch edits are not written back "
+            "to the profile.")
 
         subheading("VLAN Definitions")
         body(
@@ -4392,6 +4532,85 @@ class GuideTab(ttk.Frame):
             "range GigabitEthernet1/0/1-20        Access Port    User Ports\n"
             "range GigabitEthernet1/0/21-22       Trunk Uplink   Core Uplink\n"
             "GigabitEthernet1/1/1                 Trunk Uplink   Stack Link")
+
+        subheading("Layer 3 Toggle")
+        body(
+            "Tick 'Enable Layer 3' for sites that route. This reveals the L3 "
+            "editor and tells the generator to emit routing-related blocks "
+            "(L3 interfaces, OSPF, BGP, default route, etc.). Leave it off "
+            "for plain access-layer switches.")
+
+        subheading("Management Style")
+        body(
+            "When Layer 3 is on, pick how the switch's management IP is "
+            "assigned:\n\n"
+            "  svi            Management rides an SVI (same as L2). "
+            "Emits 'interface vlan<mgmt_vlan>' with the IP from Step 3.\n"
+            "  loopback       Mgmt rides Loopback0. The wizard prompts for "
+            "Loopback0 IP/Mask in Step 3.\n"
+            "  routed_uplink  Mgmt rides one of the routed uplinks. No "
+            "mgmt SVI is emitted; the routed interface holds the mgmt IP.\n\n"
+            "'ip default-gateway' is emitted whenever a Default Gateway is "
+            "set, regardless of mgmt_style.")
+
+        subheading("Default Routed Mask")
+        body(
+            "Optional site-wide mask that pre-fills the Mask column of every "
+            "routed-interface row in Generate Config Step 3. Useful when "
+            "every L3 link at the site uses the same prefix length "
+            "(e.g. 255.255.255.252 for /30 point-to-points). Per-switch "
+            "overrides in Step 3 always win.")
+
+        subheading("SVIs")
+        body(
+            "Define the VLANs that need an SVI on every switch at the site. "
+            "Each row carries:\n\n"
+            "  VLAN          The VLAN ID the SVI belongs to.\n"
+            "  Description   Free-form text rendered as the SVI description.\n"
+            "  Helpers (CSV) Optional DHCP helper IPs, comma separated. "
+            "Each becomes an 'ip helper-address ...' line.\n\n"
+            "IPs and masks are entered per-switch in Generate Config "
+            "Step 3 under 'SVI IPs'.")
+
+        subheading("OSPF")
+        body(
+            "Tick 'Enable OSPF' to render a 'router ospf <id>' block. "
+            "Fields:\n\n"
+            "  Process ID                The OSPF process number.\n"
+            "  Passive interface default Tick to emit "
+            "'passive-interface default'. Interfaces listed below then become "
+            "exceptions (no passive-interface ...). When off, only listed "
+            "interfaces are passive.\n"
+            "  Passive Interfaces (CSV)  Comma-separated interface names.\n"
+            "  Networks                  One row per 'network ... area ...' "
+            "statement.\n\n"
+            "Router-ID is set per switch in Generate Config Step 3 and "
+            "defaults to the Loopback0 IP.")
+
+        subheading("BGP")
+        body(
+            "Add one BGP instance per local ASN. Each instance renders as "
+            "its own 'router bgp <local_asn>' block. Within an instance, "
+            "Peer Slots describe BGP neighbours that will exist on every "
+            "switch at the site - the peer IP / MD5 key / circuit ID are "
+            "filled in per switch in Generate Config Step 3.")
+        code(
+            "Local ASN: 65000\n"
+            "Peer Slots:\n"
+            "  Remote ASN: 65001   Description: ISP_Peer\n"
+            "  Remote ASN: 65000   Description: Loopback_iBGP")
+
+        subheading("ACLs")
+        body(
+            "Define named extended ACLs that render in the post-interface "
+            "section of the config. Each ACL has a name, type "
+            "(currently 'extended'), and a list of rules. Each rule is one "
+            "of:\n\n"
+            "  remark                Free-form comment line.\n"
+            "  permit / deny         A rule with protocol, source + wildcard, "
+            "destination + wildcard, and optional 'log'.\n\n"
+            "Used for typical edge ACLs like 'block bogons' or 'deny user "
+            "subnets to mgmt'.")
         body("Click 'Save Profile' when done.")
 
         # ---- Daily Use ----
@@ -4421,60 +4640,113 @@ class GuideTab(ttk.Frame):
 
         subheading("Wizard Step 3 - Switch Details")
         body(
-            "Fill in the values unique to this specific switch:\n\n"
-            "  Hostname         - The switch hostname (e.g. SW-FLOOR3-01)\n"
-            "  Enable Secret    - The privileged EXEC password\n"
-            "  Admin Password   - The local admin account password\n"
-            "  Domain Name      - IP domain name for SSH key generation\n"
-            "  Management IP    - The switch management interface IP\n"
-            "  Subnet Mask      - Management subnet mask (default 255.255.255.0)\n"
-            "  Default Gateway  - The switch default gateway IP\n\n"
+            "Fill in the values unique to this specific switch. The fields "
+            "shown depend on the profile - Layer 3 profiles unlock extra "
+            "sections.\n\n"
+            "Core fields (always shown):\n"
+            "  Hostname         The switch hostname (e.g. SW-FLOOR3-01).\n"
+            "  Local Username   Pre-fills from the profile's Credential "
+            "Defaults; edit per switch as needed.\n"
+            "  Admin Password   Local admin account password.\n"
+            "  Enable Secret    Privileged EXEC password.\n"
+            "  Domain Name      IP domain name (also used for SSH key "
+            "generation).\n"
+            "  Management IP /  Management interface IP and mask. Goes on "
+            "  Subnet Mask      the mgmt SVI (L2 / svi mgmt_style), "
+            "Loopback0 (loopback), or the routed-uplink interface "
+            "(routed_uplink).\n"
+            "  Default Gateway  The switch default gateway. Always emits "
+            "'ip default-gateway'. For Layer 3 profiles, also auto-emits "
+            "'ip route 0.0.0.0 0.0.0.0 <gateway>' unless you supplied your "
+            "own default route under Static Routes."
+            "\n\n"
+            "Layer 3 sections (only when the profile has Layer 3 enabled):\n"
+            "  Loopback0 IP/Mask  Shown when mgmt_style = loopback. Becomes "
+            "'interface Loopback0' with the given IP/mask.\n"
+            "  Router-ID          Optional OSPF router-id. Defaults to "
+            "Loopback0 IP if blank.\n"
+            "  Routed Interface IPs One row per port assigned to a "
+            "Requires-IP role. Fill in the per-switch IP and mask. The Mask "
+            "column pre-fills from the profile's Default Routed Mask when "
+            "set.\n"
+            "  SVI IPs            One row per SVI defined on the profile. "
+            "Fill in the per-switch IP/mask for each VLAN's SVI.\n"
+            "  Static Routes      Optional 'ip route <prefix> <mask> "
+            "<next-hop>' entries with optional descriptions.\n"
+            "  BGP Peers          One row per peer slot defined on the "
+            "profile. Fill in the neighbour IP, optional MD5 key, and "
+            "optional circuit ID per switch.\n\n"
             "Click 'Generate Config' to build the configuration. It appears "
             "in the preview pane on the right. Use 'Copy to Clipboard' to "
             "paste directly into the switch console, or 'Save to File' to "
-            "save a .txt file.")
+            "save a .txt file (which is also added to your Recent Configs "
+            "menu).")
 
         # ---- Config Order ----
         heading("Generated Config Order")
         body(
-            "The generated config assembles sections in this order:\n\n"
-            " 1.  Header comment with hostname\n"
-            " 2.  configure terminal\n"
-            " 3.  Global Services (from Base Settings)\n"
-            " 4.  hostname\n"
-            " 5.  Management VRF (from Base Settings)\n"
-            " 6.  Logging (from Base Settings)\n"
-            " 7.  Credentials (enable secret + admin user)\n"
-            " 8.  AAA (from Base Settings)\n"
-            " 9.  Security (from Base Settings)\n"
-            "10.  switch 1 provision (from Model)\n"
-            "11.  ip domain name\n"
-            "12.  SSH / Crypto (from Base Settings)\n"
-            "13.  Switching Features (from Base Settings)\n"
-            "14.  VLAN Definitions (from Profile)\n"
-            "15.  Custom Sections - Before Interfaces\n"
-            "16.  Disable ALL ports (Model port groups + Disabled Port "
-            "Template)\n"
-            "17.  VLAN 1 shutdown\n"
-            "18.  Management Port (from Base Settings)\n"
-            "19.  Port Assignments (Profile roles applied to interfaces)\n"
-            "20.  Management VLAN interface (IP from wizard)\n"
-            "21.  Default gateway\n"
-            "22.  Custom Sections - After Interfaces\n"
-            "23.  Line Configuration (from Base Settings)\n"
-            "24.  Banner Login (from Base Settings)\n"
-            "25.  end")
+            "The generated config assembles sections in this order. Layer-3 "
+            "blocks are only emitted when the profile has Layer 3 enabled.\n\n"
+            "Global / Base\n"
+            "   Header comment with hostname\n"
+            "   configure terminal\n"
+            "   Global Services (Base)\n"
+            "   hostname\n"
+            "   Management VRF (Base)\n"
+            "   Logging (Base)\n"
+            "   Credentials (enable secret + local username/password)\n"
+            "   AAA (Base)\n"
+            "   Security (Base)\n"
+            "   switch 1 provision (from Model)\n"
+            "   ip domain name\n"
+            "   ip name-server lines (Profile Services)\n"
+            "   clock timezone / summer-time (Profile Services)\n"
+            "   NTP authentication + ntp server lines (Profile Services)\n"
+            "   SSH / Crypto (Base)\n"
+            "   Switching Features (Base)\n\n"
+            "VLANs\n"
+            "   VLAN Definitions (Profile)\n"
+            "   Custom Sections - Before Interfaces (Base)\n"
+            "   Disable ALL ports (Model port groups + Disabled Port Template)\n"
+            "   VLAN 1 shutdown\n"
+            "   Management Port (Base)\n\n"
+            "L3 Interfaces  (Layer 3 only)\n"
+            "   Loopback0 (when mgmt_style = loopback)\n"
+            "   SVIs with per-switch IP / mask / helpers\n\n"
+            "Interfaces\n"
+            "   Port Assignments (Profile roles applied to interfaces, "
+            "including routed interfaces with per-switch IP/mask)\n\n"
+            "Management\n"
+            "   Management VLAN interface (when L2 or mgmt_style = svi)\n"
+            "   ip default-gateway (always when set)\n\n"
+            "Post-Interface\n"
+            "   Custom Sections - After Interfaces (Base)\n"
+            "   Profile ACLs (named extended ACLs)\n\n"
+            "Routing  (Layer 3 only)\n"
+            "   router ospf <id> block\n"
+            "   router bgp <asn> block(s) with neighbours and MD5 auth\n"
+            "   Static Routes\n"
+            "   Auto default route via Default Gateway (if no user-supplied "
+            "0.0.0.0/0)\n\n"
+            "Line Config\n"
+            "   Line Configuration (Base)\n\n"
+            "Banner / End\n"
+            "   Banner Login (Base)\n"
+            "   end")
 
         # ---- Tips ----
         heading("Tips")
         body(
             "- All data is saved as JSON files in the data/ folder. You can "
-            "back up or share these files with your team.\n\n"
+            "back up or share these files with your team, or use File > "
+            "Export Settings to bundle them into a single ZIP.\n\n"
             "- You can create multiple Site Profiles for different deployment "
-            "types using the same Interface Roles and Switch Models.\n\n"
+            "types using the same Interface Roles and Switch Models. Each "
+            "profile can point at a different Base Settings set if needed.\n\n"
             "- If you need a port configured differently than the profile "
             "default, adjust it in the wizard's Step 2 - the changes only "
-            "affect the current config, not the saved profile.\n\n"
+            "affect the current config, not the saved profile. The same is "
+            "true for credentials and other per-switch fields in Step 3.\n\n"
             "- The Disabled Port Template runs on every port BEFORE your "
             "assignments, so any port you don't explicitly assign a role to "
             "will be shut down and placed on the blackhole VLAN.\n\n"
@@ -4482,7 +4754,23 @@ class GuideTab(ttk.Frame):
             "from the generated config.\n\n"
             "- The 'interface' keyword is added automatically. In port "
             "assignments, just enter the range text - e.g. "
-            "'range GigabitEthernet1/0/1-12' (not 'interface range ...').")
+            "'range GigabitEthernet1/0/1-12' (not 'interface range ...').\n\n"
+            "- A role with 'Requires IP' on it produces an extra row in "
+            "Step 3 for every port it's assigned to. Use {{ ip }} and "
+            "{{ mask }} in the role template to consume those values.\n\n"
+            "- Profile-level Default Routed Mask pre-fills the Mask column "
+            "of every routed-interface row in Step 3, so identical /30 "
+            "links don't need to be typed in for every switch.\n\n"
+            "- For Layer 3 edge sites that talk BGP, define one BGP "
+            "instance per local ASN and one peer slot per neighbour role. "
+            "Each switch in the wizard fills in peer IP / MD5 key / circuit "
+            "ID for that slot.\n\n"
+            "- The Default Gateway field is always required. For Layer 3 "
+            "profiles, it also seeds the auto 'ip route 0.0.0.0 0.0.0.0' "
+            "default route unless you supplied your own under Static "
+            "Routes.\n\n"
+            "- Use the Theme menu to switch between built-in palettes or "
+            "open the custom theme editor to build your own.")
 
 
 # ===================================================================
