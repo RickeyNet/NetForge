@@ -1,16 +1,16 @@
 {
-  "test": {
-    "mgmt_vlan": "3",
-    "vlan_definitions": "interface vlan1\nno ip address\nshutdown\nexit",
-    "role_variables": {},
-    "port_assignments": []
-  },
   "Layer 3": {
-    "domain_name": "",
-    "mgmt_vlan": "",
-    "vlan_definitions": "",
+    "domain_name": "test_domain",
+    "mgmt_vlan": "2",
+    "base_set": "Base",
+    "vlan_definitions": "interface vlan1\nno ip address\nshutdown\nexit\n\nvlan 2\n name mgmt\nexit\n\nvlan 4\n name User\nexit",
     "role_variables": {},
     "port_assignments": [],
+    "credentials": {
+      "local_username": "testusername",
+      "admin_password": "testpassword",
+      "enable_secret": "testenable"
+    },
     "layer3": true,
     "mgmt_style": "loopback",
     "svis": [],
@@ -23,26 +23,28 @@
     }
   },
   "BGP Edge": {
-    "domain_name": "",
-    "mgmt_vlan": "",
-    "vlan_definitions": "vlan 2\n name 3\nexit\n\nvlan 4\n name User\nexit",
+    "domain_name": "test_ domain",
+    "mgmt_vlan": "2",
+    "base_set": "Base",
+    "vlan_definitions": "interface vlan1\nno ip address\nshutdown\nexit\n\nvlan 2\n name mgmt\nexit\n\nvlan 4\n name User\nexit",
     "role_variables": {},
     "port_assignments": [],
+    "credentials": {
+      "local_username": "testusername",
+      "admin_password": "testpassword",
+      "enable_secret": "testenable"
+    },
     "layer3": true,
-    "mgmt_style": "loopback",
+    "mgmt_style": "routed_uplink",
     "svis": [
       {
         "vlan": "2",
         "description": "Uplink_to_ISP",
-        "ip": "",
-        "mask": "",
         "helper_addresses": []
       },
       {
         "vlan": "3",
         "description": "User_Gateway",
-        "ip": "",
-        "mask": "",
         "helper_addresses": []
       }
     ],
@@ -59,7 +61,10 @@
           "local_asn": "65000",
           "peer_asn": "65001",
           "slots": [
-            { "peer_asn": "65001", "description": "ISP_Peer" }
+            {
+              "peer_asn": "65001",
+              "description": "ISP_Peer"
+            }
           ]
         }
       ]
@@ -79,6 +84,7 @@
             "source": "x.x.x.x",
             "source_wildcard": "0.0.0.0",
             "dest": "any",
+            "dest_wildcard": "",
             "log": false
           },
           {
@@ -91,6 +97,7 @@
             "source": "x.x.x.x",
             "source_wildcard": "0.0.0.0",
             "dest": "any",
+            "dest_wildcard": "",
             "log": false
           },
           {
@@ -103,6 +110,7 @@
             "source": "0.0.0.0",
             "source_wildcard": "255.0.0.0",
             "dest": "any",
+            "dest_wildcard": "",
             "log": true
           },
           {
@@ -111,6 +119,7 @@
             "source": "10.0.0.0",
             "source_wildcard": "0.255.255.255",
             "dest": "any",
+            "dest_wildcard": "",
             "log": true
           },
           {
@@ -119,6 +128,7 @@
             "source": "127.0.0.0",
             "source_wildcard": "0.255.255.255",
             "dest": "any",
+            "dest_wildcard": "",
             "log": true
           },
           {
@@ -127,6 +137,7 @@
             "source": "169.254.0.0",
             "source_wildcard": "0.0.255.255",
             "dest": "any",
+            "dest_wildcard": "",
             "log": true
           },
           {
@@ -135,6 +146,7 @@
             "source": "172.16.0.0",
             "source_wildcard": "0.15.255.255",
             "dest": "any",
+            "dest_wildcard": "",
             "log": true
           },
           {
@@ -143,6 +155,7 @@
             "source": "192.168.0.0",
             "source_wildcard": "0.0.255.255",
             "dest": "any",
+            "dest_wildcard": "",
             "log": true
           },
           {
@@ -151,6 +164,7 @@
             "source": "224.0.0.0",
             "source_wildcard": "15.255.255.255",
             "dest": "any",
+            "dest_wildcard": "",
             "log": true
           },
           {
@@ -159,13 +173,16 @@
             "source": "240.0.0.0",
             "source_wildcard": "15.255.255.255",
             "dest": "any",
+            "dest_wildcard": "",
             "log": true
           },
           {
             "action": "permit",
             "protocol": "ip",
             "source": "any",
+            "source_wildcard": "",
             "dest": "any",
+            "dest_wildcard": "",
             "log": false
           }
         ]
@@ -191,11 +208,26 @@
             "action": "permit",
             "protocol": "ip",
             "source": "any",
+            "source_wildcard": "",
             "dest": "any",
+            "dest_wildcard": "",
             "log": false
           }
         ]
       }
     ]
+  },
+  "Layer 2": {
+    "domain_name": "test_domain",
+    "mgmt_vlan": "2",
+    "base_set": "Base",
+    "vlan_definitions": "interface vlan1\nno ip address\nshutdown\nexit\n\nvlan 2\n name mgmt\nexit\n\nvlan 4\n name User\nexit",
+    "role_variables": {},
+    "port_assignments": [],
+    "credentials": {
+      "local_username": "testusername",
+      "admin_password": "testpassword",
+      "enable_secret": "testenable"
+    }
   }
 }

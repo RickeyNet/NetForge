@@ -1125,7 +1125,9 @@ def render_config_sections(model, profile, roles, base, sw):
     gb.append(base.get("mgmt_vrf", ""))
     gb.append(base.get("logging", ""))
     gb.append(f"enable secret {sw['enable_secret']}")
-    username = base.get("local_username", "admin") or "admin"
+    username = (sw.get("local_username")
+                or base.get("local_username", "admin")
+                or "admin")
     gb.append(f"username {username} privilege 0 secret "
               f"{sw['admin_password']}")
     gb.append(base.get("aaa", ""))
@@ -1321,17 +1323,16 @@ def render_config_sections(model, profile, roles, base, sw):
                 ctx.setdefault("ospf_pid", ospf_pid_for_iface)
         try:
             rendered = env.from_string(cmds).render(**ctx)
-        except Exception:
-            rendered = cmds
+        except Exception as exc:
+            rendered = (f"! ERROR rendering role '{pa.get('role','')}': {exc}\n"
+                        f"{cmds}")
         ifaces.append(f"interface {iface_name}\n{rendered}\nexit")
 
     # ── 4  Management VLAN & Gateway ────────────────────────────────────
-    # L2 default and L3 mgmt_style="svi": SVI for the management VLAN +
-    # ip default-gateway (always — IOS needs it for off-subnet mgmt traffic
-    # even when a routing process is running).
-    # L3 mgmt_style="loopback" or "routed_uplink": this section is empty —
-    # the L3 Interfaces section already emitted Loopback0 / the routed uplink
-    # using sw['mgmt_ip']/sw['mgmt_mask'] (or profile.loopback0 if set).
+    # The mgmt SVI is only emitted for L2 or L3+mgmt_style=svi; loopback /
+    # routed_uplink modes provide their mgmt IP via the L3 Interfaces
+    # section instead. ip default-gateway is always emitted when set —
+    # IOS uses it for off-subnet mgmt traffic regardless of mgmt_style.
     mgmt = []
     if not layer3 or mgmt_style == "svi":
         mgmt_vlan = profile.get("mgmt_vlan", "1")
@@ -1342,8 +1343,8 @@ def render_config_sections(model, profile, roles, base, sw):
                 f"ip address {sw['mgmt_ip']} {sw['mgmt_mask']}\n"
                 f"exit"
             )
-        if sw.get("default_gateway"):
-            mgmt.append(f"ip default-gateway {sw['default_gateway']}")
+    if sw.get("default_gateway"):
+        mgmt.append(f"ip default-gateway {sw['default_gateway']}")
 
     # ── 5  Post-Interface Custom Sections ────────────────────────────────
     post = []
@@ -1646,6 +1647,7 @@ class GenerateTab(ttk.Frame):
                   style="Sec.TLabel").pack(anchor="w", padx=5, pady=(5, 10))
 
         self.hostname    = _field(form, "Hostname")
+        self.username    = _field(form, "Local Username")
         self.secret      = _field(form, "Enable Secret")
         self.password    = _field(form, "Admin Password")
         self.domain      = _field(form, "Domain Name")
@@ -1834,12 +1836,21 @@ class GenerateTab(ttk.Frame):
             _dialog("Missing", "Select a site profile.", "warning")
             return
         self._populate_step2(mn, pn)
-        # auto-fill domain name from profile
+        # auto-fill from profile defaults — values stay editable, edits
+        # are per-switch and never written back to the profile.
         profile = self.app.profiles[pn]
         domain = profile.get("domain_name", "")
         if domain:
             self.domain.delete(0, "end")
             self.domain.insert(0, domain)
+        creds = profile.get("credentials", {}) or {}
+        for entry, key in ((self.username, "local_username"),
+                           (self.password, "admin_password"),
+                           (self.secret,   "enable_secret")):
+            val = creds.get(key, "")
+            if val:
+                entry.delete(0, "end")
+                entry.insert(0, val)
         # Show/hide L3 details and relabel gateway based on profile settings
         self._apply_l3_visibility(profile)
         # show/hide OOB fields based on whether model has Gi0/0
@@ -2298,6 +2309,7 @@ class GenerateTab(ttk.Frame):
         # ttk.Entry.get() works whether or not the widget is disabled
         sw = {
             "hostname":        self.hostname.get().strip(),
+            "local_username":  self.username.get().strip(),
             "enable_secret":   self.secret.get().strip(),
             "admin_password":  self.password.get().strip(),
             "domain_name":     self.domain.get().strip(),
@@ -2764,7 +2776,16 @@ class ProfilesTab(ttk.Frame):
                    style="Del.TButton").pack(side="left", padx=2)
 
         # -- right: edit --
-        right = ScrollFrame(paned); paned.add(right, weight=1)
+        # Wrapper holds the scrolling form plus a sticky footer with the
+        # Save Profile button, so Save stays visible even as the L3 body
+        # grows and pushes content off-screen.
+        right_wrap = ttk.Frame(paned); paned.add(right_wrap, weight=1)
+        footer = ttk.Frame(right_wrap)
+        footer.pack(side="bottom", fill="x")
+        ttk.Separator(footer, orient="horizontal").pack(fill="x")
+        ttk.Button(footer, text="Save Profile",
+                   command=self._save).pack(padx=5, pady=8, anchor="w")
+        right = ScrollFrame(right_wrap); right.pack(fill="both", expand=True)
         form = right.inner
 
         _section(form, "Profile Details")
@@ -2798,24 +2819,41 @@ class ProfilesTab(ttk.Frame):
         self.vlans_text.pack(fill="x", padx=5, pady=4)
         _attach_context_menu(self.vlans_text)
 
+        # -- Credential defaults --
+        _section(form, "Credential Defaults")
+        ttk.Label(form, style="Hint.TLabel",
+                  text="  Optional defaults pre-filled into Step 3 of\n"
+                       "  Generate Config when this profile is selected.\n"
+                       "  Leave blank to fall back to Base Settings /\n"
+                       "  manual entry. Per-switch edits stay local to\n"
+                       "  that wizard run and don't change the profile."
+                  ).pack(anchor="w", padx=5, pady=(4, 0))
+
+        cred_lf = ttk.LabelFrame(form, text="Credentials", padding=5)
+        cred_lf.pack(fill="x", padx=5, pady=5)
+        self.cred_user_e   = _field(cred_lf, "Local Username")
+        self.cred_pass_e   = _field(cred_lf, "Local User Password")
+        self.cred_enable_e = _field(cred_lf, "Enable Secret")
+
         # -- DNS / NTP services --
         _section(form, "Services (DNS / NTP)")
         ttk.Label(form, style="Hint.TLabel",
                   text="  Site-wide name-server and NTP settings emitted in\n"
-                       "  the Global section. Multiple servers may be entered\n"
-                       "  as comma-separated lists."
+                       "  the Global section. Name Servers and NTP Servers\n"
+                       "  accept comma-separated lists. Timezone takes a\n"
+                       "  name + offset (e.g. EST -5)."
                   ).pack(anchor="w", padx=5, pady=(4, 0))
 
         svc_lf = ttk.LabelFrame(form, text="DNS / NTP", padding=5)
         svc_lf.pack(fill="x", padx=5, pady=5)
 
-        self.dns_servers_e = _field(svc_lf, "Name Server(s) (CSV)")
-        self.ntp_servers_e = _field(svc_lf, "NTP Server(s) (CSV)")
-        self.ntp_source_e  = _field(svc_lf, "NTP Source Interface")
-        self.clock_tz_e    = _field(svc_lf, "Clock Timezone (e.g. EST -5)")
-        self.clock_summer_e = _field(svc_lf, "Clock Summer-Time (optional)")
-        self.ntp_key_id_e  = _field(svc_lf, "NTP Auth Key ID")
-        self.ntp_key_e     = _field(svc_lf, "NTP Auth Key (MD5)")
+        self.dns_servers_e  = _field(svc_lf, "Name Servers")
+        self.ntp_servers_e  = _field(svc_lf, "NTP Servers")
+        self.ntp_source_e   = _field(svc_lf, "NTP Source Interface")
+        self.clock_tz_e     = _field(svc_lf, "Clock Timezone")
+        self.clock_summer_e = _field(svc_lf, "Clock Summer-Time")
+        self.ntp_key_id_e   = _field(svc_lf, "NTP Auth Key ID")
+        self.ntp_key_e      = _field(svc_lf, "NTP Auth Key (MD5)")
         ttk.Label(svc_lf, style="Hint.TLabel",
                   text="  NTP authentication fields are optional — leave\n"
                        "  blank to render unauthenticated `ntp server` lines."
@@ -2981,8 +3019,6 @@ class ProfilesTab(ttk.Frame):
         self.acl_container = ttk.Frame(self.acl_lf)
         self.acl_container.pack(fill="x")
 
-        ttk.Button(form, text="Save Profile",
-                   command=self._save).pack(padx=5, pady=10, anchor="w")
         self._refresh()
 
     # -- list helpers --
@@ -3410,6 +3446,14 @@ class ProfilesTab(ttk.Frame):
         self.base_set_cb["values"] = self.app.base_set_names()
         self.base_set_cb.set(p.get("base_set", "") or "")
 
+        creds = p.get("credentials", {}) or {}
+        self.cred_user_e.delete(0, "end")
+        self.cred_user_e.insert(0, creds.get("local_username", "") or "")
+        self.cred_pass_e.delete(0, "end")
+        self.cred_pass_e.insert(0, creds.get("admin_password", "") or "")
+        self.cred_enable_e.delete(0, "end")
+        self.cred_enable_e.insert(0, creds.get("enable_secret", "") or "")
+
         svc = p.get("services", {}) or {}
         dns_list = svc.get("dns_servers") or []
         if isinstance(dns_list, list):
@@ -3494,7 +3538,8 @@ class ProfilesTab(ttk.Frame):
         self.mgmt_vlan_e.delete(0, "end")
         self.base_set_cb["values"] = self.app.base_set_names()
         self.base_set_cb.set("")
-        for w in (self.dns_servers_e, self.ntp_servers_e,
+        for w in (self.cred_user_e, self.cred_pass_e, self.cred_enable_e,
+                  self.dns_servers_e, self.ntp_servers_e,
                   self.ntp_source_e, self.clock_tz_e,
                   self.clock_summer_e, self.ntp_key_id_e, self.ntp_key_e):
             w.delete(0, "end")
@@ -3567,6 +3612,14 @@ class ProfilesTab(ttk.Frame):
         if old and old != name and old in self.app.profiles:
             del self.app.profiles[old]
 
+        credentials = {}
+        if self.cred_user_e.get().strip():
+            credentials["local_username"] = self.cred_user_e.get().strip()
+        if self.cred_pass_e.get().strip():
+            credentials["admin_password"] = self.cred_pass_e.get().strip()
+        if self.cred_enable_e.get().strip():
+            credentials["enable_secret"] = self.cred_enable_e.get().strip()
+
         dns_servers = [s.strip() for s in self.dns_servers_e.get().split(",")
                        if s.strip()]
         ntp_servers = [s.strip() for s in self.ntp_servers_e.get().split(",")
@@ -3600,6 +3653,8 @@ class ProfilesTab(ttk.Frame):
         }
         if services:
             data["services"] = services
+        if credentials:
+            data["credentials"] = credentials
 
         # Layer 3 (only persisted when enabled, to keep old profiles clean)
         if self.l3_enabled.get():
