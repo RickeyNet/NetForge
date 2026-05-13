@@ -9,7 +9,7 @@
       "aaa": "aaa new-model\naaa authentication login default local\naaa authentication enable default enable\naaa authorization exec default local",
       "security": "no ip source-route\nno service call-home",
       "ssh": "crypto key generate rsa modulus 4096\nip ssh version 2\nip ssh time-out 60",
-      "switching": "vtp mode transparent\nspanning-tree mode rapid-pvst\nspanning-tree extend system-id\nmemory free low-watermark processor 134344\nredundancy\nmode sso\ntransceiver type all\nmonitoring\nexit\nvlan dot1q tag native",
+      "switching": "vtp mode transparent\nspanning-tree mode rapid-pvst\nspanning-tree extend system-id\nmemory free low-watermark processor 134344\nredundancy\ntransceiver type all\nmonitoring\nexit\nvlan dot1q tag native",
       "mgmt_port": "vrf forwarding Mgmt-vrf\nno ip address\nnegotiation auto\nexit",
       "line_config": "line con 0\nexec-timeout 9 0\nline vty 0 4\nexec-timeout 9 0\ntransport input ssh\nline vty 5 15\nexec-timeout 0 0\ntransport input none\nexit",
       "banner": "********************* Warning!!! **********************************\n\nDon't log into my network devices!\n\n*******************************************************************",
