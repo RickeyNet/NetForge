@@ -1,3 +1,27 @@
+# NetForge v1.5.0 - Release Notes
+
+## New Feature: Push Config to Switch (Console)
+
+Step 3 of the Generate Config tab now has a **Push to Switch...** button that streams the generated config straight to a switch over its console port via a USB-to-serial adapter. No more copy/paste into PuTTY.
+
+### How it works
+- Pick the COM port (auto-detected from `pyserial`'s `list_ports`), baud rate (9600 default), and optional enable password.
+- The dialog answers the day-0 setup-dialog prompt automatically (`Would you like to enter the initial configuration dialog?` -> no).
+- Enters enable mode (handles the password prompt if you supplied one).
+- Quiets the session with `terminal length 0` / `terminal width 511`.
+- Sends the generated config **line by line**, waiting for the switch prompt between lines so a slow console doesn't drop characters. Falls back to a configurable inter-line delay if no echo arrives.
+- Optional **Run 'write memory' when finished** checkbox saves to startup-config at the end.
+
+### Transcript pane
+- Everything the switch sends back is shown in a live scrollable transcript, so you can watch the push happen and spot errors immediately.
+- Stop button halts the push mid-flight (the dialog warns if you try to close while one is still running).
+
+### Requirements
+- The `pyserial` package is now in `requirements.txt`. Install with `pip install -r requirements.txt` or `pip install pyserial`.
+- If pyserial isn't installed, the button shows a friendly install-instructions dialog instead of crashing.
+
+---
+
 # NetForge v1.4.0 - Release Notes
 
 ## Major Feature: Layer 3 Support
@@ -102,7 +126,7 @@ Per-profile values render directly as IOS commands so different sites can point 
 
 - Step 3 (Switch Details) now includes a **Work Order #** field
 - When filled in, the work order number appears as a comment in the generated config header: `! Work Order: <number>`
-- `{{ work_order }}` is now a supported variable in the output filename template (Base Settings → Filename Template)
+- `{{ work_order }}` is now a supported variable in the output filename template (Base Settings -> Filename Template)
   - Example: `{{ hostname }}_{{ work_order }}` produces `SW-CORE-01_WO-12345.txt`
 
 ## New Feature: Output Filename Templates
@@ -184,7 +208,7 @@ Per-profile values render directly as IOS commands so different sites can point 
 
 ## Model Update: C9300 Port Groups
 
-- Added `GigabitEthernet1/1/1–4` port group to all C9300 switch models
+- Added `GigabitEthernet1/1/1-4` port group to all C9300 switch models
 
 ---
 

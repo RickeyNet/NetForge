@@ -20,7 +20,7 @@ import zipfile
 from tkinter import colorchooser, ttk, filedialog, scrolledtext
 from jinja2 import Environment
 
-VERSION = "1.3.0"
+VERSION = "1.5.0"
 _RECENT_MAX = 10
 
 
@@ -581,6 +581,409 @@ def _dark_listbox(parent, **kw):
 
 
 # ===================================================================
+#  SERIAL CONSOLE PUSH
+# ===================================================================
+class _SerialPushDialog:
+    """Push a generated config to a switch over its console port.
+
+    Streams the config line-by-line over a COM port, waiting for the
+    switch's prompt between sends so we don't overrun a slow console.
+    Lives in its own worker thread; the UI just shows progress and
+    transcript.
+    """
+
+    # Prompts the worker treats as "switch is ready for the next line".
+    # Matched against the tail of the receive buffer.
+    _PROMPT_RE = re.compile(rb"[\r\n][\w.\-]+[>#](?:\([^)]+\))?[>#]?\s*$|"
+                            rb"[\w.\-]+(?:\([^)]+\))?[>#]\s*$")
+    # Common day-0 setup-dialog question on factory-fresh IOS
+    _SETUP_RE  = re.compile(rb"initial configuration dialog\? \[yes/no\]:")
+    # Password prompt for `enable`
+    _PASS_RE   = re.compile(rb"[Pp]assword:\s*$")
+
+    def __init__(self, parent, config_text, hostname=""):
+        self.parent      = parent
+        self.config_text = config_text
+        self.hostname    = hostname
+        self._ser        = None
+        self._worker     = None
+        self._stop_flag  = False
+
+        try:
+            import serial            # noqa: F401  (probe only)
+            import serial.tools.list_ports  # noqa: F401
+        except ImportError:
+            _dialog("Missing pyserial",
+                    "The 'pyserial' package is required for console push.\n\n"
+                    "Install it with:  pip install pyserial",
+                    "error")
+            return
+
+        self._build_ui()
+
+    # --------------------------------------------------- UI
+    def _build_ui(self):
+        dlg = tk.Toplevel(self.parent)
+        self.dlg = dlg
+        dlg.title("Push Config to Switch (Console)")
+        dlg.configure(bg=C["bg"])
+        dlg.transient(self.parent)
+        tk.Frame(dlg, bg=C["accent"], height=3).pack(fill="x")
+
+        inner = ttk.Frame(dlg, padding=(16, 12, 16, 14))
+        inner.pack(fill="both", expand=True)
+
+        ttk.Label(inner, text="Push Config to Switch (Console)",
+                  style="Sec.TLabel").pack(anchor="w")
+        ttk.Label(inner,
+                  text="Connect a USB-to-serial cable to the switch console "
+                       "port, then pick the COM port below.",
+                  style="Hint.TLabel", wraplength=460,
+                  justify="left").pack(anchor="w", pady=(2, 10))
+
+        # ---- connection settings ----
+        cf = ttk.Frame(inner)
+        cf.pack(fill="x", pady=(0, 6))
+
+        ttk.Label(cf, text="COM Port", width=18, anchor="w").grid(
+            row=0, column=0, sticky="w", padx=4, pady=2)
+        self.port_cb = ttk.Combobox(cf, width=28, state="readonly")
+        self.port_cb.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
+        ttk.Button(cf, text="Refresh",
+                   command=self._refresh_ports).grid(
+            row=0, column=2, padx=4, pady=2)
+
+        ttk.Label(cf, text="Baud", width=18, anchor="w").grid(
+            row=1, column=0, sticky="w", padx=4, pady=2)
+        self.baud_cb = ttk.Combobox(
+            cf, width=28, state="readonly",
+            values=["9600", "19200", "38400", "57600", "115200"])
+        self.baud_cb.set("9600")
+        self.baud_cb.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
+
+        ttk.Label(cf, text="Enable Password", width=18, anchor="w").grid(
+            row=2, column=0, sticky="w", padx=4, pady=2)
+        self.enable_pw = ttk.Entry(cf, width=30, show="*")
+        self.enable_pw.grid(row=2, column=1, sticky="ew", padx=4, pady=2)
+        _attach_context_menu(self.enable_pw)
+        ttk.Label(cf, text="(only if already set)",
+                  style="Hint.TLabel").grid(
+            row=2, column=2, sticky="w", padx=4)
+
+        ttk.Label(cf, text="Line Delay (ms)", width=18, anchor="w").grid(
+            row=3, column=0, sticky="w", padx=4, pady=2)
+        self.delay_e = ttk.Entry(cf, width=10)
+        self.delay_e.insert(0, "50")
+        self.delay_e.grid(row=3, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(cf, text="(inter-line pause when not prompt-pacing)",
+                  style="Hint.TLabel").grid(
+            row=3, column=2, sticky="w", padx=4)
+
+        self.save_var = tk.IntVar(value=1)
+        ttk.Checkbutton(cf, text="Run 'write memory' when finished",
+                        variable=self.save_var).grid(
+            row=4, column=1, sticky="w", padx=4, pady=(4, 2))
+
+        cf.columnconfigure(1, weight=1)
+
+        # ---- transcript ----
+        ttk.Label(inner, text="Transcript",
+                  style="Sec.TLabel").pack(anchor="w", pady=(8, 2))
+        self.log = scrolledtext.ScrolledText(
+            inner, height=16, width=80, wrap="word",
+            font=("Consolas", 9),
+            bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
+            selectbackground=C["sel_bg"], relief="flat", bd=2)
+        self.log.pack(fill="both", expand=True, pady=(0, 8))
+        self.log.configure(state="disabled")
+        _attach_context_menu(self.log)
+
+        # ---- status + buttons ----
+        self.status_var = tk.StringVar(value="Idle")
+        ttk.Label(inner, textvariable=self.status_var,
+                  style="Hint.TLabel").pack(anchor="w")
+
+        bf = ttk.Frame(inner)
+        bf.pack(fill="x", pady=(6, 0))
+        self.start_btn = ttk.Button(bf, text="Start Push",
+                                    command=self._start)
+        self.start_btn.pack(side="left")
+        self.stop_btn  = ttk.Button(bf, text="Stop",
+                                    command=self._stop,
+                                    state="disabled")
+        self.stop_btn.pack(side="left", padx=6)
+        ttk.Button(bf, text="Close",
+                   command=self._on_close).pack(side="right")
+
+        dlg.protocol("WM_DELETE_WINDOW", self._on_close)
+        dlg.geometry("640x560")
+        self._refresh_ports()
+
+        # centre over parent
+        dlg.update_idletasks()
+        try:
+            rx = self.parent.winfo_x() + (
+                self.parent.winfo_width()  - dlg.winfo_width())  // 2
+            ry = self.parent.winfo_y() + (
+                self.parent.winfo_height() - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{max(0, rx)}+{max(0, ry)}")
+        except Exception:
+            pass
+
+    def _refresh_ports(self):
+        try:
+            from serial.tools import list_ports
+        except ImportError:
+            return
+        ports = [f"{p.device} - {p.description}" for p in list_ports.comports()]
+        self.port_cb["values"] = ports
+        if ports and not self.port_cb.get():
+            self.port_cb.set(ports[0])
+
+    # --------------------------------------------------- logging
+    def _log(self, msg, tag=None):
+        # Always marshal to the UI thread.
+        self.dlg.after(0, self._log_main, msg, tag)
+
+    def _log_main(self, msg, tag):
+        self.log.configure(state="normal")
+        self.log.insert("end", msg)
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def _set_status(self, text):
+        self.dlg.after(0, self.status_var.set, text)
+
+    # --------------------------------------------------- control
+    def _start(self):
+        sel = self.port_cb.get().strip()
+        if not sel:
+            _dialog("No COM port", "Select a COM port first.", "warning")
+            return
+        port = sel.split(" ", 1)[0]
+        try:
+            baud = int(self.baud_cb.get())
+        except ValueError:
+            baud = 9600
+        try:
+            line_delay = max(0, int(self.delay_e.get())) / 1000.0
+        except ValueError:
+            line_delay = 0.05
+
+        if not self.config_text.strip():
+            _dialog("Empty", "Generate a config first.", "warning")
+            return
+
+        self.start_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
+        self._stop_flag = False
+
+        import threading
+        self._worker = threading.Thread(
+            target=self._run,
+            args=(port, baud, self.enable_pw.get(), line_delay,
+                  bool(self.save_var.get())),
+            daemon=True)
+        self._worker.start()
+
+    def _stop(self):
+        self._stop_flag = True
+        self._set_status("Stopping...")
+
+    def _on_close(self):
+        # Don't allow close while a push is mid-flight - too easy to
+        # leave the switch in a half-configured state by accident.
+        if self._worker and self._worker.is_alive():
+            if not _ask("Push in Progress",
+                        "A push is still running. Stop and close?"):
+                return
+            self._stop_flag = True
+            self._worker.join(timeout=2)
+        if self._ser is not None:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
+        self.dlg.destroy()
+
+    # --------------------------------------------------- worker
+    def _run(self, port, baud, enable_pw, line_delay, do_save):
+        import serial
+        try:
+            self._set_status(f"Opening {port} @ {baud}...")
+            self._log(f"--- Opening {port} at {baud} baud ---\n")
+            self._ser = serial.Serial(
+                port=port, baudrate=baud,
+                bytesize=8, parity="N", stopbits=1,
+                timeout=0.5, write_timeout=2.0)
+        except Exception as exc:
+            self._log(f"ERROR: {exc}\n")
+            self._set_status("Failed to open port")
+            self._finish()
+            return
+
+        try:
+            # Nudge the switch so it shows its prompt
+            self._ser.write(b"\r\n")
+            buf = self._drain(0.7)
+
+            # Day-0 setup dialog?
+            if self._SETUP_RE.search(buf):
+                self._log("Detected setup dialog - answering 'no'\n")
+                self._ser.write(b"no\r\n")
+                self._drain(1.5)
+                self._ser.write(b"\r\n")
+                buf = self._drain(0.7)
+
+            # Make sure we're in privileged exec
+            if not self._ensure_enable(enable_pw):
+                self._set_status("Could not enter enable mode")
+                self._finish()
+                return
+
+            # Quiet the session: stop pagination and console logging chatter
+            self._send_line("terminal length 0", expect_prompt=True)
+            self._send_line("terminal width 511", expect_prompt=True)
+
+            # Push the config
+            self._set_status("Pushing config...")
+            lines = [ln.rstrip() for ln in self.config_text.splitlines()]
+            total = len(lines)
+            for i, line in enumerate(lines, 1):
+                if self._stop_flag:
+                    self._log("\n--- Stopped by user ---\n")
+                    self._set_status("Stopped")
+                    self._finish()
+                    return
+                # Skip blank lines - they confuse some IOS prompts.
+                if not line.strip():
+                    continue
+                # Lines starting with '!' are comments - safe to send,
+                # IOS just echoes them back.
+                self._send_line(line, expect_prompt=True,
+                                fallback_delay=line_delay)
+                if i % 25 == 0 or i == total:
+                    self._set_status(f"Pushing config... ({i}/{total})")
+
+            # Exit config mode in case the last line left us inside one
+            self._send_line("end", expect_prompt=True)
+
+            if do_save:
+                self._set_status("Saving to startup-config...")
+                self._log("\n--- Saving (write memory) ---\n")
+                self._ser.write(b"write memory\r\n")
+                # write memory can take several seconds
+                self._drain(8.0)
+
+            self._set_status("Done")
+            self._log("\n--- Push complete ---\n")
+        except Exception as exc:
+            self._log(f"\nERROR: {exc}\n")
+            self._set_status("Error - see transcript")
+        finally:
+            self._finish()
+
+    def _finish(self):
+        if self._ser is not None:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
+        self.dlg.after(0, self._reset_buttons)
+
+    def _reset_buttons(self):
+        self.start_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+
+    # --------------------------------------------------- serial helpers
+    def _drain(self, settle_seconds):
+        """Read whatever the switch has sent, up to settle_seconds of silence."""
+        import time
+        buf = bytearray()
+        deadline = time.monotonic() + settle_seconds
+        while time.monotonic() < deadline:
+            chunk = self._ser.read(4096)
+            if chunk:
+                buf.extend(chunk)
+                deadline = time.monotonic() + settle_seconds
+            else:
+                # short break - check stop flag
+                if self._stop_flag:
+                    break
+        if buf:
+            try:
+                self._log(buf.decode("utf-8", errors="replace"))
+            except Exception:
+                pass
+        return bytes(buf)
+
+    def _send_line(self, text, expect_prompt=False, fallback_delay=0.05,
+                   timeout=4.0):
+        """Write one line and (optionally) wait for the prompt to return."""
+        import time
+        self._ser.write(text.encode("ascii", errors="replace") + b"\r\n")
+        if not expect_prompt:
+            time.sleep(fallback_delay)
+            self._drain(0.05)
+            return b""
+        deadline = time.monotonic() + timeout
+        buf = bytearray()
+        while time.monotonic() < deadline:
+            chunk = self._ser.read(512)
+            if chunk:
+                buf.extend(chunk)
+                if self._PROMPT_RE.search(buf[-200:]):
+                    break
+            if self._stop_flag:
+                break
+        if buf:
+            self._log(buf.decode("utf-8", errors="replace"))
+        else:
+            # No echo at all - fall back to the simple delay so we don't
+            # stall forever on a slow or quiet console.
+            time.sleep(fallback_delay)
+        return bytes(buf)
+
+    def _ensure_enable(self, enable_pw):
+        """Get the switch into privileged-exec mode."""
+        import time
+        self._ser.write(b"\r\n")
+        buf = self._drain(0.5)
+        tail = buf[-200:]
+        if b"#" in tail and b"(config" not in tail:
+            return True
+        if b">" in tail:
+            self._log("Entering enable mode...\n")
+            self._ser.write(b"enable\r\n")
+            deadline = time.monotonic() + 3.0
+            buf = bytearray()
+            while time.monotonic() < deadline:
+                chunk = self._ser.read(256)
+                if chunk:
+                    buf.extend(chunk)
+                    if self._PASS_RE.search(buf[-80:]):
+                        self._ser.write(
+                            (enable_pw or "").encode("ascii",
+                                                    errors="replace")
+                            + b"\r\n")
+                        self._drain(1.0)
+                        break
+                    if b"#" in buf[-40:]:
+                        break
+            if buf:
+                self._log(buf.decode("utf-8", errors="replace"))
+            # one more check
+            self._ser.write(b"\r\n")
+            final = self._drain(0.7)
+            return b"#" in final[-40:]
+        # No clear prompt - assume we got it, the push will fail loudly
+        # if not.
+        return True
+
+
+# ===================================================================
 #  CUSTOM THEME EDITOR
 # ===================================================================
 class _ThemeEditorDialog:
@@ -589,10 +992,10 @@ class _ThemeEditorDialog:
     def __init__(self, app, on_close=None):
         self.app      = app
         self.on_close = on_close
-        self._custom      = self._load_custom()   # tid → theme dict
+        self._custom      = self._load_custom()   # tid -> theme dict
         self._selected_id = None
-        self._color_vars  = {}   # key → StringVar
-        self._swatches    = {}   # key → tk.Label (colored square)
+        self._color_vars  = {}   # key -> StringVar
+        self._swatches    = {}   # key -> tk.Label (colored square)
 
         dlg = tk.Toplevel()
         self.dlg = dlg
@@ -885,9 +1288,9 @@ class _CheckList(tk.Frame):
                               self._win_id, width=e.width))
         self._canvas.bind("<MouseWheel>", self._on_wheel)
         self._on_click = on_click
-        self._vars     = {}   # name → BooleanVar
-        self._labels   = {}   # name → tk.Label
-        self._frames   = {}   # name → tk.Frame
+        self._vars     = {}   # name -> BooleanVar
+        self._labels   = {}   # name -> tk.Label
+        self._frames   = {}   # name -> tk.Frame
         self._selected = None
 
     def _on_wheel(self, e):
@@ -1577,7 +1980,7 @@ def render_config(model, profile, roles, base, sw):
 #  TAB 1 - GENERATE CONFIG  (step-by-step wizard)
 # ===================================================================
 class GenerateTab(ttk.Frame):
-    """Three-step wizard: Model & Site → Port Assignments → Switch Details."""
+    """Three-step wizard: Model & Site -> Port Assignments -> Switch Details."""
 
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -1750,6 +2153,8 @@ class GenerateTab(ttk.Frame):
                    command=self._copy).pack(side="left", padx=4)
         ttk.Button(nav, text="Save to File",
                    command=self._save).pack(side="left", padx=4)
+        ttk.Button(nav, text="Push to Switch...",
+                   command=self._push).pack(side="left", padx=4)
 
         paned = ttk.PanedWindow(frame, orient="horizontal")
         paned.pack(fill="both", expand=True, padx=5, pady=5)
@@ -2026,9 +2431,9 @@ class GenerateTab(ttk.Frame):
             model.get("port_groups", []), stack)
 
         # update reference label - group similar port types onto one line
-        # e.g. GigabitEthernet1/0/1–24 .. GigabitEthernet4/0/1–24
-        #   → GigabitEthernet[1-4]/0/1 – 24
-        groups = {}  # (name_part, tail, start, end) → [member_nums]
+        # e.g. GigabitEthernet1/0/1-24 .. GigabitEthernet4/0/1-24
+        #   -> GigabitEthernet[1-4]/0/1 - 24
+        groups = {}  # (name_part, tail, start, end) -> [member_nums]
         ungrouped = []
         for pg in all_pgs:
             m = re.match(r'^([A-Za-z-]*)(\d+)(/.*)$', pg["prefix"])
@@ -2496,7 +2901,7 @@ class GenerateTab(ttk.Frame):
         if not slots:
             ttk.Label(peers_lf, style="Hint.TLabel",
                       text="  No peer slots defined in this profile.\n"
-                           "  Add slots under Profiles → BGP."
+                           "  Add slots under Profiles -> BGP."
                       ).pack(anchor="w", padx=2, pady=(0, 4))
         else:
             ttk.Label(peers_lf, style="Hint.TLabel",
@@ -2709,6 +3114,14 @@ class GenerateTab(ttk.Frame):
         self.clipboard_clear()
         self.clipboard_append(txt)
         _dialog("Copied", "Config copied to clipboard.")
+
+    def _push(self):
+        txt = self.preview.get("1.0", "end").strip()
+        if not txt:
+            _dialog("Empty", "Generate a config first.")
+            return
+        _SerialPushDialog(self.winfo_toplevel(), txt,
+                          hostname=self.hostname.get().strip())
 
     def _copy_section(self, name):
         text = self._sections.get(name, "").strip()
@@ -3546,7 +3959,7 @@ class ProfilesTab(ttk.Frame):
                 "dst": dst_e, "dst_wc": dstwc_e, "log": log_var}
 
         # When the action is 'remark', collapse the rule fields into a
-        # single text entry that spans columns 1–6 (everything between
+        # single text entry that spans columns 1-6 (everything between
         # the action combobox and the delete button). Row width and
         # sash alignment stay identical to permit/deny rows.
         def _refresh_action_layout(*_):
@@ -5023,7 +5436,16 @@ class GuideTab(ttk.Frame):
             "in the preview pane on the right. Use 'Copy to Clipboard' to "
             "paste directly into the switch console, or 'Save to File' to "
             "save a .txt file (which is also added to your Recent Configs "
-            "menu).")
+            "menu).\n\n"
+            "'Push to Switch...' opens a dialog that streams the generated "
+            "config to a switch over its console port via a USB-to-serial "
+            "adapter. Pick the COM port, baud (9600 is the Cisco default), "
+            "and optionally an enable password. The tool answers the day-0 "
+            "setup dialog, enters enable mode, and sends the config line-by-"
+            "line - waiting for the prompt between lines so a slow console "
+            "doesn't lose characters. Tick 'Run write memory when finished' "
+            "to save to startup-config at the end. Requires the 'pyserial' "
+            "Python package.")
 
         # ---- Config Order ----
         heading("Generated Config Order")

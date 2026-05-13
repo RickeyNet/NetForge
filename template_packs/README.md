@@ -1,7 +1,7 @@
 # Template Packs
 
 Importable settings bundles that pre-populate NetForge with a working baseline.
-Use **Settings → Import Settings** and select one of the `.zip` files in this
+Use **Settings -> Import Settings** and select one of the `.zip` files in this
 directory. Importing **overwrites** your current `models.json`, `roles.json`,
 `profiles.json`, and `base_settings.json` - export your existing settings
 first if you want to keep them.
@@ -72,7 +72,7 @@ custom sections, roles, and the disabled-port template - the global
 text-areas (AAA, Logging, etc.) are pasted as-is.
 
 **1. Profile role variables (Jinja).** Open
-*Site Profiles → Cisco L2 Baseline (example) → Role Variables* and replace
+*Site Profiles -> Cisco L2 Baseline (example) -> Role Variables* and replace
 every `<PLACEHOLDER>` value:
 
 | Variable | What it is |
@@ -162,8 +162,8 @@ snooping, NTP, SNMPv3). The DHCP-snooping VLAN list is widened to
 - Two SVIs - VLAN 10 (USER_DATA) and VLAN 20 (VOICE), each with
   helper-address placeholders. SVI gateway IPs are profile-level
   because they're the same on every switch at the site.
-- Port assignments - G1/0/1 → "L3 Routed Uplink (Hardened)" (CORE-A),
-  G1/0/2 → "L3 Routed Uplink (Hardened)" (CORE-B). Per-switch IPs
+- Port assignments - G1/0/1 -> "L3 Routed Uplink (Hardened)" (CORE-A),
+  G1/0/2 -> "L3 Routed Uplink (Hardened)" (CORE-B). Per-switch IPs
   for these are entered in Generate Config.
 - OSPF process 1, `passive-interface default` with the two uplinks
   marked active. `networks` is empty by default - add per-site
@@ -174,13 +174,13 @@ snooping, NTP, SNMPv3). The DHCP-snooping VLAN list is widened to
 
 ### What you fill in: profile vs. per-switch
 
-**1. Profile fields (Site Profiles → Cisco L3 Baseline (example)) - site-wide:**
+**1. Profile fields (Site Profiles -> Cisco L3 Baseline (example)) - site-wide:**
 
 | Field | What it is |
 |---|---|
-| SVIs → VLAN 10 IP/Mask + Helpers | User VLAN gateway IP and DHCP helper addresses (same on every switch at the site). |
-| SVIs → VLAN 20 IP/Mask + Helpers | Voice VLAN gateway IP and DHCP helper addresses. |
-| OSPF → Networks (optional) | Add `network` statements if you prefer them over the per-interface `ip ospf` already in the L3 role. |
+| SVIs -> VLAN 10 IP/Mask + Helpers | User VLAN gateway IP and DHCP helper addresses (same on every switch at the site). |
+| SVIs -> VLAN 20 IP/Mask + Helpers | Voice VLAN gateway IP and DHCP helper addresses. |
+| OSPF -> Networks (optional) | Add `network` statements if you prefer them over the per-interface `ip ospf` already in the L3 role. |
 | Role Variables | NTP / SNMP / mgmt-ACL host placeholders (same as the L2 pack). |
 
 **2. Base Settings find-and-replace** - same as L2:
@@ -198,9 +198,9 @@ so RADIUS, syslog, NTP, and SNMP must be reachable from the loopback
 
 | Field | What it is |
 |---|---|
-| Loopback0 → IP | This switch's loopback. Used by mgmt traffic and OSPF router-id. |
-| Loopback0 → Mask | Default `255.255.255.255`. |
-| OSPF → Router ID | Optional. Defaults to the Loopback0 IP. |
+| Loopback0 -> IP | This switch's loopback. Used by mgmt traffic and OSPF router-id. |
+| Loopback0 -> Mask | Default `255.255.255.255`. |
+| OSPF -> Router ID | Optional. Defaults to the Loopback0 IP. |
 | Routed Interface IPs | Auto-populated grid: one row per port assigned to an L3 role in Step 2. Fill in IP and mask for each uplink. |
 | Static Routes | Optional. Add a fallback default or specific routes here. |
 | Default Gateway | Disabled in this pack (`mgmt_style=loopback`) - mgmt traffic rides Loopback0, not a default-gateway. |
