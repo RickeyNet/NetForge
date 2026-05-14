@@ -472,6 +472,39 @@ def _textarea(parent, label, default="", h=5):
     return t
 
 
+def _autosize_textarea(widget, min_h=2, max_h=20):
+    """Make a tk.Text resize itself to fit its content.
+
+    Recomputes height on every modification, clamped to [min_h, max_h].
+    Use min_h=2 so an empty section visually shrinks but stays clickable;
+    max_h prevents one big section from blowing out the form layout.
+    """
+    def _resize(_event=None):
+        # 'end-1c' avoids counting Tk's trailing implicit newline.
+        line_count = int(widget.index("end-1c").split(".")[0])
+        # Count wrapped display lines too, so wide pasted text shows fully.
+        try:
+            display_lines = widget.count("1.0", "end-1c", "displaylines") or [0]
+            wrapped = max(line_count, display_lines[0])
+        except Exception:
+            wrapped = line_count
+        new_h = max(min_h, min(max_h, wrapped))
+        if int(widget.cget("height")) != new_h:
+            widget.configure(height=new_h)
+
+    def _on_modified(_event=None):
+        # tk.Text fires <<Modified>> once and latches; reset the flag.
+        widget.edit_modified(False)
+        _resize()
+
+    widget.bind("<<Modified>>", _on_modified)
+    # Run once after the widget is mapped so initial content sizes correctly.
+    widget.after_idle(_resize)
+    # Expose for callers that programmatically reload content.
+    widget._autosize = _resize
+    return widget
+
+
 def _combo(parent, label, values, width=33):
     f = ttk.Frame(parent); f.pack(fill="x", padx=5, pady=2)
     ttk.Label(f, text=label, width=22, anchor="w").pack(side="left")
@@ -4602,20 +4635,23 @@ class BaseTab(ttk.Frame):
             _section(form, title)
             ttk.Label(form, text=f"  {hint}",
                       style="Hint.TLabel").pack(anchor="w", padx=5)
-            self.text_areas[key] = _textarea(form, "", "", h=10)
+            self.text_areas[key] = _autosize_textarea(
+                _textarea(form, "", "", h=2), min_h=2, max_h=20)
 
         _section(form, "Banner LOGIN")
         ttk.Label(form, text="  Enter the banner text only - the app adds "
                   "the 'banner login ^' wrapper.",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
-        self.text_areas["banner"] = _textarea(form, "", "", h=20)
+        self.text_areas["banner"] = _autosize_textarea(
+            _textarea(form, "", "", h=2), min_h=2, max_h=30)
 
         _section(form, "Disabled Port Template")
         ttk.Label(form, text="  Commands applied to every port during the "
                   "'disable all' step.\n"
                   "  Use {{ blackhole_vlan }} or any profile variable.",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
-        self.text_areas["disabled_port_template"] = _textarea(form, "", "", h=10)
+        self.text_areas["disabled_port_template"] = _autosize_textarea(
+            _textarea(form, "", "", h=2), min_h=2, max_h=20)
 
         _section(form, "Custom Config Sections")
         ttk.Label(form,
@@ -4668,6 +4704,8 @@ class BaseTab(ttk.Frame):
         for key, widget in self.text_areas.items():
             widget.delete("1.0", "end")
             widget.insert("1.0", b.get(key, ""))
+            if hasattr(widget, "_autosize"):
+                widget._autosize()
 
         self._clear_cs()
         for cs in b.get("custom_sections", []) or []:
@@ -4773,13 +4811,14 @@ class BaseTab(ttk.Frame):
                    command=lambda f=frame: self._del_cs(f)
                    ).pack(side="right")
 
-        cmds = tk.Text(frame, height=10, font=("Consolas", 9),
+        cmds = tk.Text(frame, height=2, font=("Consolas", 9),
                        bg=C["bg_input"], fg=C["fg"],
                        insertbackground=C["fg"],
                        selectbackground=C["sel_bg"],
                        relief="flat", bd=2, wrap="word")
         cmds.pack(fill="x", pady=(4, 0))
         _attach_context_menu(cmds)
+        _autosize_textarea(cmds, min_h=2, max_h=20)
 
         if isinstance(data, dict):
             name_e.insert(0, data.get("name", ""))
@@ -4787,6 +4826,8 @@ class BaseTab(ttk.Frame):
             pos_cb.set("Before Interfaces"
                        if pos == "pre-interface" else "After Interfaces")
             cmds.insert("1.0", data.get("commands", ""))
+            if hasattr(cmds, "_autosize"):
+                cmds._autosize()
 
         self.cs_rows.append({"frame": frame, "name": name_e,
                              "position": pos_cb, "commands": cmds})
