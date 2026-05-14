@@ -572,6 +572,49 @@ def expand_range_iface(iface_str):
 
 
 # ---------------------------------------------------------------------------
+# PanedWindow with non-opaque sash drag
+# ---------------------------------------------------------------------------
+class PanedWindow(tk.PanedWindow):
+    """Drop-in replacement for ttk.PanedWindow that uses opaqueresize=False.
+
+    During sash drag the panes do NOT resize live — Tk shows a thin guide
+    line instead and resizes once on mouse release. This avoids the per-pixel
+    Configure cascade through every nested ScrollFrame and Text widget, which
+    is the main source of sash-drag lag on Windows.
+
+    The ttk API uses add(child, weight=N); tk uses add(child, stretch=...).
+    We accept weight= and translate it heuristically: weight 0 -> never,
+    everything else -> always. That's enough for the two- and three-pane
+    setups in this app — the largest non-zero weight gets the leftover
+    space on window resize.
+    """
+
+    def __init__(self, parent, orient="horizontal", **kw):
+        kw.setdefault("opaqueresize", False)
+        kw.setdefault("orient", orient)
+        kw.setdefault("bd", 0)
+        kw.setdefault("sashwidth", 6)
+        kw.setdefault("sashrelief", "flat")
+        kw.setdefault("bg", C.get("border", "#444"))
+        super().__init__(parent, **kw)
+
+    def add(self, child, weight=None, **kw):
+        if weight is not None and "stretch" not in kw:
+            kw["stretch"] = "never" if weight == 0 else "always"
+        super().add(child, **kw)
+
+    def sashpos(self, index, position=None):
+        # ttk-compatible shim. tk uses sash_place(index, x, y) for horizontal.
+        if position is None:
+            return self.sash_coord(index)[0]
+        try:
+            self.sash_place(index, position, 1)
+        except tk.TclError:
+            pass
+        return position
+
+
+# ---------------------------------------------------------------------------
 # Scrollable frame widget
 # ---------------------------------------------------------------------------
 class ScrollFrame(ttk.Frame):
@@ -580,29 +623,78 @@ class ScrollFrame(ttk.Frame):
         self.canvas = tk.Canvas(self, bg=C["bg"], highlightthickness=0)
         sb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.inner = ttk.Frame(self.canvas)
-        self.inner.bind("<Configure>",
-                        lambda e: self.canvas.configure(
-                            scrollregion=self.canvas.bbox("all")))
         self._win = self.canvas.create_window((0, 0), window=self.inner,
                                               anchor="nw")
         self.canvas.configure(yscrollcommand=sb.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        # Debounce both Configure handlers: collapse per-pixel resize events
+        # into one idle-time update so dragging the window edge doesn't fire
+        # an O(N) bbox/itemconfig cascade for every pixel of motion.
+        self._last_width = -1
+        self._sr_after_id = None
+        self.inner.bind("<Configure>", self._on_inner_configure)
         self.canvas.bind("<Configure>", self._on_canvas_resize)
-        self.inner.bind("<Enter>", self._bind_wheel)
-        self.inner.bind("<Leave>", self._unbind_wheel)
+        # Bind the wheel directly. We re-walk descendants the first time
+        # the cursor enters the area (lazy) so we don't pay for the walk
+        # if the user never scrolls this particular ScrollFrame.
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.inner.bind("<MouseWheel>", self._on_wheel)
+        self._wheel_walked = False
+        self._wheel_bound_ids = set()
+        self.inner.bind("<Enter>", self._propagate_wheel_binds)
+
+    def _on_inner_configure(self, _e):
+        # Cancel any pending update so a continuous drag collapses to
+        # ONE bbox/scrollregion call after motion stops, not one per
+        # idle cycle (which still runs constantly during a drag).
+        if self._sr_after_id is not None:
+            try:
+                self.after_cancel(self._sr_after_id)
+            except tk.TclError:
+                pass
+        self._sr_after_id = self.after(60, self._apply_scrollregion)
+
+    def _apply_scrollregion(self):
+        self._sr_after_id = None
+        try:
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        except tk.TclError:
+            pass
 
     def _on_canvas_resize(self, event):
-        self.canvas.itemconfig(self._win, width=event.width)
+        # Bindtag propagation routes descendant <Configure> events here too;
+        # only the canvas's own resize should drive the inner-window width.
+        if event.widget is not self.canvas:
+            return
+        if event.width == self._last_width:
+            return
+        self._last_width = event.width
+        try:
+            self.canvas.itemconfig(self._win, width=event.width)
+        except tk.TclError:
+            pass
 
-    def _bind_wheel(self, _):
-        self.canvas.bind_all("<MouseWheel>", self._on_wheel)
-
-    def _unbind_wheel(self, _):
-        self.canvas.unbind_all("<MouseWheel>")
+    def _propagate_wheel_binds(self, _e=None):
+        # Walk descendants ONCE per Enter and bind <MouseWheel> directly.
+        # We track already-bound widget ids so re-entries are O(N) without
+        # re-binding. Cheaper than bind_all (no global firing) and avoids
+        # bindtag propagation (which leaks <Configure> events).
+        stack = list(self.inner.winfo_children())
+        while stack:
+            w = stack.pop()
+            wid = str(w)
+            if wid not in self._wheel_bound_ids:
+                try:
+                    w.bind("<MouseWheel>", self._on_wheel, add="+")
+                    self._wheel_bound_ids.add(wid)
+                except tk.TclError:
+                    pass
+            stack.extend(w.winfo_children())
 
     def _on_wheel(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
 
 
 # ---------------------------------------------------------------------------
@@ -1616,12 +1708,12 @@ class _CheckList(tk.Frame):
         self._inner = tk.Frame(self._canvas, bg=C["bg_input"])
         self._win_id = self._canvas.create_window(
             (0, 0), window=self._inner, anchor="nw")
-        self._inner.bind("<Configure>",
-                         lambda _: self._canvas.configure(
-                             scrollregion=self._canvas.bbox("all")))
-        self._canvas.bind("<Configure>",
-                          lambda e: self._canvas.itemconfig(
-                              self._win_id, width=e.width))
+        # Debounce Configure handlers so per-pixel resize doesn't kick off
+        # an O(N) bbox/itemconfig cascade on every frame of motion.
+        self._cl_last_width = -1
+        self._cl_sr_after_id = None
+        self._inner.bind("<Configure>", self._on_inner_configure)
+        self._canvas.bind("<Configure>", self._on_canvas_resize)
         self._canvas.bind("<MouseWheel>", self._on_wheel)
         self._on_click = on_click
         self._vars     = {}   # name -> BooleanVar
@@ -1631,6 +1723,32 @@ class _CheckList(tk.Frame):
 
     def _on_wheel(self, e):
         self._canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+
+    def _on_inner_configure(self, _e):
+        if self._cl_sr_after_id is not None:
+            try:
+                self.after_cancel(self._cl_sr_after_id)
+            except tk.TclError:
+                pass
+        self._cl_sr_after_id = self.after(60, self._apply_scrollregion)
+
+    def _apply_scrollregion(self):
+        self._cl_sr_after_id = None
+        try:
+            self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        except tk.TclError:
+            pass
+
+    def _on_canvas_resize(self, event):
+        if event.widget is not self._canvas:
+            return
+        if event.width == self._cl_last_width:
+            return
+        self._cl_last_width = event.width
+        try:
+            self._canvas.itemconfig(self._win_id, width=event.width)
+        except tk.TclError:
+            pass
 
     def populate(self, names):
         for w in self._inner.winfo_children():
@@ -2509,7 +2627,7 @@ class GenerateTab(ttk.Frame):
         ttk.Button(nav, text="Push to Switch...",
                    command=self._push).pack(side="left", padx=4)
 
-        paned = ttk.PanedWindow(frame, orient="horizontal")
+        paned = PanedWindow(frame, orient="horizontal")
         paned.pack(fill="both", expand=True, padx=5, pady=5)
         self._step3_paned = paned
 
@@ -3497,7 +3615,7 @@ class ModelsTab(ttk.Frame):
         self._build()
 
     def _build(self):
-        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned = PanedWindow(self, orient="horizontal")
         paned.pack(fill="both", expand=True, padx=5, pady=5)
 
         # -- left: list --
@@ -3677,7 +3795,7 @@ class RolesTab(ttk.Frame):
         self._build()
 
     def _build(self):
-        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned = PanedWindow(self, orient="horizontal")
         paned.pack(fill="both", expand=True, padx=5, pady=5)
 
         # -- left: list --
@@ -3826,7 +3944,7 @@ class ProfilesTab(ttk.Frame):
         self._build()
 
     def _build(self):
-        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned = PanedWindow(self, orient="horizontal")
         paned.pack(fill="both", expand=True, padx=5, pady=5)
 
         # -- left: list --
@@ -5045,7 +5163,7 @@ class BaseTab(ttk.Frame):
             self.lb.select(names[0])
 
     def _build(self):
-        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned = PanedWindow(self, orient="horizontal")
         paned.pack(fill="both", expand=True, padx=5, pady=5)
 
         # -- left: list of base sets --

@@ -65,6 +65,13 @@ NetForge now responds to keyboard shortcuts from any tab or focused widget:
 - **Themed check / radio buttons** - Hover and active states on `TCheckbutton` and `TRadiobutton` keep the theme background instead of flashing white on mouseover.
 - **Themed scrollbars in Step 3 and Push Console** - The generated-config preview and the push-to-switch transcript now use a `tk.Text` + `ttk.Scrollbar` pair (via a small `_scrolled_text` helper) instead of `ScrolledText`'s embedded classic `tk.Scrollbar`, so their scrollbars match the rest of the app.
 
+## Performance
+
+- **Non-opaque pane dividers** - Dragging the middle divider between the form and preview panes (Step 3, Switch Models, Interface Roles, Site Profiles, Base Settings) no longer resizes the panes live. A thin guide line tracks the cursor and the panes resize once on release, eliminating the per-pixel layout cascade through every nested form widget. This was the largest source of UI lag on Windows.
+- **Throttled scroll-region updates** - Scrollable form areas now coalesce their `scrollregion` recomputes through a cancelable 60ms timer, so a continuous window resize or panel drag collapses to a single bounding-box walk after motion stops instead of one per frame.
+- **No more global mousewheel rebinds** - Replaced the per-Enter `bind_all`/`unbind_all` mousewheel binding pattern with per-descendant binds walked once on first entry. Scrolling no longer thrashes wheel bindings across the whole app whenever the cursor passes over a panel boundary.
+- **Cheaper redundant Configure events** - The scrollable canvas now skips re-applying its width when the value hasn't actually changed, cutting unnecessary work during nested layout passes.
+
 ---
 
 ## New Feature: Push Config to Switch (Console)
