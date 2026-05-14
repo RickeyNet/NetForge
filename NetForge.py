@@ -3544,6 +3544,7 @@ class ProfilesTab(ttk.Frame):
                                   relief="flat", bd=2, wrap="word")
         self.vlans_text.pack(fill="x", padx=5, pady=4)
         _attach_context_menu(self.vlans_text)
+        _autosize_textarea(self.vlans_text, min_h=4, max_h=40)
 
         # -- Credential defaults --
         _section(form, "Credential Defaults")
@@ -3599,10 +3600,18 @@ class ProfilesTab(ttk.Frame):
         self.var_lf = ttk.LabelFrame(form, text="Variables", padding=5)
         self.var_lf.pack(fill="x", padx=5, pady=5)
         vh = ttk.Frame(self.var_lf); vh.pack(fill="x")
-        ttk.Label(vh, text="Key", width=18).pack(side="left", padx=1)
-        ttk.Label(vh, text="Value", width=18).pack(side="left", padx=1)
+        # Header uses the same 2-column grid layout as the rows below
+        # (uniform width, equal weight) so labels line up exactly over
+        # the Key and Value entries no matter how wide the form is.
+        vh.columnconfigure(0, weight=1, uniform="varcol")
+        vh.columnconfigure(1, weight=1, uniform="varcol")
+        ttk.Label(vh, text="Key", anchor="w"
+                  ).grid(row=0, column=0, sticky="ew", padx=1)
+        ttk.Label(vh, text="Value", anchor="w"
+                  ).grid(row=0, column=1, sticky="ew", padx=1)
         ttk.Button(vh, text="+ Add Variable",
-                   command=self._add_var).pack(side="right")
+                   command=self._add_var
+                   ).grid(row=0, column=2, padx=2, sticky="e")
         self.var_frame = ttk.Frame(self.var_lf); self.var_frame.pack(fill="x")
 
         # -- port assignments --
@@ -3773,30 +3782,34 @@ class ProfilesTab(ttk.Frame):
 
         # BGP - one or more instances, each rendered as its own
         # `router bgp <asn>` block. Same +Add/X pattern as ACLs.
+        # The hint paragraph is only shown while no instances exist,
+        # so the section collapses to a single + Add row when empty.
         self.bgp_outer_lf = ttk.LabelFrame(
             self.l3_body, text="BGP", padding=5)
         self.bgp_outer_lf.pack(fill="x", padx=5, pady=4)
-        ttk.Label(self.bgp_outer_lf, style="Hint.TLabel",
-                  text="  Add one BGP instance per local ASN. Each renders\n"
-                       "  as its own `router bgp <asn>` block with its own\n"
-                       "  peers and advertised network."
-                  ).pack(anchor="w", padx=2, pady=(0, 4))
-        ttk.Button(self.bgp_outer_lf, text="+ Add BGP",
-                   command=lambda: self._add_bgp_block()
-                   ).pack(anchor="w", pady=(0, 4))
+        self._bgp_hint = ttk.Label(
+            self.bgp_outer_lf, style="Hint.TLabel",
+            text="  Add one BGP instance per local ASN. Each renders\n"
+                 "  as its own `router bgp <asn>` block with its own\n"
+                 "  peers and advertised network.")
+        self._bgp_hint.pack(anchor="w", padx=2, pady=(0, 4))
+        self._bgp_add_btn = ttk.Button(self.bgp_outer_lf, text="+ Add BGP",
+                   command=lambda: self._add_bgp_block())
+        self._bgp_add_btn.pack(anchor="w", pady=(0, 4))
         self.bgp_container = ttk.Frame(self.bgp_outer_lf)
         self.bgp_container.pack(fill="x")
 
         # ACLs (site-wide named access-lists)
         self.acl_lf = ttk.LabelFrame(self.l3_body, text="Access Lists", padding=5)
         self.acl_lf.pack(fill="x", padx=5, pady=4)
-        ttk.Label(self.acl_lf, style="Hint.TLabel",
-                  text="  Named ACLs rendered after the interfaces section.\n"
-                       "  Order matters - rules emit in the order shown."
-                  ).pack(anchor="w", padx=2, pady=(0, 4))
-        ttk.Button(self.acl_lf, text="+ Add ACL",
-                   command=lambda: self._add_acl_block()
-                   ).pack(anchor="w", pady=(0, 4))
+        self._acl_hint = ttk.Label(
+            self.acl_lf, style="Hint.TLabel",
+            text="  Named ACLs rendered after the interfaces section.\n"
+                 "  Order matters - rules emit in the order shown.")
+        self._acl_hint.pack(anchor="w", padx=2, pady=(0, 4))
+        self._acl_add_btn = ttk.Button(self.acl_lf, text="+ Add ACL",
+                   command=lambda: self._add_acl_block())
+        self._acl_add_btn.pack(anchor="w", pady=(0, 4))
         self.acl_container = ttk.Frame(self.acl_lf)
         self.acl_container.pack(fill="x")
 
@@ -3814,13 +3827,20 @@ class ProfilesTab(ttk.Frame):
 
     def _add_var(self, data=None):
         row = ttk.Frame(self.var_frame); row.pack(fill="x", pady=1)
-        k = ttk.Entry(row, width=18); k.pack(side="left", padx=1)
-        v = ttk.Entry(row, width=18); v.pack(side="left", padx=1)
+        # Key and Value share equal column weight so they stretch with
+        # the form. uniform="varcol" matches the header above so the
+        # two columns line up perfectly regardless of label widths.
+        row.columnconfigure(0, weight=1, uniform="varcol")
+        row.columnconfigure(1, weight=1, uniform="varcol")
+        k = ttk.Entry(row)
+        k.grid(row=0, column=0, sticky="ew", padx=1)
+        v = ttk.Entry(row)
+        v.grid(row=0, column=1, sticky="ew", padx=1)
         _attach_context_menu(k)
         _attach_context_menu(v)
         ttk.Button(row, text="X", width=3, style="Del.TButton",
                    command=lambda: self._del_row(row, self.var_rows)
-                   ).pack(side="left", padx=2)
+                   ).grid(row=0, column=2, padx=2)
         if data:
             k.insert(0, data[0]); v.insert(0, data[1])
         self.var_rows.append({"frame": row, "key": k, "val": v})
@@ -3923,10 +3943,33 @@ class ProfilesTab(ttk.Frame):
     _ACL_PROTOCOLS = ("ip", "tcp", "udp", "icmp", "gre", "esp", "ahp",
                       "eigrp", "ospf", "pim", "igmp", "sctp")
 
+    def _update_acl_collapsed(self):
+        """Hide the descriptive hint when ACL blocks exist; show it
+        when the section is empty, so the box stays compact."""
+        hint = getattr(self, "_acl_hint", None)
+        if hint is None:
+            return
+        if self.acl_blocks:
+            hint.pack_forget()
+        elif not hint.winfo_ismapped():
+            hint.pack(anchor="w", padx=2, pady=(0, 4),
+                      before=self._acl_add_btn)
+
+    def _update_bgp_collapsed(self):
+        hint = getattr(self, "_bgp_hint", None)
+        if hint is None:
+            return
+        if self.bgp_blocks:
+            hint.pack_forget()
+        elif not hint.winfo_ismapped():
+            hint.pack(anchor="w", padx=2, pady=(0, 4),
+                      before=self._bgp_add_btn)
+
     def _clear_acls(self):
         for blk in self.acl_blocks:
             blk["frame"].destroy()
         self.acl_blocks.clear()
+        self._update_acl_collapsed()
 
     def _add_acl_block(self, data=None):
         blk_frame = ttk.LabelFrame(self.acl_container, padding=5)
@@ -3984,6 +4027,7 @@ class ProfilesTab(ttk.Frame):
                    ).pack(side="left")
 
         self.acl_blocks.append(block)
+        self._update_acl_collapsed()
 
         if data:
             name_e.insert(0, data.get("name", ""))
@@ -3995,6 +4039,7 @@ class ProfilesTab(ttk.Frame):
         self.acl_blocks[:] = [b for b in self.acl_blocks
                               if b["frame"] is not frame]
         frame.destroy()
+        self._update_acl_collapsed()
 
     def _add_acl_rule(self, block, data=None):
         # All rule widgets grid directly into the shared rules_frame so
@@ -4100,6 +4145,7 @@ class ProfilesTab(ttk.Frame):
         for blk in self.bgp_blocks:
             blk["frame"].destroy()
         self.bgp_blocks.clear()
+        self._update_bgp_collapsed()
 
     def _add_bgp_block(self, data=None):
         blk_frame = ttk.LabelFrame(self.bgp_container, padding=5)
@@ -4155,6 +4201,7 @@ class ProfilesTab(ttk.Frame):
         slot_frame.pack(fill="x")
 
         self.bgp_blocks.append(block)
+        self._update_bgp_collapsed()
 
         if data:
             local_e.insert(0, str(data.get("local_asn", "") or ""))
@@ -4176,6 +4223,7 @@ class ProfilesTab(ttk.Frame):
         self.bgp_blocks[:] = [b for b in self.bgp_blocks
                               if b["frame"] is not frame]
         frame.destroy()
+        self._update_bgp_collapsed()
 
     def _add_bgp_slot(self, block, data=None):
         row = ttk.Frame(block["slot_frame"]); row.pack(fill="x", pady=1)
@@ -4305,6 +4353,8 @@ class ProfilesTab(ttk.Frame):
 
         self.vlans_text.delete("1.0", "end")
         self.vlans_text.insert("1.0", p.get("vlan_definitions", ""))
+        if hasattr(self.vlans_text, "_autosize"):
+            self.vlans_text._autosize()
 
         self._clear_vars()
         for k, v in p.get("role_variables", {}).items():
@@ -4396,6 +4446,8 @@ class ProfilesTab(ttk.Frame):
                   self.ntp_acl_num_e, self.ntp_acl_peers_e):
             w.delete(0, "end")
         self.vlans_text.delete("1.0", "end")
+        if hasattr(self.vlans_text, "_autosize"):
+            self.vlans_text._autosize()
         self._clear_vars(); self._clear_pa()
         # Layer 3 defaults for a new profile
         self.l3_enabled.set(False)
