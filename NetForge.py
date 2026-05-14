@@ -2052,11 +2052,27 @@ def render_config_sections(model, profile, roles, base, sw):
     gb.append(base.get("mgmt_vrf", ""))
     gb.append(base.get("logging", ""))
     gb.append(f"enable secret {sw['enable_secret']}")
-    username = (sw.get("local_username")
-                or base.get("local_username", "admin")
-                or "admin")
-    gb.append(f"username {username} privilege 0 secret "
-              f"{sw['admin_password']}")
+    users = list(sw.get("users") or [])
+    if not users:
+        # Legacy single-credential path - still supported for switches
+        # generated against profiles that haven't been migrated yet.
+        legacy_name = (sw.get("local_username")
+                       or base.get("local_username", "admin")
+                       or "admin")
+        users = [{"name": legacy_name,
+                  "password": sw.get("admin_password", ""),
+                  "privilege": 15}]
+    for u in users:
+        uname = (u.get("name") or "").strip()
+        if not uname:
+            continue
+        upw = u.get("password", "") or ""
+        priv = u.get("privilege", 15)
+        try:
+            priv = int(priv)
+        except (TypeError, ValueError):
+            priv = 15
+        gb.append(f"username {uname} privilege {priv} secret {upw}")
     gb.append(base.get("aaa", ""))
     gb.append(base.get("security", ""))
     provision = model.get("provision", "").strip()
@@ -2116,7 +2132,14 @@ def render_config_sections(model, profile, roles, base, sw):
 
     # ── 2  VLANs ────────────────────────────────────────────────────────
     vl = []
-    vl.append(profile.get("vlan_definitions", ""))
+    # Per-switch override: if the profile allows it and Step 3 supplied a
+    # non-empty block, it REPLACES the profile's VLAN definitions for
+    # this one switch.
+    sw_vlans = (sw.get("vlan_definitions") or "").strip()
+    if sw_vlans:
+        vl.append(sw_vlans)
+    else:
+        vl.append(profile.get("vlan_definitions", ""))
     for cs in base.get("custom_sections", []):
         if cs.get("position") == "pre-interface":
             cmds = cs.get("commands", "").strip()
@@ -2640,9 +2663,35 @@ class GenerateTab(ttk.Frame):
                   style="Sec.TLabel").pack(anchor="w", padx=5, pady=(5, 10))
 
         self.hostname    = _field(form, "Hostname")
-        self.username    = _field(form, "Local Username")
         self.secret      = _field(form, "Enable Secret")
-        self.password    = _field(form, "Admin Password")
+
+        # Local Users - editable copy of the profile's users list. Each row
+        # renders as one `username NAME privilege P secret PW` line.
+        users_lf = ttk.LabelFrame(form, text="Local Users", padding=5)
+        users_lf.pack(fill="x", padx=5, pady=4)
+        u_hint = ttk.Frame(users_lf); u_hint.pack(fill="x", pady=(0, 4))
+        ttk.Label(u_hint, style="Hint.TLabel",
+                  text="  Seeded from the selected profile. Edits stay local\n"
+                       "  to this switch and don't write back to the profile."
+                  ).pack(side="left", anchor="w", padx=2)
+        ttk.Button(u_hint, text="+ Add User",
+                   command=self._add_sw_user
+                   ).pack(side="right", anchor="ne", padx=(6, 1))
+        uh = ttk.Frame(users_lf); uh.pack(fill="x")
+        uh.columnconfigure(0, weight=2, uniform="swusr")
+        uh.columnconfigure(1, weight=2, uniform="swusr")
+        uh.columnconfigure(2, weight=1, uniform="swusr")
+        ttk.Label(uh, text="Username", anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=1)
+        ttk.Label(uh, text="Password", anchor="w").grid(
+            row=0, column=1, sticky="ew", padx=1)
+        ttk.Label(uh, text="Privilege", anchor="w").grid(
+            row=0, column=2, sticky="ew", padx=1)
+        ttk.Frame(uh, width=30).grid(row=0, column=3, padx=(6, 1))
+        self.sw_user_frame = ttk.Frame(users_lf)
+        self.sw_user_frame.pack(fill="x")
+        self.sw_user_rows = []
+
         self.domain      = _field(form, "Domain Name")
         self.mgmt_ip     = _field(form, "Management IP")
         self.mgmt_mask   = _field(form, "Subnet Mask", "255.255.255.0")
@@ -2662,6 +2711,23 @@ class GenerateTab(ttk.Frame):
                   style="Hint.TLabel").pack(anchor="w", padx=5, pady=(2, 0))
         self.oob_ip   = _field(self.oob_frame, "OOB IP Address")
         self.oob_mask = _field(self.oob_frame, "OOB Subnet Mask")
+
+        # Per-switch VLAN overrides - shown only when the selected profile
+        # has `allow_per_switch_vlans` enabled. The text replaces the
+        # profile's VLAN definitions for this switch only.
+        self.vlans_frame = ttk.Frame(form)
+        _section(self.vlans_frame, "VLAN Definitions (this switch)")
+        ttk.Label(self.vlans_frame, style="Hint.TLabel",
+                  text="Edits apply to this switch only and replace the\n"
+                       "profile's VLAN block at render time."
+                  ).pack(anchor="w", padx=5, pady=(2, 2))
+        self.sw_vlans_text = tk.Text(
+            self.vlans_frame, height=8, font=("Consolas", 9),
+            bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
+            selectbackground=C["sel_bg"], relief="flat", bd=2, wrap="word")
+        self.sw_vlans_text.pack(fill="x", padx=5, pady=4)
+        _attach_context_menu(self.sw_vlans_text)
+        _autosize_textarea(self.sw_vlans_text, min_h=4, max_h=40)
 
         # Layer 3 Details (only shown when the selected profile is L3)
         self.l3_frame = ttk.Frame(form)
@@ -2871,13 +2937,22 @@ class GenerateTab(ttk.Frame):
             self.domain.delete(0, "end")
             self.domain.insert(0, domain)
         creds = profile.get("credentials", {}) or {}
-        for entry, key in ((self.username, "local_username"),
-                           (self.password, "admin_password"),
-                           (self.secret,   "enable_secret")):
-            val = creds.get(key, "")
-            if val:
-                entry.delete(0, "end")
-                entry.insert(0, val)
+        enable_val = creds.get("enable_secret", "")
+        if enable_val:
+            self.secret.delete(0, "end")
+            self.secret.insert(0, enable_val)
+        # Seed the per-switch users grid from the profile. Migrate the
+        # legacy single-credential shape on the fly if no list is present.
+        users = list(creds.get("users") or [])
+        if not users:
+            legacy_name = creds.get("local_username", "")
+            legacy_pw   = creds.get("admin_password", "")
+            if legacy_name or legacy_pw:
+                users = [{"name": legacy_name, "password": legacy_pw,
+                          "privilege": 15}]
+        self._clear_sw_users()
+        for u in users:
+            self._add_sw_user(u)
         # Show/hide L3 details and relabel gateway based on profile settings
         self._apply_l3_visibility(profile)
         # show/hide OOB fields based on whether model has Gi0/0
@@ -2890,6 +2965,17 @@ class GenerateTab(ttk.Frame):
             self.oob_frame.pack_forget()
             self.oob_ip.delete(0, "end")
             self.oob_mask.delete(0, "end")
+        # Per-switch VLAN override visibility + seed from profile.
+        if profile.get("allow_per_switch_vlans"):
+            self.vlans_frame.pack(fill="x", padx=5, pady=2)
+            self.sw_vlans_text.delete("1.0", "end")
+            self.sw_vlans_text.insert("1.0",
+                                      profile.get("vlan_definitions", "") or "")
+            if hasattr(self.sw_vlans_text, "_autosize"):
+                self.sw_vlans_text._autosize()
+        else:
+            self.vlans_frame.pack_forget()
+            self.sw_vlans_text.delete("1.0", "end")
         self._show_step(1)
 
     def _populate_step2(self, model_name, profile_name):
@@ -3446,13 +3532,64 @@ class GenerateTab(ttk.Frame):
             "pwd":       pwd_e,
         })
 
+    def _clear_sw_users(self):
+        for r in self.sw_user_rows:
+            r["frame"].destroy()
+        self.sw_user_rows.clear()
+
+    def _del_row(self, frame, lst):
+        lst[:] = [r for r in lst if r["frame"] is not frame]
+        frame.destroy()
+
+    def _add_sw_user(self, data=None):
+        row = ttk.Frame(self.sw_user_frame); row.pack(fill="x", pady=1)
+        row.columnconfigure(0, weight=2, uniform="swusr")
+        row.columnconfigure(1, weight=2, uniform="swusr")
+        row.columnconfigure(2, weight=1, uniform="swusr")
+        name = ttk.Entry(row); name.grid(row=0, column=0, sticky="ew", padx=1)
+        pw   = ttk.Entry(row); pw.grid(  row=0, column=1, sticky="ew", padx=1)
+        priv = ttk.Entry(row); priv.grid(row=0, column=2, sticky="ew", padx=1)
+        for w in (name, pw, priv):
+            _attach_context_menu(w)
+        ttk.Button(row, text="X", width=3, style="Del.TButton",
+                   command=lambda: self._del_row(row, self.sw_user_rows)
+                   ).grid(row=0, column=3, padx=(6, 1))
+        if data:
+            name.insert(0, data.get("name", "") or data.get("username", ""))
+            pw.insert(0, data.get("password", "") or "")
+            priv.insert(0, str(data.get("privilege", "") or ""))
+        else:
+            priv.insert(0, "15")
+        self.sw_user_rows.append({"frame": row, "name": name,
+                                  "pw": pw, "priv": priv})
+
+    def _collect_sw_users(self):
+        out = []
+        for r in self.sw_user_rows:
+            uname = r["name"].get().strip()
+            if not uname:
+                continue
+            pw = r["pw"].get().strip()
+            priv_raw = r["priv"].get().strip()
+            try:
+                priv = int(priv_raw) if priv_raw else 15
+            except ValueError:
+                priv = 15
+            out.append({"name": uname, "password": pw, "privilege": priv})
+        return out
+
     def _sw_dict(self):
         # ttk.Entry.get() works whether or not the widget is disabled
+        users = self._collect_sw_users()
+        first = users[0] if users else {}
         sw = {
             "hostname":        self.hostname.get().strip(),
-            "local_username":  self.username.get().strip(),
+            "users":           users,
+            # Backward-compat singulars - the renderer prefers `users` when
+            # present but legacy paths can still read these two keys.
+            "local_username":  first.get("name", ""),
             "enable_secret":   self.secret.get().strip(),
-            "admin_password":  self.password.get().strip(),
+            "admin_password":  first.get("password", ""),
             "domain_name":     self.domain.get().strip(),
             "mgmt_ip":         self.mgmt_ip.get().strip(),
             "mgmt_mask":       self.mgmt_mask.get().strip(),
@@ -3460,6 +3597,7 @@ class GenerateTab(ttk.Frame):
             "oob_ip":          self.oob_ip.get().strip(),
             "oob_mask":        self.oob_mask.get().strip(),
             "work_order":      self.work_order.get().strip(),
+            "vlan_definitions": self.sw_vlans_text.get("1.0", "end").strip(),
         }
         # L3 fields - only meaningful when the selected profile is L3,
         # but always populated so the renderer can read them safely
@@ -4002,6 +4140,16 @@ class ProfilesTab(ttk.Frame):
                   text="  Paste your VLAN IOS commands here (vlan X / "
                        "name Y / private-vlan / exit)."
                   ).pack(anchor="w", padx=5, pady=(4, 0))
+        self.allow_sw_vlans = tk.BooleanVar(value=False)
+        ttk.Checkbutton(form,
+                        text="Allow per-switch VLAN overrides in Step 3",
+                        variable=self.allow_sw_vlans
+                        ).pack(anchor="w", padx=5, pady=(2, 0))
+        ttk.Label(form, style="Hint.TLabel",
+                  text="  When on, Generate Step 3 shows a VLAN editor\n"
+                       "  pre-filled with this block. Step 3 edits replace\n"
+                       "  these definitions for that one switch only."
+                  ).pack(anchor="w", padx=5, pady=(0, 2))
         self.vlans_text = tk.Text(form, height=10, font=("Consolas", 9),
                                   bg=C["bg_input"], fg=C["fg"],
                                   insertbackground=C["fg"],
@@ -4023,8 +4171,35 @@ class ProfilesTab(ttk.Frame):
 
         cred_lf = ttk.LabelFrame(form, text="Credentials", padding=5)
         cred_lf.pack(fill="x", padx=5, pady=5)
-        self.cred_user_e   = _field(cred_lf, "Local Username")
-        self.cred_pass_e   = _field(cred_lf, "Local User Password")
+
+        # Local Users table - one IOS `username` line per row at render time.
+        users_lf = ttk.LabelFrame(cred_lf, text="Local Users", padding=5)
+        users_lf.pack(fill="x", padx=2, pady=2)
+
+        users_hint = ttk.Frame(users_lf); users_hint.pack(fill="x", pady=(0, 4))
+        ttk.Label(users_hint, style="Hint.TLabel",
+                  text="  One row per local user. Each row renders as\n"
+                       "  `username NAME privilege P secret PW`. Step 3\n"
+                       "  loads an editable copy for each generated switch."
+                  ).pack(side="left", anchor="w", padx=2)
+        ttk.Button(users_hint, text="+ Add User",
+                   command=self._add_user
+                   ).pack(side="right", anchor="ne", padx=(6, 1))
+
+        uh = ttk.Frame(users_lf); uh.pack(fill="x")
+        uh.columnconfigure(0, weight=2, uniform="usr")
+        uh.columnconfigure(1, weight=2, uniform="usr")
+        uh.columnconfigure(2, weight=1, uniform="usr")
+        ttk.Label(uh, text="Username", anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=1)
+        ttk.Label(uh, text="Password", anchor="w").grid(
+            row=0, column=1, sticky="ew", padx=1)
+        ttk.Label(uh, text="Privilege", anchor="w").grid(
+            row=0, column=2, sticky="ew", padx=1)
+        ttk.Frame(uh, width=30).grid(row=0, column=3, padx=(6, 1))
+        self.user_frame = ttk.Frame(users_lf); self.user_frame.pack(fill="x")
+        self.user_rows = []
+
         self.cred_enable_e = _field(cred_lf, "Enable Secret")
 
         # -- DNS / NTP services --
@@ -4349,6 +4524,33 @@ class ProfilesTab(ttk.Frame):
     def _del_row(self, frame, lst):
         lst[:] = [r for r in lst if r["frame"] is not frame]
         frame.destroy()
+
+    def _clear_users(self):
+        for r in self.user_rows:
+            r["frame"].destroy()
+        self.user_rows.clear()
+
+    def _add_user(self, data=None):
+        row = ttk.Frame(self.user_frame); row.pack(fill="x", pady=1)
+        row.columnconfigure(0, weight=2, uniform="usr")
+        row.columnconfigure(1, weight=2, uniform="usr")
+        row.columnconfigure(2, weight=1, uniform="usr")
+        name = ttk.Entry(row); name.grid(row=0, column=0, sticky="ew", padx=1)
+        pw   = ttk.Entry(row); pw.grid(  row=0, column=1, sticky="ew", padx=1)
+        priv = ttk.Entry(row); priv.grid(row=0, column=2, sticky="ew", padx=1)
+        for w in (name, pw, priv):
+            _attach_context_menu(w)
+        ttk.Button(row, text="X", width=3, style="Del.TButton",
+                   command=lambda: self._del_row(row, self.user_rows)
+                   ).grid(row=0, column=3, padx=(6, 1))
+        if data:
+            name.insert(0, data.get("name", "") or data.get("username", ""))
+            pw.insert(0, data.get("password", "") or "")
+            priv.insert(0, str(data.get("privilege", "") or ""))
+        else:
+            priv.insert(0, "15")
+        self.user_rows.append({"frame": row, "name": name,
+                               "pw": pw, "priv": priv})
 
     # -- layer 3 row helpers --
     def _on_layer3_toggle(self):
@@ -4788,10 +4990,17 @@ class ProfilesTab(ttk.Frame):
         self.base_set_cb.set(p.get("base_set", "") or "")
 
         creds = p.get("credentials", {}) or {}
-        self.cred_user_e.delete(0, "end")
-        self.cred_user_e.insert(0, creds.get("local_username", "") or "")
-        self.cred_pass_e.delete(0, "end")
-        self.cred_pass_e.insert(0, creds.get("admin_password", "") or "")
+        self._clear_users()
+        users = creds.get("users") or []
+        if not users:
+            # Migrate the old single-credential shape into a one-row list.
+            legacy_name = creds.get("local_username", "")
+            legacy_pw   = creds.get("admin_password", "")
+            if legacy_name or legacy_pw:
+                users = [{"name": legacy_name, "password": legacy_pw,
+                          "privilege": 15}]
+        for u in users:
+            self._add_user(u)
         self.cred_enable_e.delete(0, "end")
         self.cred_enable_e.insert(0, creds.get("enable_secret", "") or "")
 
@@ -4830,6 +5039,7 @@ class ProfilesTab(ttk.Frame):
         self.vlans_text.insert("1.0", p.get("vlan_definitions", ""))
         if hasattr(self.vlans_text, "_autosize"):
             self.vlans_text._autosize()
+        self.allow_sw_vlans.set(bool(p.get("allow_per_switch_vlans", False)))
 
         self._clear_vars()
         for k, v in p.get("role_variables", {}).items():
@@ -4914,15 +5124,17 @@ class ProfilesTab(ttk.Frame):
         self.mgmt_vlan_e.delete(0, "end")
         self.base_set_cb["values"] = self.app._visible_base_set_names()
         self.base_set_cb.set("")
-        for w in (self.cred_user_e, self.cred_pass_e, self.cred_enable_e,
+        for w in (self.cred_enable_e,
                   self.dns_servers_e, self.ntp_servers_e,
                   self.ntp_source_e, self.clock_tz_e,
                   self.clock_summer_e, self.ntp_key_id_e, self.ntp_key_e,
                   self.ntp_acl_num_e, self.ntp_acl_peers_e):
             w.delete(0, "end")
+        self._clear_users()
         self.vlans_text.delete("1.0", "end")
         if hasattr(self.vlans_text, "_autosize"):
             self.vlans_text._autosize()
+        self.allow_sw_vlans.set(False)
         self._clear_vars(); self._clear_pa()
         # Layer 3 defaults for a new profile
         self.l3_enabled.set(False)
@@ -5005,10 +5217,20 @@ class ProfilesTab(ttk.Frame):
             del self.app.profiles[old]
 
         credentials = {}
-        if self.cred_user_e.get().strip():
-            credentials["local_username"] = self.cred_user_e.get().strip()
-        if self.cred_pass_e.get().strip():
-            credentials["admin_password"] = self.cred_pass_e.get().strip()
+        users = []
+        for r in self.user_rows:
+            uname = r["name"].get().strip()
+            if not uname:
+                continue
+            pw = r["pw"].get().strip()
+            priv_raw = r["priv"].get().strip()
+            try:
+                priv = int(priv_raw) if priv_raw else 15
+            except ValueError:
+                priv = 15
+            users.append({"name": uname, "password": pw, "privilege": priv})
+        if users:
+            credentials["users"] = users
         if self.cred_enable_e.get().strip():
             credentials["enable_secret"] = self.cred_enable_e.get().strip()
 
@@ -5046,6 +5268,7 @@ class ProfilesTab(ttk.Frame):
             "mgmt_vlan":        self.mgmt_vlan_e.get().strip(),
             "base_set":         self.base_set_cb.get().strip(),
             "vlan_definitions": self.vlans_text.get("1.0", "end").strip(),
+            "allow_per_switch_vlans": bool(self.allow_sw_vlans.get()),
             "role_variables":   role_vars,
             "port_assignments": pas,
         }
@@ -6390,6 +6613,7 @@ class App:
         self.roles    = load_json("roles.json",          {})
         self.profiles = load_json("profiles.json",       {})
         self.base     = load_base_settings()
+        self._migrate_profile_credentials()
         # Hidden item names per category: models, roles, profiles, base_sets.
         # Lets users clear bundled clutter from list/dropdown UIs without
         # deleting the underlying data.
@@ -6620,6 +6844,7 @@ class App:
         self.roles    = load_json("roles.json",         {})
         self.profiles = load_json("profiles.json",      {})
         self.base     = load_base_settings()
+        self._migrate_profile_credentials()
         self._rebuild_tabs()
         _dialog("Imported",
                 "Settings imported successfully.\nAll tabs have been refreshed.")
@@ -6702,6 +6927,34 @@ class App:
         """Sorted list of available base-settings entries."""
         return sorted((self.base or {}).get("sets", {}).keys(),
                       key=str.lower)
+
+    # ---- profile credential migration --------------------------------
+    def _migrate_profile_credentials(self):
+        """Convert legacy credentials.local_username/admin_password into
+        the new credentials.users list shape. Writes profiles.json only
+        if at least one profile actually changed.
+        """
+        changed = False
+        for prof in self.profiles.values():
+            creds = prof.get("credentials")
+            if not isinstance(creds, dict):
+                continue
+            if creds.get("users"):
+                continue
+            legacy_name = creds.get("local_username")
+            legacy_pw   = creds.get("admin_password")
+            if not (legacy_name or legacy_pw):
+                continue
+            creds["users"] = [{
+                "name": legacy_name or "",
+                "password": legacy_pw or "",
+                "privilege": 15,
+            }]
+            creds.pop("local_username", None)
+            creds.pop("admin_password", None)
+            changed = True
+        if changed:
+            save_json("profiles.json", self.profiles)
 
     # ---- hidden-items state ------------------------------------------
     _HIDDEN_CATEGORIES = ("models", "roles", "profiles", "base_sets")

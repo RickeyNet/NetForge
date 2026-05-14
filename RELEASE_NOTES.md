@@ -65,6 +65,23 @@ NetForge now responds to keyboard shortcuts from any tab or focused widget:
 - **Themed check / radio buttons** - Hover and active states on `TCheckbutton` and `TRadiobutton` keep the theme background instead of flashing white on mouseover.
 - **Themed scrollbars in Step 3 and Push Console** - The generated-config preview and the push-to-switch transcript now use a `tk.Text` + `ttk.Scrollbar` pair (via a small `_scrolled_text` helper) instead of `ScrolledText`'s embedded classic `tk.Scrollbar`, so their scrollbars match the rest of the app.
 
+## Multiple Local Users per Profile
+
+Site Profiles now hold a list of local users instead of a single username / password pair. Each row in the new **Local Users** table on the profile (Username, Password, Privilege, with a + Add User button and X delete) renders as its own `username NAME privilege P secret PW` line in the generated config. Enable Secret stays singular.
+
+- **Step 3 seeding** - Generate Config Step 3 shows the same Local Users table, pre-populated as an editable copy of the profile's users. Edits stay per-switch and don't write back to the profile, so you can rename an account or bump a privilege on a single switch without touching the template.
+- **Privilege defaults to 15** - per-user privilege is editable from 0-15. Previously every user was emitted with `privilege 0`.
+- **Auto-migration** - profiles using the old `credentials.local_username` / `admin_password` shape are converted to a single-entry users list at app launch and after importing a settings ZIP. The legacy keys are removed and `profiles.json` is rewritten only when something actually changed.
+- The renderer keeps a legacy fallback so partly-migrated configs still produce a sane `username` line.
+
+## Per-Switch VLAN Overrides
+
+Site Profiles gain a new **Allow per-switch VLAN overrides in Step 3** checkbox under the VLAN Definitions block. When on, Generate Config Step 3 grows a **VLAN Definitions (this switch)** editor pre-filled with the profile's VLAN block.
+
+- The text from Step 3 replaces the profile's VLAN definitions for that one switch at render time; an empty box falls back to the profile.
+- Useful for sites that mostly share a VLAN plan but tweak one or two VLANs (different printer / camera / guest IDs, extra site-specific VLANs, etc.) without forking the profile.
+- The editor uses the same auto-sizing text area as the profile's VLAN block.
+
 ## Performance
 
 - **Non-opaque pane dividers** - Dragging the middle divider between the form and preview panes (Step 3, Switch Models, Interface Roles, Site Profiles, Base Settings) no longer resizes the panes live. A thin guide line tracks the cursor and the panes resize once on release, eliminating the per-pixel layout cascade through every nested form widget. This was the largest source of UI lag on Windows.
