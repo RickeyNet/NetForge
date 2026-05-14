@@ -271,7 +271,9 @@
     "mgmt_vlan": "2",
     "base_set": "Base",
     "vlan_definitions": "interface vlan1\nno ip address\nshutdown\nexit\n\nvlan 2\n name mgmt\nexit\n\nvlan 4\n name User\nexit",
-    "role_variables": {},
+    "role_variables": {
+      "user_vlan": "2"
+    },
     "port_assignments": [],
     "credentials": {
       "local_username": "testusername",

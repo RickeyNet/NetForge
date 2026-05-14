@@ -4653,8 +4653,42 @@ class BaseTab(ttk.Frame):
                    style="Del.TButton").pack(side="left", padx=2)
 
         # -- right: editor --
-        right = ScrollFrame(paned); paned.add(right, weight=1)
+        # Wrapper holds a sticky search bar (top), the scrolling form
+        # (middle), and a sticky Save footer (bottom), so search and Save
+        # both stay visible as the form grows and pushes content
+        # off-screen.
+        right_wrap = ttk.Frame(paned); paned.add(right_wrap, weight=1)
+
+        search_bar = ttk.Frame(right_wrap)
+        search_bar.pack(side="top", fill="x")
+        ttk.Label(search_bar, text="Search:").pack(side="left",
+                                                   padx=(5, 4), pady=6)
+        self.search_e = ttk.Entry(search_bar)
+        self.search_e.pack(side="left", fill="x", expand=True, pady=6)
+        _attach_context_menu(self.search_e)
+        self.search_e.bind("<Return>", lambda _e: self._do_search())
+        self.search_e.bind("<KP_Enter>", lambda _e: self._do_search())
+        ttk.Button(search_bar, text="Find",
+                   command=self._do_search).pack(side="left", padx=4, pady=6)
+        ttk.Button(search_bar, text="Clear",
+                   command=self._clear_search).pack(side="left",
+                                                    padx=(0, 5), pady=6)
+        self.search_status = ttk.Label(search_bar, text="",
+                                       style="Hint.TLabel")
+        self.search_status.pack(side="left", padx=4, pady=6)
+        ttk.Separator(right_wrap, orient="horizontal").pack(side="top",
+                                                            fill="x")
+
+        footer = ttk.Frame(right_wrap)
+        footer.pack(side="bottom", fill="x")
+        ttk.Separator(footer, orient="horizontal").pack(fill="x")
+        ttk.Button(footer, text="Save Base Settings",
+                   command=self._save).pack(padx=5, pady=8, anchor="w")
+        right = ScrollFrame(right_wrap); right.pack(fill="both", expand=True)
+        self._scroll = right
         form = right.inner
+        # Map text-area key -> human title, for search result reporting.
+        self._section_titles = {}
 
         _section(form, "Set Details")
         self.name_e = _field(form, "Name")
@@ -4670,7 +4704,7 @@ class BaseTab(ttk.Frame):
         ttk.Label(form,
                   text="  Filename template used when saving generated configs.\n"
                   "  Available variables: {{ hostname }}, {{ model }}, "
-                  "{{ profile }}, {{ date }}",
+                  "{{ profile }}, {{ work_order }}, {{ date }}",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.fields["filename_template"] = _field(
             form, "Filename Template",
@@ -4703,6 +4737,7 @@ class BaseTab(ttk.Frame):
                       style="Hint.TLabel").pack(anchor="w", padx=5)
             self.text_areas[key] = _autosize_textarea(
                 _textarea(form, "", "", h=2), min_h=2, max_h=20)
+            self._section_titles[key] = title
 
         _section(form, "Banner LOGIN")
         ttk.Label(form, text="  Enter the banner text only - the app adds "
@@ -4710,6 +4745,7 @@ class BaseTab(ttk.Frame):
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.text_areas["banner"] = _autosize_textarea(
             _textarea(form, "", "", h=2), min_h=2, max_h=30)
+        self._section_titles["banner"] = "Banner LOGIN"
 
         _section(form, "Disabled Port Template")
         ttk.Label(form, text="  Commands applied to every port during the "
@@ -4718,6 +4754,7 @@ class BaseTab(ttk.Frame):
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.text_areas["disabled_port_template"] = _autosize_textarea(
             _textarea(form, "", "", h=2), min_h=2, max_h=20)
+        self._section_titles["disabled_port_template"] = "Disabled Port Template"
 
         _section(form, "Custom Config Sections")
         ttk.Label(form,
@@ -4740,10 +4777,104 @@ class BaseTab(ttk.Frame):
         self.cs_container = ttk.Frame(form)
         self.cs_container.pack(fill="x", padx=5, pady=(2, 6))
 
-        ttk.Button(form, text="Save Base Settings",
-                   command=self._save).pack(padx=5, pady=10, anchor="w")
-
         self._refresh()
+
+    # -- search ------------------------------------------------------------
+    _SEARCH_TAG = "search_match"
+
+    def _all_search_targets(self):
+        """Yield (label, widget) pairs covering every text area, custom
+        config section commands box, and the filename template entry."""
+        for key, title in self._section_titles.items():
+            w = self.text_areas.get(key)
+            if w is not None:
+                yield (title, w)
+        ft = self.fields.get("filename_template")
+        if ft is not None:
+            yield ("Filename Template", ft)
+        for row in self.cs_rows:
+            name = (row["name"].get() or "").strip() or "(unnamed)"
+            yield (f"Custom Section: {name}", row["commands"])
+
+    def _clear_search(self):
+        for _label, w in self._all_search_targets():
+            if isinstance(w, tk.Text):
+                try:
+                    w.tag_remove(self._SEARCH_TAG, "1.0", "end")
+                except tk.TclError:
+                    pass
+        self.search_status.configure(text="")
+
+    def _do_search(self):
+        needle = self.search_e.get()
+        self._clear_search()
+        if not needle.strip():
+            return
+        needle_low = needle.lower()
+        per_section = []   # list of (label, count, widget, first_index)
+        for label, w in self._all_search_targets():
+            if isinstance(w, tk.Text):
+                w.tag_configure(self._SEARCH_TAG,
+                                background="#ffd866", foreground="#000000")
+                count = 0
+                first_idx = None
+                start = "1.0"
+                while True:
+                    idx = w.search(needle, start, nocase=True, stopindex="end")
+                    if not idx:
+                        break
+                    end_idx = f"{idx}+{len(needle)}c"
+                    w.tag_add(self._SEARCH_TAG, idx, end_idx)
+                    if first_idx is None:
+                        first_idx = idx
+                    count += 1
+                    start = end_idx
+                if count:
+                    per_section.append((label, count, w, first_idx))
+            else:
+                val = (w.get() or "")
+                if needle_low in val.lower():
+                    per_section.append((label, 1, w, None))
+
+        if not per_section:
+            self.search_status.configure(text="No matches.")
+            return
+
+        label0, _c0, widget0, first_idx0 = per_section[0]
+        self._scroll_widget_into_view(widget0)
+        if isinstance(widget0, tk.Text) and first_idx0:
+            try:
+                widget0.see(first_idx0)
+            except tk.TclError:
+                pass
+
+        total = sum(c for _l, c, _w, _i in per_section)
+        if len(per_section) == 1:
+            summary = f"{total} match in {per_section[0][0]}"
+        else:
+            tops = ", ".join(f"{l} ({c})" for l, c, _w, _i in per_section[:3])
+            more = "" if len(per_section) <= 3 else f", +{len(per_section)-3} more"
+            summary = f"{total} matches: {tops}{more}"
+        self.search_status.configure(text=summary)
+
+    def _scroll_widget_into_view(self, widget):
+        scroll = getattr(self, "_scroll", None)
+        if scroll is None:
+            return
+        canvas = scroll.canvas
+        canvas.update_idletasks()
+        try:
+            y = widget.winfo_y()
+            parent = widget.master
+            inner = scroll.inner
+            while parent is not None and parent is not inner:
+                y += parent.winfo_y()
+                parent = parent.master
+            total = max(1, inner.winfo_height())
+            frac = max(0.0, min(1.0, (y - 20) / total))
+            canvas.yview_moveto(frac)
+        except tk.TclError:
+            pass
 
     # -- list helpers --
     def _refresh(self):
@@ -4760,6 +4891,9 @@ class BaseTab(ttk.Frame):
         if not name:
             return
         b = (self.app.base or {}).get("sets", {}).get(name, {}) or {}
+
+        # Clear any stale search highlights when switching sets.
+        self._clear_search()
 
         self.name_e.delete(0, "end"); self.name_e.insert(0, name)
         self.default_var.set(name == (self.app.base or {}).get("default"))

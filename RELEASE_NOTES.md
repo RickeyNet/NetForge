@@ -1,5 +1,37 @@
 # NetForge v1.5.0 - Release Notes
 
+## Base Settings Search
+
+The Base Settings tab now has a sticky search bar pinned to the top of the right pane. Type a string and hit Enter (or click **Find**) to see whether a command already exists in the currently loaded base set.
+
+- Case-insensitive substring match across every section text area (Global Services, Logging, AAA, Security, SSH, Switching, Line Configuration, Banner LOGIN, Disabled Port Template, etc.), the Filename Template field, and every Custom Config Section's commands box.
+- All matches are highlighted in yellow; the first match auto-scrolls into view.
+- A status label reports the count and the sections that contained matches, e.g. `5 matches: Global Services (3), Switching Features (1), Custom Section: NTP (1)`.
+- **Clear** removes highlights. Highlights also auto-clear when switching to a different base set in the left list.
+
+## NTP Access-Group Support
+
+Site Profiles gain two new optional fields under **DNS / NTP**:
+- **NTP Access-Group ACL #** - the numbered ACL bound to NTP peers.
+- **NTP Peer IPs** - comma-separated list of peer IPs that should be permitted.
+
+When both are set, the Global section emits `ntp access-group peer <N>` plus a matching `access-list <N> permit host <peer>` line per IP. Persisted on the profile under `services.ntp.access_group_acl` and `services.ntp.access_group_peers`. Existing `ntp source` / `authenticate` / `trusted-key` emission is unchanged.
+
+## ACL Editor Improvements
+
+- **Column headers** - Each ACL block now has `Action | Proto | Source | Source Wildcard | Destination | Dest Wildcard | Log | Del` labels above its rule rows. Headers and rule widgets share a single grid parent so the columns line up exactly.
+- **Aligned right edge** - The per-rule delete button now stays in the same horizontal position on remark rows (where the Log checkbox is hidden), thanks to a reserved minsize on the Log column.
+- **Wider Proto field** - Bumped from 4 to 6 characters wide so `tcp` / `udp` / `icmp` are easier to read.
+- **Protocol dropdown** - The Proto field is now an editable combobox prefilled with the common protocols (`ip, tcp, udp, icmp, gre, esp, ahp, eigrp, ospf, pim, igmp, sctp`). Free-text input is still accepted for protocol numbers or any other keyword.
+
+## Form Layout Polish
+
+- **Label column widened** - The shared `_field` / `_textarea` helpers now reserve a wider label column (26 chars + 6px gap) so longer labels like "NTP Access-Group ACL #" and "User Network (advertised)" no longer crowd or overlap the entry column. Affects every form built via these helpers.
+- **Sticky Save on Base Settings** - The Base Settings tab now has the same sticky footer pattern as Site Profiles: **Save Base Settings** stays pinned to the bottom of the right pane regardless of scroll position.
+- **Output Settings hint fix** - The filename template hint now lists `work_order` alongside `hostname`, `model`, `profile`, and `date`.
+
+---
+
 ## New Feature: Push Config to Switch (Console)
 
 Step 3 of the Generate Config tab now has a **Push to Switch...** button that streams the generated config straight to a switch over its console port via a USB-to-serial adapter. No more copy/paste into PuTTY.
