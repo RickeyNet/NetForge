@@ -56,8 +56,6 @@ Feature ideas based on the current app structure and product scope.
 - [ ] Add profile inheritance
   Allow a site profile to extend a base profile and override only a few VLANs, variables, or port assignments.
 
-- [ ] Add optional per-site custom sections
-  Today custom sections are global. Site-specific custom sections would help with SNMP, logging, NTP, DHCP snooping, or ACL blocks that vary by location.
 
 ## Quality Of Life
 
@@ -70,7 +68,7 @@ Feature ideas based on the current app structure and product scope.
 - [x] Add recent files and recent profiles
   Keep a short history of recently opened settings ZIPs, recently used profiles, and recently generated configs.
 
-- [ ] Add keyboard shortcuts
+- [x] Add keyboard shortcuts
   Shortcuts for generate, copy, save, next/back step, and quick navigation between tabs would speed up daily use.
 
 - [x] Add dark/light theme polish and custom themes

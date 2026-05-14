@@ -5888,6 +5888,20 @@ class App:
         self._theme_mb.pack(side="left")
         self._build_theme_menu()
 
+        help_mb = tk.Menubutton(self.menubar_frame, text="Help", **menu_kw)
+        help_mb.pack(side="left")
+        help_menu = tk.Menu(help_mb, **drop_kw)
+        help_menu.add_command(label="Keyboard Shortcuts    F1",
+                              command=lambda: self._sc_show_help())
+        help_mb.configure(menu=help_menu)
+
+        # Discoverability hint: small dimmed label on the right side of
+        # the menubar so users see that F1 reveals shortcuts.
+        tk.Label(self.menubar_frame,
+                 text="Press F1 for shortcuts",
+                 bg=C["bg2"], fg=C["border"],
+                 font=("Segoe UI", 8)).pack(side="right", padx=8)
+
         # load data
         self.models   = load_json("models.json",        {})
         self.roles    = load_json("roles.json",          {})
@@ -5910,6 +5924,151 @@ class App:
         self.nb.add(self.profiles_tab, text="  Site Profiles  ")
         self.nb.add(self.base_tab,     text="  Base Settings  ")
         self.nb.add(GuideTab(self.nb, self), text="  How-To Guide  ")
+
+        self._install_shortcuts()
+
+    # ---- keyboard shortcuts ------------------------------------------
+    # Tab order matches self.nb: 0=Generate, 1=Models, 2=Roles,
+    # 3=Profiles, 4=Base, 5=Guide.
+    _SHORTCUTS = [
+        ("Ctrl+1",       "Jump to Generate Config tab"),
+        ("Ctrl+2",       "Jump to Switch Models tab"),
+        ("Ctrl+3",       "Jump to Interface Roles tab"),
+        ("Ctrl+4",       "Jump to Site Profiles tab"),
+        ("Ctrl+5",       "Jump to Base Settings tab"),
+        ("Ctrl+6",       "Jump to How-To Guide tab"),
+        ("Ctrl+S",       "Save the active editor "
+                         "(Model / Role / Profile / Base / Config)"),
+        ("Ctrl+G",       "Generate config (switches to Generate tab first)"),
+        ("Ctrl+Shift+C", "Copy generated config to clipboard"),
+        ("Ctrl+Right",   "Wizard: advance to next step (Generate tab)"),
+        ("Ctrl+Left",    "Wizard: go back one step (Generate tab)"),
+        ("F1",           "Show this shortcut list"),
+    ]
+
+    def _install_shortcuts(self):
+        r = self.root
+        for i in range(6):
+            r.bind_all(f"<Control-Key-{i+1}>",
+                       lambda _e, idx=i: self._sc_select_tab(idx))
+        r.bind_all("<Control-s>",      lambda _e: self._sc_save())
+        r.bind_all("<Control-S>",      lambda _e: self._sc_save())
+        r.bind_all("<Control-g>",      lambda _e: self._sc_generate())
+        r.bind_all("<Control-G>",      lambda _e: self._sc_generate())
+        r.bind_all("<Control-Shift-C>", lambda _e: self._sc_copy())
+        r.bind_all("<Control-Right>",  lambda _e: self._sc_wizard_next())
+        r.bind_all("<Control-Left>",   lambda _e: self._sc_wizard_back())
+        r.bind_all("<F1>",             lambda _e: self._sc_show_help())
+
+    def _sc_select_tab(self, idx):
+        try:
+            self.nb.select(idx)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _active_tab_widget(self):
+        try:
+            cur = self.nb.select()
+            return self.root.nametowidget(cur) if cur else None
+        except tk.TclError:
+            return None
+
+    def _sc_save(self):
+        w = self._active_tab_widget()
+        save = getattr(w, "_save", None)
+        if callable(save):
+            try:
+                save()
+            except Exception:
+                pass
+        return "break"
+
+    def _sc_generate(self):
+        gen = getattr(self, "gen_tab", None)
+        if gen is None:
+            return "break"
+        try:
+            self.nb.select(gen)
+        except tk.TclError:
+            pass
+        fn = getattr(gen, "_generate", None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
+        return "break"
+
+    def _sc_copy(self):
+        gen = getattr(self, "gen_tab", None)
+        fn = getattr(gen, "_copy", None) if gen else None
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
+        return "break"
+
+    def _sc_wizard_next(self):
+        gen = getattr(self, "gen_tab", None)
+        if gen is None or self._active_tab_widget() is not gen:
+            return "break"
+        step = getattr(gen, "current_step", 0)
+        try:
+            if step == 0:
+                gen._step1_next()
+            elif step == 1:
+                gen._step2_next()
+        except Exception:
+            pass
+        return "break"
+
+    def _sc_wizard_back(self):
+        gen = getattr(self, "gen_tab", None)
+        if gen is None or self._active_tab_widget() is not gen:
+            return "break"
+        step = getattr(gen, "current_step", 0)
+        try:
+            if step == 2:
+                gen._step3_back()
+            elif step == 1:
+                gen._show_step(0)
+        except Exception:
+            pass
+        return "break"
+
+    def _sc_show_help(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Keyboard Shortcuts")
+        dlg.configure(bg=C["bg"])
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        tk.Frame(dlg, bg=C["accent"], height=3).pack(fill="x")
+        inner = ttk.Frame(dlg, padding=(22, 14, 22, 18))
+        inner.pack()
+        ttk.Label(inner, text="Keyboard Shortcuts",
+                  style="Sec.TLabel").pack(anchor="w")
+        grid = ttk.Frame(inner)
+        grid.pack(anchor="w", pady=(8, 14))
+        for row, (key, desc) in enumerate(self._SHORTCUTS):
+            ttk.Label(grid, text=key, font=("Consolas", 10)
+                      ).grid(row=row, column=0, sticky="w", padx=(0, 18))
+            ttk.Label(grid, text=desc
+                      ).grid(row=row, column=1, sticky="w")
+        ttk.Button(inner, text="OK",
+                   command=dlg.destroy).pack(anchor="e")
+        dlg.update_idletasks()
+        try:
+            rx = self.root.winfo_x() + (self.root.winfo_width()
+                                        - dlg.winfo_width()) // 2
+            ry = self.root.winfo_y() + (self.root.winfo_height()
+                                        - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{max(0, rx)}+{max(0, ry)}")
+        except Exception:
+            pass
+        return "break"
 
     # ---- export / import settings ----
     _SETTINGS_FILES = [
