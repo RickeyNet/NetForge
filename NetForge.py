@@ -449,7 +449,7 @@ def _section(parent, title):
 
 def _field(parent, label, default="", width=35):
     f = ttk.Frame(parent); f.pack(fill="x", padx=5, pady=2)
-    ttk.Label(f, text=label, width=22, anchor="w").pack(side="left")
+    ttk.Label(f, text=label, width=26, anchor="w").pack(side="left", padx=(0, 6))
     e = ttk.Entry(f, width=width)
     e.pack(side="left", fill="x", expand=True)
     if default:
@@ -461,7 +461,8 @@ def _field(parent, label, default="", width=35):
 def _textarea(parent, label, default="", h=5):
     f = ttk.Frame(parent); f.pack(fill="x", padx=5, pady=2)
     if label:
-        ttk.Label(f, text=label, width=22, anchor="nw").pack(side="left")
+        ttk.Label(f, text=label, width=26, anchor="nw").pack(
+            side="left", padx=(0, 6))
     t = tk.Text(f, height=h, font=("Consolas", 9),
                 bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
                 selectbackground=C["sel_bg"], relief="flat", bd=2, wrap="word")
@@ -1669,6 +1670,16 @@ def render_config_sections(model, profile, roles, base, sw):
             ntp_lines.append("ntp authenticate")
             ntp_lines.append(f"ntp authentication-key {key_id} md5 {key}")
             ntp_lines.append(f"ntp trusted-key {key_id}")
+        acl_num = (str(ntp.get("access_group_acl") or "")).strip()
+        acl_peers = ntp.get("access_group_peers") or []
+        if isinstance(acl_peers, str):
+            acl_peers = [p.strip() for p in acl_peers.split(",") if p.strip()]
+        if acl_num and acl_peers:
+            ntp_lines.append(f"ntp access-group peer {acl_num}")
+            for peer in acl_peers:
+                ntp_lines.append(
+                    f"access-list {acl_num} permit host {peer}"
+                )
         for s in ntp_servers:
             if key_id and key:
                 ntp_lines.append(f"ntp server {s} key {key_id}")
@@ -3569,9 +3580,14 @@ class ProfilesTab(ttk.Frame):
         self.clock_summer_e = _field(svc_lf, "Clock Summer-Time")
         self.ntp_key_id_e   = _field(svc_lf, "NTP Auth Key ID")
         self.ntp_key_e      = _field(svc_lf, "NTP Auth Key (MD5)")
+        self.ntp_acl_num_e  = _field(svc_lf, "NTP Access-Group ACL #")
+        self.ntp_acl_peers_e = _field(svc_lf, "NTP Peer IPs")
         ttk.Label(svc_lf, style="Hint.TLabel",
                   text="  NTP authentication fields are optional - leave\n"
-                       "  blank to render unauthenticated `ntp server` lines."
+                       "  blank to render unauthenticated `ntp server` lines.\n"
+                       "  Setting Access-Group ACL # plus Peer IPs (comma-\n"
+                       "  separated) emits `ntp access-group peer <N>` and a\n"
+                       "  matching numbered ACL permitting each peer host."
                   ).pack(anchor="w", padx=2, pady=(2, 0))
 
         # -- role variables --
@@ -3904,6 +3920,8 @@ class ProfilesTab(ttk.Frame):
 
     # -- ACL editor --
     _ACL_ACTIONS = ("permit", "deny", "remark")
+    _ACL_PROTOCOLS = ("ip", "tcp", "udp", "icmp", "gre", "esp", "ahp",
+                      "eigrp", "ospf", "pim", "igmp", "sctp")
 
     def _clear_acls(self):
         for blk in self.acl_blocks:
@@ -3930,12 +3948,37 @@ class ProfilesTab(ttk.Frame):
                    command=lambda f=blk_frame: self._del_acl_block(f)
                    ).pack(side="right")
 
+        # Rules grid: header + every rule row live inside this single
+        # frame and use shared `grid` columns, so column widths line up
+        # exactly between the header labels and the field widgets below.
         rules_frame = ttk.Frame(blk_frame)
-        rules_frame.pack(fill="x", pady=(4, 0))
+        rules_frame.pack(fill="x", pady=(6, 0))
+        for col in (2, 3, 4, 5):
+            rules_frame.columnconfigure(col, weight=1, uniform="acladdrs")
+        rules_frame.columnconfigure(6, minsize=44)
+
+        hdr_kw = dict(sticky="ew", padx=1)
+        ttk.Label(rules_frame, text="Action", anchor="w"
+                  ).grid(row=0, column=0, **hdr_kw)
+        ttk.Label(rules_frame, text="Proto", anchor="w"
+                  ).grid(row=0, column=1, **hdr_kw)
+        ttk.Label(rules_frame, text="Source", anchor="w"
+                  ).grid(row=0, column=2, **hdr_kw)
+        ttk.Label(rules_frame, text="Source Wildcard", anchor="w"
+                  ).grid(row=0, column=3, **hdr_kw)
+        ttk.Label(rules_frame, text="Destination", anchor="w"
+                  ).grid(row=0, column=4, **hdr_kw)
+        ttk.Label(rules_frame, text="Dest Wildcard", anchor="w"
+                  ).grid(row=0, column=5, **hdr_kw)
+        ttk.Label(rules_frame, text="Log", anchor="center"
+                  ).grid(row=0, column=6, sticky="ew", padx=2)
+        ttk.Label(rules_frame, text="Del", anchor="center"
+                  ).grid(row=0, column=7, sticky="ew", padx=2)
 
         btn_row = ttk.Frame(blk_frame); btn_row.pack(fill="x", pady=(4, 0))
         block = {"frame": blk_frame, "name": name_e, "type": type_cb,
-                 "rules": rule_rows, "rules_frame": rules_frame}
+                 "rules": rule_rows, "rules_frame": rules_frame,
+                 "next_row": 1}
         ttk.Button(btn_row, text="+ Add Rule",
                    command=lambda b=block: self._add_acl_rule(b)
                    ).pack(side="left")
@@ -3954,42 +3997,47 @@ class ProfilesTab(ttk.Frame):
         frame.destroy()
 
     def _add_acl_rule(self, block, data=None):
-        row = ttk.Frame(block["rules_frame"]); row.pack(fill="x", pady=1)
+        # All rule widgets grid directly into the shared rules_frame so
+        # column widths stay aligned with the header row above.
         # Grid columns:  0 action | 1 proto | 2 src | 3 src_wc |
         #                4 dst    | 5 dst_wc | 6 log | 7 X
-        # Action / proto / log / X stay at their natural width; the four
-        # address columns share equal weight so the row fills the rules
-        # frame and stays the same length whether the action is permit,
-        # deny, or remark - and adapts when the window is narrow.
-        for col in (2, 3, 4, 5):
-            row.columnconfigure(col, weight=1, uniform="acladdrs")
-        action_cb = ttk.Combobox(row, width=8, state="readonly",
+        parent = block["rules_frame"]
+        r = block["next_row"]
+        block["next_row"] = r + 1
+        gkw = dict(row=r, sticky="ew", padx=1, pady=1)
+
+        action_cb = ttk.Combobox(parent, width=8, state="readonly",
                                  values=list(self._ACL_ACTIONS))
         action_cb.bind("<MouseWheel>", lambda _e: "break")
-        action_cb.grid(row=0, column=0, sticky="ew", padx=1)
-        proto_e = ttk.Entry(row, width=4)
-        src_e   = ttk.Entry(row)
-        srcwc_e = ttk.Entry(row)
-        dst_e   = ttk.Entry(row)
-        dstwc_e = ttk.Entry(row)
-        proto_e.grid(row=0, column=1, sticky="ew", padx=1)
-        src_e.grid(  row=0, column=2, sticky="ew", padx=1)
-        srcwc_e.grid(row=0, column=3, sticky="ew", padx=1)
-        dst_e.grid(  row=0, column=4, sticky="ew", padx=1)
-        dstwc_e.grid(row=0, column=5, sticky="ew", padx=1)
+        action_cb.grid(column=0, **gkw)
+        proto_e = ttk.Combobox(parent, width=6,
+                               values=list(self._ACL_PROTOCOLS))
+        proto_e.bind("<MouseWheel>", lambda _e: "break")
+        src_e   = ttk.Entry(parent)
+        srcwc_e = ttk.Entry(parent)
+        dst_e   = ttk.Entry(parent)
+        dstwc_e = ttk.Entry(parent)
+        proto_e.grid(column=1, **gkw)
+        src_e.grid(  column=2, **gkw)
+        srcwc_e.grid(column=3, **gkw)
+        dst_e.grid(  column=4, **gkw)
+        dstwc_e.grid(column=5, **gkw)
         log_var = tk.BooleanVar(value=False)
-        log_cb  = ttk.Checkbutton(row, text="log", variable=log_var)
-        log_cb.grid(row=0, column=6, sticky="w", padx=2)
+        log_cb  = ttk.Checkbutton(parent, variable=log_var)
+        log_cb.grid(row=r, column=6, padx=2, pady=1)
         for w in (proto_e, src_e, srcwc_e, dst_e, dstwc_e):
             _attach_context_menu(w)
-        del_btn = ttk.Button(row, text="X", width=3, style="Del.TButton",
-                             command=lambda r=row, b=block:
-                                 self._del_acl_rule(r, b))
-        del_btn.grid(row=0, column=7, sticky="e", padx=2)
+        del_btn = ttk.Button(parent, text="X", width=3, style="Del.TButton",
+                             command=lambda: self._del_acl_rule(rule, block))
+        del_btn.grid(row=r, column=7, padx=2, pady=1)
 
-        rule = {"frame": row, "action": action_cb, "proto": proto_e,
+        rule_widgets = (action_cb, proto_e, src_e, srcwc_e,
+                        dst_e, dstwc_e, log_cb, del_btn)
+        rule = {"widgets": rule_widgets, "row_idx": r,
+                "action": action_cb, "proto": proto_e,
                 "src": src_e, "src_wc": srcwc_e,
-                "dst": dst_e, "dst_wc": dstwc_e, "log": log_var}
+                "dst": dst_e, "dst_wc": dstwc_e, "log": log_var,
+                "del_btn": del_btn}
 
         # When the action is 'remark', collapse the rule fields into a
         # single text entry that spans columns 1-6 (everything between
@@ -4002,11 +4050,11 @@ class ProfilesTab(ttk.Frame):
                     w.grid_remove()
                 rmk = rule.get("remark")
                 if rmk is None:
-                    rmk = ttk.Entry(row)
+                    rmk = ttk.Entry(parent)
                     _attach_context_menu(rmk)
                     rule["remark"] = rmk
-                rmk.grid(row=0, column=1, columnspan=6,
-                         sticky="ew", padx=1)
+                rmk.grid(row=rule["row_idx"], column=1, columnspan=6,
+                         sticky="ew", padx=1, pady=1)
             else:
                 rmk = rule.get("remark")
                 if rmk is not None:
@@ -4039,9 +4087,13 @@ class ProfilesTab(ttk.Frame):
 
         block["rules"].append(rule)
 
-    def _del_acl_rule(self, row, block):
-        block["rules"][:] = [r for r in block["rules"] if r["frame"] is not row]
-        row.destroy()
+    def _del_acl_rule(self, rule, block):
+        for w in rule["widgets"]:
+            w.destroy()
+        rmk = rule.get("remark")
+        if rmk is not None:
+            rmk.destroy()
+        block["rules"][:] = [r for r in block["rules"] if r is not rule]
 
     # -- BGP instance blocks --
     def _clear_bgp_blocks(self):
@@ -4243,6 +4295,13 @@ class ProfilesTab(ttk.Frame):
         self.ntp_key_id_e.insert(0, ntp.get("auth_key_id", "") or "")
         self.ntp_key_e.delete(0, "end")
         self.ntp_key_e.insert(0, ntp.get("auth_key", "") or "")
+        self.ntp_acl_num_e.delete(0, "end")
+        self.ntp_acl_num_e.insert(0, str(ntp.get("access_group_acl", "") or ""))
+        acl_peers = ntp.get("access_group_peers") or []
+        if isinstance(acl_peers, list):
+            acl_peers = ", ".join(str(x) for x in acl_peers)
+        self.ntp_acl_peers_e.delete(0, "end")
+        self.ntp_acl_peers_e.insert(0, acl_peers)
 
         self.vlans_text.delete("1.0", "end")
         self.vlans_text.insert("1.0", p.get("vlan_definitions", ""))
@@ -4333,7 +4392,8 @@ class ProfilesTab(ttk.Frame):
         for w in (self.cred_user_e, self.cred_pass_e, self.cred_enable_e,
                   self.dns_servers_e, self.ntp_servers_e,
                   self.ntp_source_e, self.clock_tz_e,
-                  self.clock_summer_e, self.ntp_key_id_e, self.ntp_key_e):
+                  self.clock_summer_e, self.ntp_key_id_e, self.ntp_key_e,
+                  self.ntp_acl_num_e, self.ntp_acl_peers_e):
             w.delete(0, "end")
         self.vlans_text.delete("1.0", "end")
         self._clear_vars(); self._clear_pa()
@@ -4441,6 +4501,12 @@ class ProfilesTab(ttk.Frame):
             ntp_block["auth_key_id"] = self.ntp_key_id_e.get().strip()
         if self.ntp_key_e.get().strip():
             ntp_block["auth_key"] = self.ntp_key_e.get().strip()
+        if self.ntp_acl_num_e.get().strip():
+            ntp_block["access_group_acl"] = self.ntp_acl_num_e.get().strip()
+        ntp_acl_peers = [p.strip() for p in self.ntp_acl_peers_e.get().split(",")
+                         if p.strip()]
+        if ntp_acl_peers:
+            ntp_block["access_group_peers"] = ntp_acl_peers
         if ntp_block:
             services["ntp"] = ntp_block
         if self.clock_tz_e.get().strip():

@@ -1,5 +1,6 @@
 {
   "profiles": [
+    "Layer 2",
     "Layer 3",
     "BGP Edge",
     "test"
