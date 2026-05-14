@@ -35,6 +35,7 @@ else:
     _BUNDLE_DIR = BASE_DIR
 
 DATA_DIR = os.path.join(BASE_DIR, "data")
+ICON_PATH = os.path.join(_BUNDLE_DIR, "NetForge.ico")
 
 # On first run of a one-file build, seed data/ from bundled defaults
 if not os.path.exists(DATA_DIR):
@@ -42,6 +43,90 @@ if not os.path.exists(DATA_DIR):
     if os.path.isdir(_bundled_data):
         import shutil
         shutil.copytree(_bundled_data, DATA_DIR)
+
+
+import weakref
+import ctypes
+from ctypes import wintypes
+
+# Windows DWM attributes (Win10 1809+ for dark-mode; Win11 22H2+ for colors)
+_DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+_DWMWA_BORDER_COLOR = 34
+_DWMWA_CAPTION_COLOR = 35
+_DWMWA_TEXT_COLOR = 36
+
+_styled_windows = weakref.WeakSet()
+
+
+def _hex_to_colorref(hex_color):
+    """Convert '#rrggbb' to a Win32 COLORREF (0x00bbggrr)."""
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return None
+    try:
+        r = int(h[0:2], 16)
+        g = int(h[2:4], 16)
+        b = int(h[4:6], 16)
+    except ValueError:
+        return None
+    return (b << 16) | (g << 8) | r
+
+
+def _apply_dwm_styling(win):
+    """Apply dark-mode + themed border/caption colors to a window's title bar.
+
+    Win10 1809+ honors the dark-mode flag. Win11 22H2+ honors the explicit
+    color attributes; older builds silently ignore them.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        hwnd = wintypes.HWND(int(win.frame(), 16))
+    except Exception:
+        return
+    dwmapi = ctypes.windll.dwmapi
+    set_attr = dwmapi.DwmSetWindowAttribute
+
+    dark = wintypes.BOOL(1)
+    set_attr(hwnd, _DWMWA_USE_IMMERSIVE_DARK_MODE,
+             ctypes.byref(dark), ctypes.sizeof(dark))
+
+    for attr, key in (
+        (_DWMWA_BORDER_COLOR, "bg2"),
+        (_DWMWA_CAPTION_COLOR, "bg2"),
+        (_DWMWA_TEXT_COLOR, "fg"),
+    ):
+        cref = _hex_to_colorref(C.get(key, ""))
+        if cref is None:
+            continue
+        val = wintypes.DWORD(cref)
+        set_attr(hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
+
+
+def _style_window(win):
+    """Apply icon + themed DWM title-bar styling. Tracked for theme switches."""
+    if os.path.isfile(ICON_PATH):
+        try:
+            win.iconbitmap(ICON_PATH)
+        except Exception:
+            pass
+    _styled_windows.add(win)
+    # DWM attributes need a real HWND; defer until the window is mapped.
+    win.after(10, lambda: _apply_dwm_styling(win))
+
+
+def _restyle_all_windows():
+    """Re-apply DWM colors to every tracked window (called on theme change)."""
+    for win in list(_styled_windows):
+        try:
+            if win.winfo_exists():
+                _apply_dwm_styling(win)
+        except Exception:
+            pass
+
+
+# Backwards-compatible alias: existing call sites use _apply_icon.
+_apply_icon = _style_window
 
 # ---------------------------------------------------------------------------
 # Theme presets
@@ -198,13 +283,28 @@ def apply_theme(root):
     s.configure("TEntry", fieldbackground=C["bg_input"], foreground=C["fg"],
                 insertcolor=C["fg"], bordercolor=C["border"],
                 lightcolor=C["border"], darkcolor=C["border"])
-    s.map("TEntry", bordercolor=[("focus", C["accent"])])
+    s.map("TEntry",
+          bordercolor=[("focus", C["accent"])],
+          lightcolor=[("focus", C["accent"])],
+          darkcolor=[("focus", C["accent"])])
     s.configure("TButton", background=C["accent"], foreground=C["bg"],
-                font=("Segoe UI", 9, "bold"), padding=(10, 4))
-    s.map("TButton", background=[("active", C["accent_hover"])])
+                font=("Segoe UI", 9, "bold"), padding=(10, 4),
+                bordercolor=C["accent"],
+                lightcolor=C["accent"], darkcolor=C["accent"])
+    s.map("TButton",
+          background=[("active", C["accent_hover"])],
+          bordercolor=[("focus", C["fg"])],
+          lightcolor=[("focus", C["fg"])],
+          darkcolor=[("focus", C["fg"])])
     s.configure("Del.TButton", background=C["red"], foreground="#fff",
-                font=("Segoe UI", 9, "bold"), padding=(4, 2))
-    s.map("Del.TButton", background=[("active", C["red_hover"])])
+                font=("Segoe UI", 9, "bold"), padding=(4, 2),
+                bordercolor=C["red"],
+                lightcolor=C["red"], darkcolor=C["red"])
+    s.map("Del.TButton",
+          background=[("active", C["red_hover"])],
+          bordercolor=[("focus", C["fg"])],
+          lightcolor=[("focus", C["fg"])],
+          darkcolor=[("focus", C["fg"])])
     s.configure("TNotebook",     background=C["bg"], borderwidth=0)
     s.configure("TNotebook.Tab", background=C["bg2"], foreground=C["fg"],
                 padding=(14, 6), font=("Segoe UI", 9, "bold"))
@@ -212,14 +312,40 @@ def apply_theme(root):
           background=[("selected", C["bg"]), ("active", C["border"])])
     s.configure("TCombobox", fieldbackground=C["bg_input"],
                 foreground=C["fg"], bordercolor=C["border"],
+                lightcolor=C["border"], darkcolor=C["border"],
                 arrowcolor=C["fg"])
     s.map("TCombobox",
           fieldbackground=[("readonly", C["bg_input"])],
-          foreground=[("readonly", C["fg"])])
+          foreground=[("readonly", C["fg"])],
+          bordercolor=[("focus", C["accent"])],
+          lightcolor=[("focus", C["accent"])],
+          darkcolor=[("focus", C["accent"])])
     root.option_add("*TCombobox*Listbox.background", C["bg_input"])
     root.option_add("*TCombobox*Listbox.foreground", C["fg"])
     root.option_add("*TCombobox*Listbox.selectBackground", C["border"])
     root.option_add("*TCombobox*Listbox.selectForeground", C["fg"])
+    s.configure("TCheckbutton", background=C["bg"], foreground=C["fg"],
+                indicatorbackground=C["bg_input"],
+                indicatorforeground=C["accent"],
+                focuscolor=C["bg"])
+    s.map("TCheckbutton",
+          background=[("active", C["bg"])],
+          foreground=[("active", C["fg"])],
+          indicatorbackground=[("active", C["bg_input"]),
+                               ("selected", C["bg_input"])],
+          indicatorforeground=[("active", C["accent"]),
+                               ("selected", C["accent"])])
+    s.configure("TRadiobutton", background=C["bg"], foreground=C["fg"],
+                indicatorbackground=C["bg_input"],
+                indicatorforeground=C["accent"],
+                focuscolor=C["bg"])
+    s.map("TRadiobutton",
+          background=[("active", C["bg"])],
+          foreground=[("active", C["fg"])],
+          indicatorbackground=[("active", C["bg_input"]),
+                               ("selected", C["bg_input"])],
+          indicatorforeground=[("active", C["accent"]),
+                               ("selected", C["accent"])])
     s.configure("TSeparator",         background=C["border"])
     s.configure("Vertical.TScrollbar", background=C["bg2"],
                 troughcolor=C["bg"], arrowcolor=C["fg_dim"])
@@ -232,6 +358,8 @@ def apply_theme(root):
                 font=("Segoe UI", 10))
     s.configure("StepArrow.TLabel",   background=C["bg"], foreground=C["fg_dim"],
                 font=("Segoe UI", 10))
+
+    _restyle_all_windows()
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +634,28 @@ def _autosize_textarea(widget, min_h=2, max_h=20):
     return widget
 
 
+def _scrolled_text(parent, **text_kwargs):
+    """tk.Text + themed ttk.Scrollbar pair packed into a frame.
+
+    Drop-in replacement for scrolledtext.ScrolledText whose embedded
+    classic tk.Scrollbar ignores our ttk theme. The frame uses the
+    text widget's own pack/grid settings; callers should pack the
+    *returned text widget* (its parent frame is auto-sized to it).
+    """
+    holder = ttk.Frame(parent)
+    text = tk.Text(holder, **text_kwargs)
+    sb = ttk.Scrollbar(holder, orient="vertical", command=text.yview)
+    text.configure(yscrollcommand=sb.set)
+    sb.pack(side="right", fill="y")
+    text.pack(side="left", fill="both", expand=True)
+    # Forward pack/grid/place on the text widget to the holder so callers
+    # can keep treating `text` like a single widget.
+    for method in ("pack", "grid", "place",
+                   "pack_forget", "grid_forget", "place_forget"):
+        setattr(text, method, getattr(holder, method))
+    return text
+
+
 def _combo(parent, label, values, width=33):
     f = ttk.Frame(parent); f.pack(fill="x", padx=5, pady=2)
     ttk.Label(f, text=label, width=22, anchor="w").pack(side="left")
@@ -552,6 +702,7 @@ def _dialog(title, msg, kind="info"):
     dlg.title(title)
     dlg.configure(bg=C["bg"])
     dlg.resizable(False, False)
+    _apply_icon(dlg)
     dlg.grab_set()
     tk.Frame(dlg, bg=accent, height=3).pack(fill="x")
     inner = ttk.Frame(dlg, padding=(22, 14, 22, 18))
@@ -578,6 +729,7 @@ def _ask(title, msg):
     dlg.title(title)
     dlg.configure(bg=C["bg"])
     dlg.resizable(False, False)
+    _apply_icon(dlg)
     dlg.grab_set()
     tk.Frame(dlg, bg=C["red"], height=3).pack(fill="x")
     inner = ttk.Frame(dlg, padding=(22, 14, 22, 18))
@@ -662,6 +814,7 @@ class _SerialPushDialog:
         dlg.title("Push Config to Switch (Console)")
         dlg.configure(bg=C["bg"])
         dlg.transient(self.parent)
+        _apply_icon(dlg)
         tk.Frame(dlg, bg=C["accent"], height=3).pack(fill="x")
 
         inner = ttk.Frame(dlg, padding=(16, 12, 16, 14))
@@ -723,7 +876,7 @@ class _SerialPushDialog:
         # ---- transcript ----
         ttk.Label(inner, text="Transcript",
                   style="Sec.TLabel").pack(anchor="w", pady=(8, 2))
-        self.log = scrolledtext.ScrolledText(
+        self.log = _scrolled_text(
             inner, height=16, width=80, wrap="word",
             font=("Consolas", 9),
             bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
@@ -1036,6 +1189,7 @@ class _ThemeEditorDialog:
         dlg.title("Custom Theme Editor")
         dlg.configure(bg=C["bg"])
         dlg.resizable(True, True)
+        _apply_icon(dlg)
         dlg.grab_set()
         dlg.protocol("WM_DELETE_WINDOW", self._close)
 
@@ -2401,7 +2555,7 @@ class GenerateTab(ttk.Frame):
             btn.grid(row=0, column=_col, padx=2, sticky="ew")
             self._qc_buttons[_sec_name] = btn
 
-        self.preview = scrolledtext.ScrolledText(
+        self.preview = _scrolled_text(
             right, wrap="none", font=("Consolas", 10),
             bg=C["bg_input"], fg=C["green"], insertbackground=C["fg"],
             selectbackground=C["sel_bg"], relief="flat", bd=2,
@@ -5842,10 +5996,7 @@ class App:
         root.minsize(900, 600)
 
         # Set the window / taskbar icon
-        base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-        icon_path = os.path.join(base_path, "NetForge.ico")
-        if os.path.isfile(icon_path):
-            root.iconbitmap(icon_path)
+        _apply_icon(root)
 
         apply_theme(root)
 
@@ -6044,6 +6195,7 @@ class App:
         dlg.configure(bg=C["bg"])
         dlg.resizable(False, False)
         dlg.transient(self.root)
+        _apply_icon(dlg)
         dlg.grab_set()
         tk.Frame(dlg, bg=C["accent"], height=3).pack(fill="x")
         inner = ttk.Frame(dlg, padding=(22, 14, 22, 18))

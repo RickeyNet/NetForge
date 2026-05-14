@@ -82,7 +82,7 @@ Feature ideas based on the current app structure and product scope.
 - [ ] Add syntax/test rules for generated configs
   Implement a lightweight rules engine that can flag likely IOS mistakes such as switchport commands on routed interfaces or missing dependencies between features.
 
-- [ ] Add template packs and starter libraries
+- [x] Add template packs and starter libraries
   Ship optional starter bundles for common campus, branch, and private VLAN use cases so first-time users can get productive faster.
 
 - [ ] Add printable/exportable documentation for a profile
