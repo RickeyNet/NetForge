@@ -30,6 +30,41 @@ When both are set, the Global section emits `ntp access-group peer <N>` plus a m
 - **Sticky Save on Base Settings** - The Base Settings tab now has the same sticky footer pattern as Site Profiles: **Save Base Settings** stays pinned to the bottom of the right pane regardless of scroll position.
 - **Output Settings hint fix** - The filename template hint now lists `work_order` alongside `hostname`, `model`, `profile`, and `date`.
 
+## Auto-Sizing Text Areas
+
+- **Base Settings sections** - Every named section text area (Global Services, Logging, AAA, Security, SSH, Switching, Line Configuration, Banner LOGIN, Disabled Port Template, and Custom Config Section command boxes) now starts compact and grows as you type, shrinking back when content is removed. Heights are clamped to a min of 2 and a max of 20 lines (30 for the banner) so one section can't blow out the form.
+- **VLAN Definitions on Site Profiles** - The VLAN list textarea uses the same autosizing helper (min 4 / max 40 lines) and resizes immediately when switching between profiles.
+
+## Site Profile Layout Polish
+
+- **Role Variables stretch** - The Key/Value table on Site Profiles now uses a 2-column grid with equal weights so both columns share the available width and stretch with the window. Long variable names and values are no longer truncated at the previous fixed 18-char entry width.
+- **Collapsible BGP and ACL hints** - The multi-line descriptive hints under **BGP Instances** and **Named Extended ACLs** automatically hide when at least one block exists and reappear when the section is emptied, so profiles with populated L3 sections render compact instead of padded.
+- **Template pack data merged in** - The `cisco_l2_baseline` and `cisco_l3_baseline` packs are now merged directly into `data/*.json` (2 base sets, 2 profiles, 4 hardened roles). Existing entries with the same names are preserved so user edits always win. `template_packs/` is retained as repo documentation.
+
+## Keyboard Shortcuts
+
+NetForge now responds to keyboard shortcuts from any tab or focused widget:
+
+| Shortcut | Action |
+|----------|--------|
+| **Ctrl+1..6** | Jump to Generate / Models / Roles / Profiles / Base Settings / How-To Guide |
+| **Ctrl+S** | Save the active editor (dispatches to the focused tab's save action) |
+| **Ctrl+G** | Switch to the Generate tab and run **Generate Config** |
+| **Ctrl+Shift+C** | Copy the generated config to the clipboard |
+| **Ctrl+Right / Ctrl+Left** | Wizard navigation on the Generate tab (Next / Back) |
+| **F1** | Show the Keyboard Shortcuts help dialog |
+
+- A new **Help** menubutton on the custom menubar exposes the **Keyboard Shortcuts** entry.
+- A dim **Press F1 for shortcuts** label is pinned to the right side of the menubar so the F1 hint is discoverable without opening the menu.
+
+## Theme Polish
+
+- **Themed dialog icons** - All Toplevel dialogs (F1 shortcuts, theme editor, push console, info / confirm / warning) now carry the NetForge icon instead of the default Tk feather.
+- **Themed title bars (Windows)** - Root and Toplevel title bars are painted via DWM: immersive dark mode on Win10 1809+, plus border / caption / text colors on Win11 22H2+. Restyling re-runs on every theme switch so inactive windows no longer flash a stock white border when focus moves to another app or dialog.
+- **Stronger focus ring** - `TCombobox`, `TEntry`, `TButton`, and `Del.TButton` now set `lightcolor` / `darkcolor` (not just `bordercolor`), so the focus highlight is clearly visible on dark themes when tabbing through fields with the keyboard.
+- **Themed check / radio buttons** - Hover and active states on `TCheckbutton` and `TRadiobutton` keep the theme background instead of flashing white on mouseover.
+- **Themed scrollbars in Step 3 and Push Console** - The generated-config preview and the push-to-switch transcript now use a `tk.Text` + `ttk.Scrollbar` pair (via a small `_scrolled_text` helper) instead of `ScrolledText`'s embedded classic `tk.Scrollbar`, so their scrollbars match the rest of the app.
+
 ---
 
 ## New Feature: Push Config to Switch (Console)

@@ -1,0 +1,9 @@
+{
+  "models": [],
+  "roles": [
+    "Private VLAN Isolated",
+    "Private VLAN Promiscuous"
+  ],
+  "profiles": [],
+  "base_sets": []
+}

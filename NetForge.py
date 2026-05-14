@@ -37,12 +37,106 @@ else:
 DATA_DIR = os.path.join(BASE_DIR, "data")
 ICON_PATH = os.path.join(_BUNDLE_DIR, "NetForge.ico")
 
-# On first run of a one-file build, seed data/ from bundled defaults
-if not os.path.exists(DATA_DIR):
-    _bundled_data = os.path.join(_BUNDLE_DIR, "data")
-    if os.path.isdir(_bundled_data):
+
+def _merge_bundled_data():
+    """Seed data/ from bundled defaults and add any new bundled entries.
+
+    On first run, copy the whole bundled data/ folder. On every subsequent
+    launch, merge any new top-level keys from bundled JSON files into the
+    local files so new starter models/roles/profiles/base-sets ship with
+    upgrades. User-edited entries (matching names) are never overwritten.
+    """
+    bundled_data = os.path.join(_BUNDLE_DIR, "data")
+    if not os.path.isdir(bundled_data):
+        return
+    # Running from source: bundled and live data/ are the same folder.
+    if os.path.isdir(DATA_DIR) and os.path.samefile(bundled_data, DATA_DIR):
+        return
+
+    if not os.path.exists(DATA_DIR):
         import shutil
-        shutil.copytree(_bundled_data, DATA_DIR)
+        shutil.copytree(bundled_data, DATA_DIR)
+        return
+
+    # Per-file merge: top-level keys are item names; user wins on conflict.
+    # base_settings.json is special - items live under "sets".
+    flat_files = ("models.json", "roles.json", "profiles.json")
+    for name in flat_files:
+        bp = os.path.join(bundled_data, name)
+        lp = os.path.join(DATA_DIR, name)
+        if not os.path.isfile(bp):
+            continue
+        try:
+            with open(bp, "r", encoding="utf-8") as f:
+                bundled = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(bundled, dict):
+            continue
+        if not os.path.isfile(lp):
+            local = {}
+        else:
+            try:
+                with open(lp, "r", encoding="utf-8") as f:
+                    local = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(local, dict):
+                continue
+        added = False
+        for key, val in bundled.items():
+            if key not in local:
+                local[key] = val
+                added = True
+        if added:
+            try:
+                with open(lp, "w", encoding="utf-8") as f:
+                    json.dump(local, f, indent=2)
+            except OSError:
+                pass
+
+    # base_settings.json: merge under "sets", leave "default" alone unless
+    # the local file is missing one entirely.
+    bp = os.path.join(bundled_data, "base_settings.json")
+    lp = os.path.join(DATA_DIR, "base_settings.json")
+    if os.path.isfile(bp):
+        try:
+            with open(bp, "r", encoding="utf-8") as f:
+                bundled = json.load(f)
+        except (OSError, ValueError):
+            bundled = None
+        if isinstance(bundled, dict):
+            if not os.path.isfile(lp):
+                local = {}
+            else:
+                try:
+                    with open(lp, "r", encoding="utf-8") as f:
+                        local = json.load(f)
+                except (OSError, ValueError):
+                    local = None
+            if isinstance(local, dict):
+                bundled_sets = bundled.get("sets") or {}
+                local_sets = local.get("sets")
+                if not isinstance(local_sets, dict):
+                    local_sets = {}
+                    local["sets"] = local_sets
+                added = False
+                for key, val in bundled_sets.items():
+                    if key not in local_sets:
+                        local_sets[key] = val
+                        added = True
+                if "default" not in local and "default" in bundled:
+                    local["default"] = bundled["default"]
+                    added = True
+                if added:
+                    try:
+                        with open(lp, "w", encoding="utf-8") as f:
+                            json.dump(local, f, indent=2)
+                    except OSError:
+                        pass
+
+
+_merge_bundled_data()
 
 
 import weakref
@@ -107,9 +201,14 @@ def _style_window(win):
     """Apply icon + themed DWM title-bar styling. Tracked for theme switches."""
     if os.path.isfile(ICON_PATH):
         try:
-            win.iconbitmap(ICON_PATH)
+            # default=... sets the icon as the application-wide default so
+            # every new Toplevel inherits it and Windows uses it on the taskbar.
+            win.iconbitmap(default=ICON_PATH)
         except Exception:
-            pass
+            try:
+                win.iconbitmap(ICON_PATH)
+            except Exception:
+                pass
     _styled_windows.add(win)
     # DWM attributes need a real HWND; defer until the window is mapped.
     win.after(10, lambda: _apply_dwm_styling(win))
@@ -672,6 +771,55 @@ def _copy_name(name, existing):
         n += 1
         candidate = f"{name} (copy {n})"
     return candidate
+
+
+def _toggle_hidden_batch(tab, category, singular):
+    """Hide or unhide the items currently selected on *tab*.
+
+    Prefers checked items (multi-select) and falls back to the
+    single-click selection. If the batch is a mix of hidden and visible,
+    the action is normalized to 'hide all' (a second click then unhides
+    them all). After the change the editor's list refreshes and the
+    Generate tab's dropdowns are rebuilt so the effect is immediate.
+    """
+    names = tab.lb.get_checked()
+    if not names:
+        sel = tab.lb.get_selected()
+        if not sel:
+            _dialog("No Selection",
+                    f"Select a {singular} (or check one or more) "
+                    "to hide or unhide.")
+            return
+        names = [sel]
+
+    hidden_set = tab.app.hidden.get(category, set())
+    all_hidden = all(n in hidden_set for n in names)
+    action_hide = not all_hidden  # mixed -> normalize to hide
+
+    for n in names:
+        already = n in hidden_set
+        if action_hide and not already:
+            tab.app.toggle_hidden(category, n)
+        elif (not action_hide) and already:
+            tab.app.toggle_hidden(category, n)
+
+    tab._refresh()
+    if hasattr(tab.app, "gen_tab"):
+        tab.app.gen_tab.refresh_combos()
+    if category == "base_sets" and hasattr(tab.app, "profiles_tab"):
+        try:
+            tab.app.profiles_tab.base_set_cb["values"] = \
+                tab.app._visible_base_set_names()
+        except Exception:
+            pass
+
+    verb = "hidden" if action_hide else "visible"
+    if len(names) == 1:
+        _dialog("Hidden" if action_hide else "Visible",
+                f"'{names[0]}' is now {verb}.")
+    else:
+        _dialog("Hidden" if action_hide else "Visible",
+                f"{len(names)} {singular}s are now {verb}.")
 
 
 def _apply_filename_template(template, *, hostname="", model="", profile="",
@@ -1549,6 +1697,13 @@ class _CheckList(tk.Frame):
         if total > ch:
             self._canvas.yview_moveto(y / total)
 
+    def set_dim(self, name, dimmed=True):
+        """Render *name* in a dim color (used to mark hidden items)."""
+        lbl = self._labels.get(name)
+        if not lbl:
+            return
+        lbl.configure(fg=C["fg_dim"] if dimmed else C["fg"])
+
     def select_all(self):
         """Check all checkboxes. If all are already checked, uncheck all."""
         all_checked = all(v.get() for v in self._vars.values()) if self._vars else False
@@ -2251,9 +2406,9 @@ class GenerateTab(ttk.Frame):
                   style="Sec.TLabel").pack(pady=(0, 20))
 
         self.model_cb = _combo(center, "Switch Model",
-                               list(self.app.models.keys()))
+                               self.app.visible_keys("models"))
         self.profile_cb = _combo(center, "Site Profile",
-                                 list(self.app.profiles.keys()))
+                                 self.app.visible_keys("profiles"))
 
         ttk.Label(center,
                   text="The model determines available interfaces.\n"
@@ -2725,7 +2880,7 @@ class GenerateTab(ttk.Frame):
         iface.grid(row=r, column=0, sticky="w", padx=1, pady=1)
         _attach_context_menu(iface)
         role = ttk.Combobox(self.pa_container, width=24, state="readonly",
-                            values=["unassigned"] + list(self.app.roles.keys()))
+                            values=["unassigned"] + self.app.visible_keys("roles"))
         role.bind("<MouseWheel>", lambda _e: "break")
         role.grid(row=r, column=1, sticky="w", padx=1, pady=1)
         desc = ttk.Entry(self.pa_container, width=14)
@@ -2760,8 +2915,8 @@ class GenerateTab(ttk.Frame):
 
     # ------------------------------------------------------------ actions
     def refresh_combos(self):
-        self.model_cb["values"]   = list(self.app.models.keys())
-        self.profile_cb["values"] = list(self.app.profiles.keys())
+        self.model_cb["values"]   = self.app.visible_keys("models")
+        self.profile_cb["values"] = self.app.visible_keys("profiles")
 
     def _apply_l3_visibility(self, profile):
         """Show/hide the Layer 3 Details frame and its sub-sections
@@ -3349,12 +3504,18 @@ class ModelsTab(ttk.Frame):
         left = ttk.Frame(paned); paned.add(left, weight=0)
         ttk.Label(left, text="Switch Models",
                   style="Sec.TLabel").pack(anchor="w", padx=4, pady=4)
+        self.show_hidden = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left, text="Show hidden",
+                        variable=self.show_hidden,
+                        command=self._refresh
+                        ).pack(anchor="w", padx=4)
         self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
         ttk.Button(bf, text="New",        command=self._new).pack(side="left", padx=2)
         ttk.Button(bf, text="Duplicate",  command=self._duplicate).pack(side="left", padx=2)
         ttk.Button(bf, text="Select All", command=self.lb.select_all).pack(side="left", padx=2)
+        ttk.Button(bf, text="Hide",       command=self._toggle_hide).pack(side="left", padx=2)
         ttk.Button(bf, text="Delete",     command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
@@ -3389,7 +3550,17 @@ class ModelsTab(ttk.Frame):
 
     # -- helpers --
     def _refresh(self):
-        self.lb.populate(list(self.app.models.keys()))
+        if self.show_hidden.get():
+            names = list(self.app.models.keys())
+        else:
+            names = self.app.visible_keys("models")
+        self.lb.populate(names)
+        for n in names:
+            if self.app.is_hidden("models", n):
+                self.lb.set_dim(n, True)
+
+    def _toggle_hide(self):
+        _toggle_hidden_batch(self, "models", "model")
 
     def _clear_pg(self):
         for r in self.pg_rows:
@@ -3513,12 +3684,18 @@ class RolesTab(ttk.Frame):
         left = ttk.Frame(paned); paned.add(left, weight=0)
         ttk.Label(left, text="Interface Roles",
                   style="Sec.TLabel").pack(anchor="w", padx=4, pady=4)
+        self.show_hidden = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left, text="Show hidden",
+                        variable=self.show_hidden,
+                        command=self._refresh
+                        ).pack(anchor="w", padx=4)
         self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
         ttk.Button(bf, text="New",        command=self._new).pack(side="left", padx=2)
         ttk.Button(bf, text="Duplicate",  command=self._duplicate).pack(side="left", padx=2)
         ttk.Button(bf, text="Select All", command=self.lb.select_all).pack(side="left", padx=2)
+        ttk.Button(bf, text="Hide",       command=self._toggle_hide).pack(side="left", padx=2)
         ttk.Button(bf, text="Delete",     command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
@@ -3561,7 +3738,17 @@ class RolesTab(ttk.Frame):
         self._refresh()
 
     def _refresh(self):
-        self.lb.populate(list(self.app.roles.keys()))
+        if self.show_hidden.get():
+            names = list(self.app.roles.keys())
+        else:
+            names = self.app.visible_keys("roles")
+        self.lb.populate(names)
+        for n in names:
+            if self.app.is_hidden("roles", n):
+                self.lb.set_dim(n, True)
+
+    def _toggle_hide(self):
+        _toggle_hidden_batch(self, "roles", "role")
 
     def _on_select(self, name=None):
         if not name:
@@ -3646,12 +3833,18 @@ class ProfilesTab(ttk.Frame):
         left = ttk.Frame(paned); paned.add(left, weight=0)
         ttk.Label(left, text="Site Profiles",
                   style="Sec.TLabel").pack(anchor="w", padx=4, pady=4)
+        self.show_hidden = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left, text="Show hidden",
+                        variable=self.show_hidden,
+                        command=self._refresh
+                        ).pack(anchor="w", padx=4)
         self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
         ttk.Button(bf, text="New",        command=self._new).pack(side="left", padx=2)
         ttk.Button(bf, text="Duplicate",  command=self._duplicate).pack(side="left", padx=2)
         ttk.Button(bf, text="Select All", command=self.lb.select_all).pack(side="left", padx=2)
+        ttk.Button(bf, text="Hide",       command=self._toggle_hide).pack(side="left", padx=2)
         ttk.Button(bf, text="Delete",     command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
@@ -3677,7 +3870,7 @@ class ProfilesTab(ttk.Frame):
         bs_row = ttk.Frame(form); bs_row.pack(fill="x", padx=5, pady=(2, 4))
         ttk.Label(bs_row, text="Base Settings:").pack(side="left")
         self.base_set_cb = ttk.Combobox(bs_row, width=30, state="readonly",
-                                        values=self.app.base_set_names())
+                                        values=self.app._visible_base_set_names())
         self.base_set_cb.bind("<MouseWheel>", lambda _e: "break")
         self.base_set_cb.pack(side="left", padx=(4, 0))
         ttk.Label(form, style="Hint.TLabel",
@@ -3971,7 +4164,17 @@ class ProfilesTab(ttk.Frame):
 
     # -- list helpers --
     def _refresh(self):
-        self.lb.populate(list(self.app.profiles.keys()))
+        if self.show_hidden.get():
+            names = list(self.app.profiles.keys())
+        else:
+            names = self.app.visible_keys("profiles")
+        self.lb.populate(names)
+        for n in names:
+            if self.app.is_hidden("profiles", n):
+                self.lb.set_dim(n, True)
+
+    def _toggle_hide(self):
+        _toggle_hidden_batch(self, "profiles", "profile")
 
     # -- variable rows --
     def _clear_vars(self):
@@ -4463,7 +4666,7 @@ class ProfilesTab(ttk.Frame):
         self.mgmt_vlan_e.delete(0, "end")
         self.mgmt_vlan_e.insert(0, p.get("mgmt_vlan", ""))
 
-        self.base_set_cb["values"] = self.app.base_set_names()
+        self.base_set_cb["values"] = self.app._visible_base_set_names()
         self.base_set_cb.set(p.get("base_set", "") or "")
 
         creds = p.get("credentials", {}) or {}
@@ -4581,7 +4784,7 @@ class ProfilesTab(ttk.Frame):
         """Update the Base Settings dropdown values after the BaseTab
         adds/removes/renames a set."""
         cur = self.base_set_cb.get()
-        names = self.app.base_set_names()
+        names = self.app._visible_base_set_names()
         self.base_set_cb["values"] = names
         if cur and cur not in names:
             self.base_set_cb.set("")
@@ -4591,7 +4794,7 @@ class ProfilesTab(ttk.Frame):
         self.name_e.delete(0, "end")
         self.domain_e.delete(0, "end")
         self.mgmt_vlan_e.delete(0, "end")
-        self.base_set_cb["values"] = self.app.base_set_names()
+        self.base_set_cb["values"] = self.app._visible_base_set_names()
         self.base_set_cb.set("")
         for w in (self.cred_user_e, self.cred_pass_e, self.cred_enable_e,
                   self.dns_servers_e, self.ntp_servers_e,
@@ -4849,12 +5052,18 @@ class BaseTab(ttk.Frame):
         left = ttk.Frame(paned); paned.add(left, weight=0)
         ttk.Label(left, text="Base Settings",
                   style="Sec.TLabel").pack(anchor="w", padx=4, pady=4)
+        self.show_hidden = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left, text="Show hidden",
+                        variable=self.show_hidden,
+                        command=self._refresh
+                        ).pack(anchor="w", padx=4)
         self.lb = _CheckList(left, on_click=self._on_select)
         self.lb.pack(fill="both", expand=True, padx=4, pady=4)
         bf = ttk.Frame(left); bf.pack(fill="x", padx=4, pady=4)
         ttk.Button(bf, text="+ Add",      command=self._new).pack(side="left", padx=2)
         ttk.Button(bf, text="Duplicate",  command=self._duplicate).pack(side="left", padx=2)
         ttk.Button(bf, text="Set Default", command=self._set_default).pack(side="left", padx=2)
+        ttk.Button(bf, text="Hide",       command=self._toggle_hide).pack(side="left", padx=2)
         ttk.Button(bf, text="Delete",     command=self._delete,
                    style="Del.TButton").pack(side="left", padx=2)
 
@@ -5084,14 +5293,19 @@ class BaseTab(ttk.Frame):
 
     # -- list helpers --
     def _refresh(self):
-        names = self.app.base_set_names()
-        default = (self.app.base or {}).get("default")
-        # show " (default)" suffix on the default entry so users see it
-        labels = [(f"{n}  (default)" if n == default else n) for n in names]
-        # _CheckList uses labels as both display and key - to keep things
-        # simple we populate with raw names and rely on the editor header
-        # / Set Default button to convey which is the default.
+        all_names = self.app.base_set_names()
+        if self.show_hidden.get():
+            names = all_names
+        else:
+            hidden = self.app.hidden.get("base_sets", set())
+            names = [n for n in all_names if n not in hidden]
         self.lb.populate(names)
+        for n in names:
+            if self.app.is_hidden("base_sets", n):
+                self.lb.set_dim(n, True)
+
+    def _toggle_hide(self):
+        _toggle_hidden_batch(self, "base_sets", "base set")
 
     def _on_select(self, name=None):
         if not name:
@@ -6058,6 +6272,10 @@ class App:
         self.roles    = load_json("roles.json",          {})
         self.profiles = load_json("profiles.json",       {})
         self.base     = load_base_settings()
+        # Hidden item names per category: models, roles, profiles, base_sets.
+        # Lets users clear bundled clutter from list/dropdown UIs without
+        # deleting the underlying data.
+        self._load_hidden()
 
         # tabs
         self.nb = ttk.Notebook(root)
@@ -6367,6 +6585,55 @@ class App:
         return sorted((self.base or {}).get("sets", {}).keys(),
                       key=str.lower)
 
+    # ---- hidden-items state ------------------------------------------
+    _HIDDEN_CATEGORIES = ("models", "roles", "profiles", "base_sets")
+
+    def _load_hidden(self):
+        raw = load_json("hidden.json", {}) or {}
+        self.hidden = {cat: set(raw.get(cat, []) or [])
+                       for cat in self._HIDDEN_CATEGORIES}
+
+    def _save_hidden(self):
+        save_json("hidden.json",
+                  {cat: sorted(self.hidden[cat])
+                   for cat in self._HIDDEN_CATEGORIES})
+
+    def _all_keys(self, category):
+        if category == "models":
+            return list(self.models.keys())
+        if category == "roles":
+            return list(self.roles.keys())
+        if category == "profiles":
+            return list(self.profiles.keys())
+        if category == "base_sets":
+            return list((self.base or {}).get("sets", {}).keys())
+        return []
+
+    def is_hidden(self, category, name):
+        return name in self.hidden.get(category, set())
+
+    def toggle_hidden(self, category, name):
+        """Flip the hidden flag for *name*. Returns the new state (bool)."""
+        s = self.hidden.setdefault(category, set())
+        if name in s:
+            s.discard(name)
+            new_state = False
+        else:
+            s.add(name)
+            new_state = True
+        self._save_hidden()
+        return new_state
+
+    def visible_keys(self, category):
+        """Names in this category that are not hidden, preserving order."""
+        hidden = self.hidden.get(category, set())
+        return [n for n in self._all_keys(category) if n not in hidden]
+
+    def _visible_base_set_names(self):
+        """Sorted base-set names with hidden ones filtered out."""
+        hidden = self.hidden.get("base_sets", set())
+        return [n for n in self.base_set_names() if n not in hidden]
+
     def resolved_base(self, profile):
         """Return the base dict that should be used for *profile*. Falls
         back to the default entry when the profile's base_set is missing
@@ -6465,7 +6732,21 @@ class App:
         self._rebuild_tabs()
 
 
+def _set_windows_app_id():
+    """Set an explicit AppUserModelID so the Windows taskbar shows our icon
+    instead of grouping us under the Python interpreter."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "NetForge.NetForge.App.1"
+        )
+    except Exception:
+        pass
+
+
 def main():
+    _set_windows_app_id()
     root = tk.Tk()
     App(root)
     root.mainloop()
