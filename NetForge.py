@@ -18,7 +18,7 @@ from datetime import date
 import tkinter as tk
 import zipfile
 from tkinter import colorchooser, ttk, filedialog, scrolledtext
-from jinja2 import Environment
+from jinja2.sandbox import SandboxedEnvironment
 
 VERSION = "1.5.0"
 _RECENT_MAX = 10
@@ -1569,7 +1569,6 @@ class _ThemeEditorDialog:
 
     # ── color helpers ─────────────────────────────────────────────────
 
-    def _sync_swatch(self, key):
         val = self._color_vars[key].get().strip()
         try:
             self._swatches[key].configure(bg=val)
@@ -2006,7 +2005,10 @@ def render_config_sections(model, profile, roles, base, sw):
     based on ``profile["l3_sections"][<name>].enabled``; legacy profiles
     with only ``mgmt_style`` are migrated by ``_normalize_l3_sections``.
     """
-    env = Environment()
+    # SandboxedEnvironment: role/profile command templates come from
+    # user-editable JSON (and can be replaced via Import Settings), so
+    # block attribute access that would allow Jinja SSTI -> code execution.
+    env = SandboxedEnvironment()
     role_vars = profile.get("role_variables", {})
     stack = model.get("stack_members", 1)
     layer3 = bool(profile.get("layer3", False))
@@ -6789,6 +6791,14 @@ class App:
     ]
 
     def _export_settings(self):
+        if not _ask(
+                "Export Settings",
+                "This ZIP will contain your profiles and base settings "
+                "in plain text, including any credentials you've entered "
+                "(enable secrets, local user passwords, SNMP communities, "
+                "NTP/BGP keys).\n\n"
+                "Store and share it accordingly. Continue?"):
+            return
         path = filedialog.asksaveasfilename(
             defaultextension=".zip",
             initialfile="NetForge_Settings.zip",
@@ -6828,8 +6838,26 @@ class App:
                         "Continue?"):
                     return
                 os.makedirs(DATA_DIR, exist_ok=True)
+                # Do not trust zf.extract() with archive-supplied paths
+                # (Zip Slip). Read each member and write it ourselves to a
+                # path built from a known-good basename inside DATA_DIR.
                 for name in valid:
-                    zf.extract(name, DATA_DIR)
+                    dest = os.path.join(DATA_DIR, os.path.basename(name))
+                    if os.path.dirname(
+                            os.path.realpath(dest)) != os.path.realpath(
+                            DATA_DIR):
+                        continue
+                    data = zf.read(name)
+                    try:
+                        json.loads(data.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        _dialog(
+                            "Import Error",
+                            f"'{name}' is not valid JSON; skipped.",
+                            "error")
+                        continue
+                    with open(dest, "wb") as out:
+                        out.write(data)
         except zipfile.BadZipFile:
             _dialog("Import Error", "The selected file is not a valid ZIP.",
                     "error")
