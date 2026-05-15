@@ -1169,6 +1169,11 @@ class _SerialPushDialog:
 
     # --------------------------------------------------- logging
     def _log(self, msg, tag=None):
+        # Scrub the enable password if a device echoed it back into a
+        # buffer we're about to display.
+        pw = getattr(self, "_active_enable_pw", "")
+        if pw and isinstance(msg, str) and pw in msg:
+            msg = msg.replace(pw, "********")
         # Always marshal to the UI thread.
         self.dlg.after(0, self._log_main, msg, tag)
 
@@ -1237,6 +1242,10 @@ class _SerialPushDialog:
     # --------------------------------------------------- worker
     def _run(self, port, baud, enable_pw, line_delay, do_save):
         import serial
+        # Remember the enable password so _log can scrub it from any raw
+        # device buffer we echo into the transcript (a non-standard console
+        # or terminal server may echo the password back).
+        self._active_enable_pw = enable_pw or ""
         try:
             self._set_status(f"Opening {port} @ {baud}...")
             self._log(f"--- Opening {port} at {baud} baud ---\n")
