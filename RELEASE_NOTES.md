@@ -1,3 +1,43 @@
+# NetForge v1.5.1 - Release Notes
+
+## Security Hardening
+
+- **Sandboxed template rendering** - Role and profile command templates now render through Jinja2's `SandboxedEnvironment`. These templates come from user-editable JSON that can be replaced via **Import Settings**, so an unsandboxed environment allowed server-side template injection -> arbitrary code execution on **Generate Config**. The sandbox blocks attribute access to private/dunder names and dangerous builtins while leaving all legitimate `{{ variable }}` substitutions working.
+- **Zip Slip / arbitrary write protection on import** - `Import Settings` no longer calls `zipfile.extract()`. Each ZIP member is now read into memory, the destination path is recomputed from `os.path.basename()` against `DATA_DIR`, and a `realpath` containment check rejects any member that would write outside the data directory. Every member is also JSON-validated before being allowed to overwrite a real settings file.
+- **Export Settings confirmation** - **Export Settings** now shows an explicit confirmation dialog noting that the ZIP contains credentials (enable secrets, user passwords, SNMP / NTP / BGP keys) in plain text. Helps avoid accidental sharing of a ZIP that contains live secrets.
+- **Redacted enable password in push transcript** - The push-to-switch console log replaces the enable password with `********` in the echoed transcript so a non-standard console or terminal-server setup that echoes the password locally cannot leak it into the visible log.
+- **Security Notes in README** - Added a Security Notes section to `README.md` covering plaintext credential storage in `data/*.json` and exported ZIPs, the type-0 nature of generated `username ... secret` and `enable secret` lines, and the trust expectation around imported settings ZIPs.
+
+## Base Settings Categories Match Spreadsheet
+
+The named sections on the **Base Settings** tab have been replaced with a slim category set aligned to the Cisco 9300 Layer 3-2 Switch IOS XE Baseline workbook. The new sections (in order) are:
+
+| # | Section | Replaces |
+|---|---------|----------|
+| 1 | Basic Configuration | *(new)* |
+| 2 | Services and Functions Config | Global Services |
+| 3 | IP Services | *(new)* |
+| 4 | Snooping | *(new)* |
+| 5 | HTTP Server | *(new)* |
+| 6 | Management VRF | Management VRF |
+| 7 | AAA Password Policy / RADIUS / Local Account | AAA Configuration |
+| 8 | SSH Config | SSH / Crypto |
+| 9 | Logging | Logging |
+| 10 | Archive Config | *(new)* |
+| 11 | VTY Config | Line Configuration |
+| 12 | Miscellaneous Configs | Security + Switching Features |
+
+The earlier draft of this release included additional spreadsheet sections (**Management**, **IP Routes**, **Access Control List**, **VLAN Config**, **Configure NTP**, **Configure SNMPv3**) but these were dropped before release because the same commands are already produced by other parts of the app: VLAN and ACL editors on the Site Profile, NTP on the profile's **Services** block, IP routes from the per-switch Static Routes editor, etc. Keeping them as raw text boxes invited duplicated output. **Banner LOGIN**, **Disabled Port Template**, and **Custom Config Sections** retain their existing behavior.
+
+- **Auto-migration** - Existing base sets are migrated on app launch: `global_services` -> `services_functions`, `aaa` -> `aaa_radius`, `line_config` -> `vty_config`, and `security` + `switching` -> `misc`. Merged keys are joined with a blank line. `ssh`, `logging`, and `mgmt_vrf` keep their names. Legacy / removed-section keys (`mgmt_port`, `management`, `ip_routes`, `acl`, `vlan_config`, `ntp`, `snmpv3`) are dropped on load. The migration runs idempotently and writes back to `base_settings.json` on next save.
+- **Dedicated mgmt-port interface block** - The dedicated `interface GigabitEthernet0/0` block (when the model has an OOB port and Step 3 left **OOB IP** blank) now emits a fixed `no ip address / negotiation auto` default instead of pulling from the old `mgmt_port` key.
+
+## Larger Base Settings Text Boxes
+
+The auto-sizing text areas on the **Base Settings** tab now grow up to **40 lines** before scrolling (was 20 for sections, 30 for the banner, 20 for the disabled-port template). Long ACL blocks, SNMPv3 configs, and multi-line banners can now stay fully visible without forcing a scroll. The minimum height (2 lines) and the auto-shrink-on-delete behavior are unchanged.
+
+---
+
 # NetForge v1.5.0 - Release Notes
 
 ## Base Settings Search
