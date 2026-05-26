@@ -84,6 +84,27 @@ All configuration data is stored as JSON files in the `data/` directory:
 
 These files persist between sessions and can be backed up or shared with your team.
 
+## Security Notes
+
+NetForge is an offline staging tool. A few things to be aware of:
+
+- **Credentials are stored and exported in plain text.** Enable secrets,
+  local user passwords, SNMP communities, and NTP/BGP keys you enter into
+  profiles or base settings are saved as-is in `profiles.json` /
+  `base_settings.json`, and are included verbatim in any **Export Settings**
+  ZIP and in every generated config file. Treat those files (and the ZIPs)
+  as sensitive: don't commit them to source control or drop them in a
+  shared/cloud-synced folder.
+- **Generated `username ... secret <pw>` lines are type-0 (cleartext).**
+  The switch re-hashes them on paste, so the running config is fine, but
+  the saved `.txt` you paste *from* contains the cleartext password. Delete
+  generated config files once the switch is provisioned. For stored
+  credentials prefer `enable secret` (already used) over `enable password`.
+- **Only import settings ZIPs you trust.** Imported `roles.json` /
+  `profiles.json` supply Jinja2 command templates that are rendered when
+  you generate a config. Templates run in a sandbox, but importing
+  untrusted settings can still overwrite your data with bad configs.
+
 ## Requirements
 
 - Windows 10/11

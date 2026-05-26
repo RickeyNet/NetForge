@@ -20,7 +20,7 @@ import zipfile
 from tkinter import colorchooser, ttk, filedialog, scrolledtext
 from jinja2.sandbox import SandboxedEnvironment
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 _RECENT_MAX = 10
 
 
@@ -478,10 +478,63 @@ def save_json(name, data):
         json.dump(data, f, indent=2)
 
 
+#  Old-key -> new-key migration for base settings.  The keys on the left
+#  were the original 9 section slugs; the right side maps each old block
+#  into the closest equivalent in the new spreadsheet-aligned layout.
+#  Multiple old keys may feed into the same new key - their contents are
+#  joined with a blank line in the order listed.  The 'ssh', 'logging',
+#  and 'mgmt_vrf' keys keep their names so they are not listed here.
+_BASE_KEY_MIGRATION = [
+    ("services_functions", ["global_services"]),
+    ("aaa_radius",         ["aaa"]),
+    ("vty_config",         ["line_config"]),
+    ("misc",               ["security", "switching"]),
+]
+
+#  Legacy keys (and short-lived spreadsheet-aligned sections that were
+#  later removed) that should be dropped on load without folding their
+#  content anywhere, so old base_settings.json files clean up to the
+#  current layout.
+_BASE_LEGACY_DROP_KEYS = (
+    "mgmt_port",
+    "management", "ip_routes", "acl", "vlan_config", "ntp", "snmpv3",
+)
+
+
+def _migrate_base_set(entry):
+    """In-place migrate one base-set dict from the legacy 9-section layout
+    to the spreadsheet-aligned layout.  Old keys are removed after their
+    content has been folded into the new keys.  When an old key has the
+    same name as its new destination (e.g. 'ssh' -> 'ssh') it is kept,
+    not popped, so its value survives.  Keys in _BASE_LEGACY_DROP_KEYS
+    are removed unconditionally with their content discarded.  Re-running
+    the migration is a no-op."""
+    if not isinstance(entry, dict):
+        return
+    for new_key, old_keys in _BASE_KEY_MIGRATION:
+        sources = [k for k in old_keys if k != new_key]
+        existing = (entry.get(new_key) or "").strip()
+        pieces = []
+        if existing:
+            pieces.append(existing)
+        for ok in sources:
+            val = entry.get(ok)
+            if isinstance(val, str) and val.strip():
+                pieces.append(val.strip())
+        if pieces:
+            entry[new_key] = "\n\n".join(pieces)
+        for ok in sources:
+            entry.pop(ok, None)
+    for key in _BASE_LEGACY_DROP_KEYS:
+        entry.pop(key, None)
+
+
 def load_base_settings():
     """Load base_settings.json and normalize to the multi-base shape:
         {"sets": {<name>: {...}, ...}, "default": <name>}
-    Legacy flat dicts are migrated into a single entry named "Base"."""
+    Legacy flat dicts are migrated into a single entry named "Base".
+    Old per-entry section keys are migrated to the new spreadsheet
+    category layout on load."""
     raw = load_json("base_settings.json", {})
     if isinstance(raw, dict) and isinstance(raw.get("sets"), dict):
         sets = {k: v for k, v in raw["sets"].items() if isinstance(v, dict)}
@@ -489,9 +542,12 @@ def load_base_settings():
             sets = {"Base": {}}
         default = raw.get("default") if raw.get("default") in sets \
             else next(iter(sets))
+        for entry in sets.values():
+            _migrate_base_set(entry)
         return {"sets": sets, "default": default}
     # Legacy flat shape (or empty) - wrap as a single "Base" entry.
     flat = raw if isinstance(raw, dict) else {}
+    _migrate_base_set(flat)
     return {"sets": {"Base": flat}, "default": "Base"}
 
 
@@ -659,6 +715,19 @@ class ScrollFrame(ttk.Frame):
         self._sr_after_id = None
         try:
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        except tk.TclError:
+            pass
+
+    def sync_scrollregion(self):
+        """Force an immediate scrollregion recompute against the inner
+        frame's requested height.  Use after batched DOM-style changes
+        (clearing and rebuilding subsections) so the scrollbar doesn't
+        keep slack from the previously taller layout."""
+        try:
+            self.update_idletasks()
+            h = max(1, self.inner.winfo_reqheight())
+            w = max(1, self.canvas.winfo_width())
+            self.canvas.configure(scrollregion=(0, 0, w, h))
         except tk.TclError:
             pass
 
@@ -1169,6 +1238,11 @@ class _SerialPushDialog:
 
     # --------------------------------------------------- logging
     def _log(self, msg, tag=None):
+        # Scrub the enable password if a device echoed it back into a
+        # buffer we're about to display.
+        pw = getattr(self, "_active_enable_pw", "")
+        if pw and isinstance(msg, str) and pw in msg:
+            msg = msg.replace(pw, "********")
         # Always marshal to the UI thread.
         self.dlg.after(0, self._log_main, msg, tag)
 
@@ -1237,6 +1311,10 @@ class _SerialPushDialog:
     # --------------------------------------------------- worker
     def _run(self, port, baud, enable_pw, line_delay, do_save):
         import serial
+        # Remember the enable password so _log can scrub it from any raw
+        # device buffer we echo into the transcript (a non-standard console
+        # or terminal server may echo the password back).
+        self._active_enable_pw = enable_pw or ""
         try:
             self._set_status(f"Opening {port} @ {baud}...")
             self._log(f"--- Opening {port} at {baud} baud ---\n")
@@ -1831,6 +1909,65 @@ class _CheckList(tk.Frame):
 # ===================================================================
 #  CONFIG RENDERER
 # ===================================================================
+def _render_ntp_block(ntp):
+    """Return the NTP commands to inject in the Global section.
+
+    Profiles authored against the new free-form editor store the block
+    under `services.ntp.commands` and we just emit it verbatim.  Profiles
+    saved by older versions store a structured dict (servers / source_
+    interface / auth_key_id / auth_key / access_group_acl / access_group_
+    peers); render those into IOS commands the same way the editor used
+    to, so legacy profiles keep generating identical output until the
+    user opens and re-saves them."""
+    if not isinstance(ntp, dict):
+        return ""
+    commands = (ntp.get("commands") or "").strip()
+    if commands:
+        return commands
+
+    ntp_servers = ntp.get("servers") or []
+    if isinstance(ntp_servers, str):
+        ntp_servers = [s.strip() for s in ntp_servers.split(",") if s.strip()]
+    if not ntp_servers:
+        return ""
+    lines = []
+    source = (ntp.get("source_interface") or "").strip()
+    if source:
+        lines.append(f"ntp source {source}")
+    key_id = (ntp.get("auth_key_id") or "").strip()
+    key = (ntp.get("auth_key") or "").strip()
+    if key_id and key:
+        lines.append("ntp authenticate")
+        lines.append(f"ntp authentication-key {key_id} md5 {key}")
+        lines.append(f"ntp trusted-key {key_id}")
+    acl_num = (str(ntp.get("access_group_acl") or "")).strip()
+    acl_peers = ntp.get("access_group_peers") or []
+    if isinstance(acl_peers, str):
+        acl_peers = [p.strip() for p in acl_peers.split(",") if p.strip()]
+    if acl_num and acl_peers:
+        lines.append(f"ntp access-group peer {acl_num}")
+        for peer in acl_peers:
+            lines.append(f"access-list {acl_num} permit host {peer}")
+    for s in ntp_servers:
+        if key_id and key:
+            lines.append(f"ntp server {s} key {key_id}")
+        else:
+            lines.append(f"ntp server {s}")
+    return "\n".join(lines)
+
+
+def _ntp_commands_for_edit(ntp):
+    """Return the NTP block as plain text to populate the profile's NTP
+    editor.  New profiles store the text directly under `commands`; older
+    profiles get rendered through `_render_ntp_block` so opening one
+    surfaces the same lines the renderer would have emitted."""
+    if not isinstance(ntp, dict):
+        return ""
+    if ntp.get("commands"):
+        return ntp["commands"]
+    return _render_ntp_block(ntp)
+
+
 def _render_acl(acl):
     """Render one named ACL (extended or standard) from a structured dict."""
     name = (acl.get("name") or "").strip()
@@ -2049,8 +2186,12 @@ def render_config_sections(model, profile, roles, base, sw):
     header += "\n!"
     gb.append(header)
     gb.append("configure terminal")
-    gb.append(base.get("global_services", ""))
+    gb.append(base.get("basic_config", ""))
+    gb.append(base.get("services_functions", ""))
     gb.append(f"hostname {sw['hostname']}")
+    gb.append(base.get("ip_services", ""))
+    gb.append(base.get("snooping", ""))
+    gb.append(base.get("http_server", ""))
     gb.append(base.get("mgmt_vrf", ""))
     gb.append(base.get("logging", ""))
     gb.append(f"enable secret {sw['enable_secret']}")
@@ -2075,15 +2216,15 @@ def render_config_sections(model, profile, roles, base, sw):
         except (TypeError, ValueError):
             priv = 15
         gb.append(f"username {uname} privilege {priv} secret {upw}")
-    gb.append(base.get("aaa", ""))
-    gb.append(base.get("security", ""))
+    gb.append(base.get("aaa_radius", ""))
     provision = model.get("provision", "").strip()
     if provision:
         for member in range(1, stack + 1):
             gb.append(f"switch {member} provision {provision}")
     gb.append(f"ip domain name {sw['domain_name']}")
     gb.append(base.get("ssh", ""))
-    gb.append(base.get("switching", ""))
+    gb.append(base.get("archive", ""))
+    gb.append(base.get("misc", ""))
 
     # Per-profile services: DNS name-servers, NTP, clock settings.
     services = profile.get("services", {}) or {}
@@ -2101,36 +2242,9 @@ def render_config_sections(model, profile, roles, base, sw):
         gb.append(f"clock summer-time {summer}")
 
     ntp = services.get("ntp") or {}
-    ntp_servers = ntp.get("servers") or []
-    if isinstance(ntp_servers, str):
-        ntp_servers = [s.strip() for s in ntp_servers.split(",") if s.strip()]
-    if ntp_servers:
-        ntp_lines = []
-        source = (ntp.get("source_interface") or "").strip()
-        if source:
-            ntp_lines.append(f"ntp source {source}")
-        key_id = (ntp.get("auth_key_id") or "").strip()
-        key = (ntp.get("auth_key") or "").strip()
-        if key_id and key:
-            ntp_lines.append("ntp authenticate")
-            ntp_lines.append(f"ntp authentication-key {key_id} md5 {key}")
-            ntp_lines.append(f"ntp trusted-key {key_id}")
-        acl_num = (str(ntp.get("access_group_acl") or "")).strip()
-        acl_peers = ntp.get("access_group_peers") or []
-        if isinstance(acl_peers, str):
-            acl_peers = [p.strip() for p in acl_peers.split(",") if p.strip()]
-        if acl_num and acl_peers:
-            ntp_lines.append(f"ntp access-group peer {acl_num}")
-            for peer in acl_peers:
-                ntp_lines.append(
-                    f"access-list {acl_num} permit host {peer}"
-                )
-        for s in ntp_servers:
-            if key_id and key:
-                ntp_lines.append(f"ntp server {s} key {key_id}")
-            else:
-                ntp_lines.append(f"ntp server {s}")
-        gb.append("\n".join(ntp_lines))
+    ntp_block = _render_ntp_block(ntp)
+    if ntp_block:
+        gb.append(ntp_block)
 
     # ── 2  VLANs ────────────────────────────────────────────────────────
     vl = []
@@ -2282,9 +2396,8 @@ def render_config_sections(model, profile, roles, base, sw):
                               f"ip address {oob_ip} {oob_mask}\n"
                               f"negotiation auto\nexit")
             else:
-                mgmt_cmds = base.get("mgmt_port", "").strip()
-                if mgmt_cmds:
-                    ifaces.append(f"interface {iface}\n{mgmt_cmds}")
+                ifaces.append(f"interface {iface}\n"
+                              f"no ip address\nnegotiation auto\nexit")
     ospf_cfg = profile.get("ospf", {}) or {}
     ospf_pid_for_iface = (
         (str(ospf_cfg.get("process_id") or "1")).strip() or "1"
@@ -2430,8 +2543,8 @@ def render_config_sections(model, profile, roles, base, sw):
         if dg and not user_has_default_route:
             routing.append(f"ip route 0.0.0.0 0.0.0.0 {dg}")
 
-    # ── 6  Line Config ───────────────────────────────────────────────────
-    lc = [base.get("line_config", "")]
+    # ── 6  VTY / Line Config ─────────────────────────────────────────────
+    lc = [base.get("vty_config", "")]
 
     # ── 7  Banner / End ──────────────────────────────────────────────────
     bn = []
@@ -4207,30 +4320,34 @@ class ProfilesTab(ttk.Frame):
         # -- DNS / NTP services --
         _section(form, "Services (DNS / NTP)")
         ttk.Label(form, style="Hint.TLabel",
-                  text="  Site-wide name-server and NTP settings emitted in\n"
-                       "  the Global section. Name Servers and NTP Servers\n"
-                       "  accept comma-separated lists. Timezone takes a\n"
-                       "  name + offset (e.g. EST -5)."
+                  text="  Site-wide DNS, NTP, and clock settings emitted in\n"
+                       "  the Global section. Name Servers accepts a comma-\n"
+                       "  separated list. Timezone takes a name + offset\n"
+                       "  (e.g. EST -5).  NTP is a free-form text box - paste\n"
+                       "  the exact IOS commands you want emitted."
                   ).pack(anchor="w", padx=5, pady=(4, 0))
 
         svc_lf = ttk.LabelFrame(form, text="DNS / NTP", padding=5)
         svc_lf.pack(fill="x", padx=5, pady=5)
 
         self.dns_servers_e  = _field(svc_lf, "Name Servers")
-        self.ntp_servers_e  = _field(svc_lf, "NTP Servers")
-        self.ntp_source_e   = _field(svc_lf, "NTP Source Interface")
         self.clock_tz_e     = _field(svc_lf, "Clock Timezone")
         self.clock_summer_e = _field(svc_lf, "Clock Summer-Time")
-        self.ntp_key_id_e   = _field(svc_lf, "NTP Auth Key ID")
-        self.ntp_key_e      = _field(svc_lf, "NTP Auth Key (MD5)")
-        self.ntp_acl_num_e  = _field(svc_lf, "NTP Access-Group ACL #")
-        self.ntp_acl_peers_e = _field(svc_lf, "NTP Peer IPs")
+
+        ttk.Label(svc_lf, text="NTP Commands", width=26, anchor="nw").pack(
+            anchor="w", padx=(0, 6), pady=(6, 0))
+        self.ntp_text = _autosize_textarea(
+            _textarea(svc_lf, "", "", h=2), min_h=2, max_h=20)
         ttk.Label(svc_lf, style="Hint.TLabel",
-                  text="  NTP authentication fields are optional - leave\n"
-                       "  blank to render unauthenticated `ntp server` lines.\n"
-                       "  Setting Access-Group ACL # plus Peer IPs (comma-\n"
-                       "  separated) emits `ntp access-group peer <N>` and a\n"
-                       "  matching numbered ACL permitting each peer host."
+                  text="  Lines pasted here are emitted verbatim in the\n"
+                       "  Global section.  Example:\n"
+                       "    ntp authenticate\n"
+                       "    ntp authentication-key 1 md5 <key>\n"
+                       "    ntp trusted-key 1\n"
+                       "    ntp source Loopback1\n"
+                       "    ntp access-group peer 10\n"
+                       "    ntp server 10.0.0.2 key 1\n"
+                       "    access-list 10 permit host 10.0.0.2"
                   ).pack(anchor="w", padx=2, pady=(2, 0))
 
         # -- role variables --
@@ -5014,28 +5131,14 @@ class ProfilesTab(ttk.Frame):
         self.dns_servers_e.insert(0, dns_list)
 
         ntp = svc.get("ntp") or {}
-        ntp_list = ntp.get("servers") or []
-        if isinstance(ntp_list, list):
-            ntp_list = ", ".join(str(x) for x in ntp_list)
-        self.ntp_servers_e.delete(0, "end")
-        self.ntp_servers_e.insert(0, ntp_list)
-        self.ntp_source_e.delete(0, "end")
-        self.ntp_source_e.insert(0, ntp.get("source_interface", "") or "")
         self.clock_tz_e.delete(0, "end")
         self.clock_tz_e.insert(0, svc.get("clock_timezone", "") or "")
         self.clock_summer_e.delete(0, "end")
         self.clock_summer_e.insert(0, svc.get("clock_summer_time", "") or "")
-        self.ntp_key_id_e.delete(0, "end")
-        self.ntp_key_id_e.insert(0, ntp.get("auth_key_id", "") or "")
-        self.ntp_key_e.delete(0, "end")
-        self.ntp_key_e.insert(0, ntp.get("auth_key", "") or "")
-        self.ntp_acl_num_e.delete(0, "end")
-        self.ntp_acl_num_e.insert(0, str(ntp.get("access_group_acl", "") or ""))
-        acl_peers = ntp.get("access_group_peers") or []
-        if isinstance(acl_peers, list):
-            acl_peers = ", ".join(str(x) for x in acl_peers)
-        self.ntp_acl_peers_e.delete(0, "end")
-        self.ntp_acl_peers_e.insert(0, acl_peers)
+        self.ntp_text.delete("1.0", "end")
+        self.ntp_text.insert("1.0", _ntp_commands_for_edit(ntp))
+        if hasattr(self.ntp_text, "_autosize"):
+            self.ntp_text._autosize()
 
         self.vlans_text.delete("1.0", "end")
         self.vlans_text.insert("1.0", p.get("vlan_definitions", ""))
@@ -5127,11 +5230,11 @@ class ProfilesTab(ttk.Frame):
         self.base_set_cb["values"] = self.app._visible_base_set_names()
         self.base_set_cb.set("")
         for w in (self.cred_enable_e,
-                  self.dns_servers_e, self.ntp_servers_e,
-                  self.ntp_source_e, self.clock_tz_e,
-                  self.clock_summer_e, self.ntp_key_id_e, self.ntp_key_e,
-                  self.ntp_acl_num_e, self.ntp_acl_peers_e):
+                  self.dns_servers_e, self.clock_tz_e, self.clock_summer_e):
             w.delete(0, "end")
+        self.ntp_text.delete("1.0", "end")
+        if hasattr(self.ntp_text, "_autosize"):
+            self.ntp_text._autosize()
         self._clear_users()
         self.vlans_text.delete("1.0", "end")
         if hasattr(self.vlans_text, "_autosize"):
@@ -5238,28 +5341,12 @@ class ProfilesTab(ttk.Frame):
 
         dns_servers = [s.strip() for s in self.dns_servers_e.get().split(",")
                        if s.strip()]
-        ntp_servers = [s.strip() for s in self.ntp_servers_e.get().split(",")
-                       if s.strip()]
         services = {}
         if dns_servers:
             services["dns_servers"] = dns_servers
-        ntp_block = {}
-        if ntp_servers:
-            ntp_block["servers"] = ntp_servers
-        if self.ntp_source_e.get().strip():
-            ntp_block["source_interface"] = self.ntp_source_e.get().strip()
-        if self.ntp_key_id_e.get().strip():
-            ntp_block["auth_key_id"] = self.ntp_key_id_e.get().strip()
-        if self.ntp_key_e.get().strip():
-            ntp_block["auth_key"] = self.ntp_key_e.get().strip()
-        if self.ntp_acl_num_e.get().strip():
-            ntp_block["access_group_acl"] = self.ntp_acl_num_e.get().strip()
-        ntp_acl_peers = [p.strip() for p in self.ntp_acl_peers_e.get().split(",")
-                         if p.strip()]
-        if ntp_acl_peers:
-            ntp_block["access_group_peers"] = ntp_acl_peers
-        if ntp_block:
-            services["ntp"] = ntp_block
+        ntp_cmds = self.ntp_text.get("1.0", "end").strip()
+        if ntp_cmds:
+            services["ntp"] = {"commands": ntp_cmds}
         if self.clock_tz_e.get().strip():
             services["clock_timezone"] = self.clock_tz_e.get().strip()
         if self.clock_summer_e.get().strip():
@@ -5468,33 +5555,54 @@ class BaseTab(ttk.Frame):
             form, "Filename Template",
             "{{ hostname }}_{{ model }}_{{ profile }}")
 
+        # Sections mirror the categories in the Cisco 9300 L3 Switch
+        # Baseline spreadsheet. Internal keys are stable slugs; titles match
+        # the spreadsheet headers so users can paste each block straight
+        # from the workbook.
         sections = [
-            ("global_services", "Global Services",
-             "no service pad, service timestamps, platform commands, etc."),
-            ("mgmt_vrf",        "Management VRF",
+            ("basic_config",       "Basic Configuration",
+             "hostname, domain, login block, spanning-tree mode, "
+             "errdisable, udld, file privilege, etc."),
+            ("services_functions", "Services and Functions Config",
+             "no service config / finger / pad / call-home, "
+             "service password-encryption, service timestamps, no cdp run"),
+            ("ip_services",        "IP Services",
+             "ip routing, no ip boot/bootp/dns/finger/rcmd, "
+             "no ip gratuitous-arps, ip icmp rate-limit, ip options block"),
+            ("snooping",           "Snooping",
+             "ip igmp snooping, ip dhcp snooping, "
+             "ip dhcp snooping vlan <ids>"),
+            ("http_server",        "HTTP Server",
+             "no ip http server / secure-server, "
+             "ip http timeout-policy"),
+            ("mgmt_vrf",           "Management VRF",
              "vrf definition Mgmt-vrf block (if needed)"),
-            ("logging",         "Logging",
-             "no logging console, logging host, etc."),
-            ("aaa",             "AAA Configuration",
-             "aaa new-model, authentication, authorization"),
-            ("security",        "Security",
-             "no ip source-route, no call-home, etc."),
-            ("ssh",             "SSH / Crypto",
-             "crypto key generate, ip ssh version/time-out"),
-            ("switching",       "Switching Features",
-             "spanning-tree, VTP, redundancy, vlan dot1q tag native, "
-             "memory free low-watermark, transceiver monitoring"),
-            ("mgmt_port",       "Management Port",
-             "interface GigabitEthernet0/0 config (if needed)"),
-            ("line_config",     "Line Configuration",
-             "line con 0, line vty 0 15, transport input ssh"),
+            ("aaa_radius",         "AAA Password Policy / RADIUS / Local Account",
+             "aaa new-model, password policy, radius servers, "
+             "aaa authentication / authorization, local admin user"),
+            ("ssh",                "SSH Config",
+             "crypto key generate, ip ssh version/time-out, "
+             "ssh server algorithm encryption / mac"),
+            ("logging",            "Logging",
+             "no logging console, logging host, "
+             "logging buffered, logging trap"),
+            ("archive",            "Archive Config",
+             "archive / log config / logging enable / "
+             "notify syslog contenttype / hidekeys"),
+            ("vty_config",         "VTY Config",
+             "line con 0, line vty 0 4 / 5 15, "
+             "exec-timeout, transport input ssh"),
+            ("misc",               "Miscellaneous Configs",
+             "no ip source-route, switching features "
+             "(VTP, redundancy, transceiver monitoring), "
+             "any remaining one-off commands"),
         ]
         for key, title, hint in sections:
             _section(form, title)
             ttk.Label(form, text=f"  {hint}",
                       style="Hint.TLabel").pack(anchor="w", padx=5)
             self.text_areas[key] = _autosize_textarea(
-                _textarea(form, "", "", h=2), min_h=2, max_h=20)
+                _textarea(form, "", "", h=2), min_h=2, max_h=40)
             self._section_titles[key] = title
 
         _section(form, "Banner LOGIN")
@@ -5502,7 +5610,7 @@ class BaseTab(ttk.Frame):
                   "the 'banner login ^' wrapper.",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.text_areas["banner"] = _autosize_textarea(
-            _textarea(form, "", "", h=2), min_h=2, max_h=30)
+            _textarea(form, "", "", h=2), min_h=2, max_h=40)
         self._section_titles["banner"] = "Banner LOGIN"
 
         _section(form, "Disabled Port Template")
@@ -5511,7 +5619,7 @@ class BaseTab(ttk.Frame):
                   "  Use {{ blackhole_vlan }} or any profile variable.",
                   style="Hint.TLabel").pack(anchor="w", padx=5)
         self.text_areas["disabled_port_template"] = _autosize_textarea(
-            _textarea(form, "", "", h=2), min_h=2, max_h=20)
+            _textarea(form, "", "", h=2), min_h=2, max_h=40)
         self._section_titles["disabled_port_template"] = "Disabled Port Template"
 
         _section(form, "Custom Config Sections")
@@ -5673,6 +5781,12 @@ class BaseTab(ttk.Frame):
         self._clear_cs()
         for cs in b.get("custom_sections", []) or []:
             self._add_cs(cs)
+        # The textareas above autosize asynchronously via <<Modified>> and
+        # after_idle; their final heights propagate to the inner frame's
+        # reqheight only after idle.  Sync the scrollregion once more after
+        # that settles so the scrollbar tracks the real content, not any
+        # leftover slack from the previously selected base set.
+        self.after_idle(self._scroll.sync_scrollregion)
 
     def _clear_cs(self):
         for r in self.cs_rows:
@@ -5794,10 +5908,12 @@ class BaseTab(ttk.Frame):
 
         self.cs_rows.append({"frame": frame, "name": name_e,
                              "position": pos_cb, "commands": cmds})
+        self.after_idle(self._scroll.sync_scrollregion)
 
     def _del_cs(self, frame):
         self.cs_rows = [r for r in self.cs_rows if r["frame"] is not frame]
         frame.destroy()
+        self.after_idle(self._scroll.sync_scrollregion)
 
     def _save(self):
         new_name = self.name_e.get().strip()
