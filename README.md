@@ -24,7 +24,7 @@ Download `NetForge.exe` from the latest release and run it. No installation requ
 ### Option 2: Run from Source
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/NetForge.git
+git clone https://github.com/RickeyNet/NetForge.git
 cd NetForge
 
 # Create a virtual environment
@@ -113,4 +113,4 @@ NetForge is an offline staging tool. A few things to be aware of:
 
 ## License
 
-All rights reserved.
+Released under the [MIT License](LICENSE).
