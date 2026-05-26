@@ -633,7 +633,7 @@ def expand_range_iface(iface_str):
 class PanedWindow(tk.PanedWindow):
     """Drop-in replacement for ttk.PanedWindow that uses opaqueresize=False.
 
-    During sash drag the panes do NOT resize live — Tk shows a thin guide
+    During sash drag the panes do NOT resize live - Tk shows a thin guide
     line instead and resizes once on mouse release. This avoids the per-pixel
     Configure cascade through every nested ScrollFrame and Text widget, which
     is the main source of sash-drag lag on Windows.
@@ -641,7 +641,7 @@ class PanedWindow(tk.PanedWindow):
     The ttk API uses add(child, weight=N); tk uses add(child, stretch=...).
     We accept weight= and translate it heuristically: weight 0 -> never,
     everything else -> always. That's enough for the two- and three-pane
-    setups in this app — the largest non-zero weight gets the leftover
+    setups in this app - the largest non-zero weight gets the leftover
     space on window resize.
     """
 
