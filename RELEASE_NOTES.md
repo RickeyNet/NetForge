@@ -1,3 +1,23 @@
+# NetForge v1.5.2 - Release Notes
+
+## Routed Interface IPs Now Always Apply
+
+Fixed a bug where the per-switch IP / Mask typed in **Generate Config Step 3 -> Routed Interface IPs** would silently fail to land on the routed interface, producing an `ip address` line with blank values even though the role template had `{{ ip }}` and `{{ mask }}` and `requires_ip` was on. Root cause: the IP rows could be keyed by a stale interface name if Step 2 was edited after the user typed an IP, and any trivial whitespace difference between the Step-2 string and the Step-3 dict key bypassed the renderer's lookup.
+
+- **Re-sync on Generate** - **Generate Config** now refreshes the Routed Interface IPs grid against the current Step-2 port assignments before reading them, so edits made after a Back / Forward through Step 2 don't leave the IP dict keyed by an interface name that no longer exists.
+- **Canonicalized lookup** - The renderer now strips and normalizes the `range ` token on both sides of the `routed_iface_ips` lookup, so a leading space or a mixed-case `RANGE Gi1/0/23-24` still resolves to the typed IP.
+- **Visible warning on orphans** - If the renderer finishes the Interfaces section with any `routed_iface_ips` entry that was never consumed, a `! WARNING` block listing the orphaned interface / IP / mask is prepended to the Interfaces section. Silent drops become a visible diagnostic.
+- **Routed Interface fallback chain for routed-port IP / Mask** - When a port assigned to a `requires_ip` role has a blank IP or Mask in Step 3's Routed Interface IPs grid, the renderer now falls back through: per-switch values typed into Step 3's **Routed Interface** box (`sw.routed_mgmt_ip` / `sw.routed_mgmt_mask`) → the profile's `l3_sections.routed_mgmt` defaults. Lets the user type a site-wide mask on the profile, a per-switch IP into Step 3's Routed Interface box, and have both flow into the role-driven `interface ... / ip address ...` block without retyping into the per-port grid.
+- **Dedup when role and Routed Interface name the same port** - If the profile's Routed Interface section names an interface that is also assigned to a `requires_ip` role in Step 2, the standalone L3 Interfaces block for that interface is now suppressed. The port_assignment's role template wins, so extra config it carries (MTU, OSPF, etc.) is preserved without a duplicate `interface` block.
+
+## Default Routed Mask Field Removed
+
+The standalone **Default Routed Mask** field has been removed from the Site Profile editor. The Layer 3 -> **Routed Interface** section's **Mask** field is now the single source for a site-wide routed-port mask: Step 3 pre-fills its Mask column from it, and the renderer falls back to it whenever Step 3 leaves IP or Mask blank.
+
+- **Auto-migration** - Existing profiles with a `default_routed_mask` key still work. On read, `_normalize_l3_sections` promotes the legacy value into `l3_sections.routed_mgmt.mask` when that field is blank. The next save of the profile drops the legacy key. No manual edit required.
+
+---
+
 # NetForge v1.5.1 - Release Notes
 
 ## Security Hardening

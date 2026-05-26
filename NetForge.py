@@ -20,7 +20,7 @@ import zipfile
 from tkinter import colorchooser, ttk, filedialog, scrolledtext
 from jinja2.sandbox import SandboxedEnvironment
 
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 _RECENT_MAX = 10
 
 
@@ -2032,6 +2032,13 @@ def _normalize_l3_sections(profile):
             merged = dict(defaults)
             merged.update({kk: vv for kk, vv in block.items() if vv is not None})
             out[k] = merged
+        # Legacy migration: the standalone default_routed_mask field has
+        # been removed in favour of the Routed Interface section's mask.
+        # Honor the old value when the new field is blank so existing
+        # profiles still pre-fill Step 3 correctly until they're re-saved.
+        legacy_drm = (profile.get("default_routed_mask") or "").strip()
+        if legacy_drm and not (out["routed_mgmt"].get("mask") or "").strip():
+            out["routed_mgmt"]["mask"] = legacy_drm
         return out
     # Migrate from legacy mgmt_style.
     style = (profile.get("mgmt_style") or "svi").strip().lower()
@@ -2157,8 +2164,22 @@ def render_config_sections(model, profile, roles, base, sw):
             return text
 
     # Per-port IPs entered in Generate Config Step 3 for ports assigned
-    # to a role with requires_ip=True. Keyed by interface name.
-    routed_iface_ips = sw.get("routed_iface_ips", {}) or {}
+    # to a role with requires_ip=True. Keyed by interface name. We
+    # canonicalize keys (strip + lowercase the "range " token) so a
+    # lookup tolerates trivial differences between what Step-2 stored
+    # and what Step-3 used as the dict key.
+    def _canon_iface(s):
+        s = (s or "").strip()
+        if s[:6].lower() == "range ":
+            s = "range " + s[6:].strip()
+        return s
+
+    raw_routed = sw.get("routed_iface_ips", {}) or {}
+    routed_iface_ips = {_canon_iface(k): v for k, v in raw_routed.items()}
+    # Track which entries the renderer actually consumed so we can
+    # surface a warning if the user typed IPs that never landed in
+    # the generated config (typically a key mismatch).
+    routed_iface_consumed = set()
 
     # Build a set of L3-role interface names so the disabled-port pass
     # skips them (they'll be rendered with their role + per-switch IP).
@@ -2298,7 +2319,13 @@ def render_config_sections(model, profile, roles, base, sw):
             rm_mask = (sw.get("routed_mgmt_mask")
                        or rm_sec.get("mask") or "").strip()
             rm_desc = (rm_sec.get("description") or "Routed Mgmt Uplink").strip()
-            if rm_if and rm_ip and rm_mask:
+            # Skip the standalone block when a port_assignment with a
+            # requires_ip role already claims this interface. The role
+            # template wins because it may carry extra config (MTU,
+            # OSPF, etc.) the user expects.
+            if rm_if and rm_if in routed_iface_names:
+                pass
+            elif rm_if and rm_ip and rm_mask:
                 l3.append(
                     f"interface {rm_if}\n"
                     f"description //{rm_desc}\n"
@@ -2415,9 +2442,30 @@ def render_config_sections(model, profile, roles, base, sw):
         ctx = dict(role_vars)
         ctx["description"] = pa.get("description", "")
         if role.get("requires_ip"):
-            ip_info = routed_iface_ips.get(iface_name, {}) or {}
-            ctx["ip"] = (ip_info.get("ip") or "").strip()
-            ctx["mask"] = (ip_info.get("mask") or "").strip()
+            canon_iface = _canon_iface(iface_name)
+            ip_info = routed_iface_ips.get(canon_iface, {}) or {}
+            if ip_info:
+                routed_iface_consumed.add(canon_iface)
+            ip_val = (ip_info.get("ip") or "").strip()
+            mask_val = (ip_info.get("mask") or "").strip()
+            # Fall back to the Routed Interface section when Step 3's
+            # per-port row left a field blank. Same priority chain the
+            # standalone Routed Mgmt Interface block uses: per-switch
+            # override (sw[routed_mgmt_*]) first, then the profile's
+            # l3_sections.routed_mgmt defaults. Lets the user type a
+            # site-wide mask on the profile and a per-switch IP into
+            # Step 3's Routed Interface box, without retyping either
+            # one on every routed-port row in Step 3.
+            if not ip_val or not mask_val:
+                rm_fallback = (l3_sections.get("routed_mgmt", {}) or {})
+                if not ip_val:
+                    ip_val = ((sw.get("routed_mgmt_ip") or "").strip()
+                              or (rm_fallback.get("ip") or "").strip())
+                if not mask_val:
+                    mask_val = ((sw.get("routed_mgmt_mask") or "").strip()
+                                or (rm_fallback.get("mask") or "").strip())
+            ctx["ip"] = ip_val
+            ctx["mask"] = mask_val
             if ospf_pid_for_iface:
                 ctx.setdefault("ospf_pid", ospf_pid_for_iface)
         try:
@@ -2426,6 +2474,28 @@ def render_config_sections(model, profile, roles, base, sw):
             rendered = (f"! ERROR rendering role '{pa.get('role','')}': {exc}\n"
                         f"{cmds}")
         ifaces.append(f"interface {iface_name}\n{rendered}\nexit")
+
+    # Surface routed_iface_ips entries the user typed but the renderer
+    # never matched against a port_assignment. Most common cause: the
+    # interface text on Step 2 was edited after the IP was typed, so
+    # the saved key no longer matches the role's interface name.
+    if layer3 and routed_iface_ips:
+        unused = sorted(k for k in routed_iface_ips
+                        if k not in routed_iface_consumed
+                        and (routed_iface_ips[k].get("ip")
+                             or routed_iface_ips[k].get("mask")))
+        if unused:
+            warn = ["! WARNING: Routed Interface IPs typed in Step 3 were "
+                    "not applied to any interface."]
+            warn.append("! Check that the Step 2 interface name still "
+                        "matches the role assignment:")
+            for k in unused:
+                v = routed_iface_ips[k] or {}
+                ip = (v.get("ip") or "").strip()
+                mask = (v.get("mask") or "").strip()
+                warn.append(f"!   {k}: ip={ip or '(empty)'} "
+                            f"mask={mask or '(empty)'}")
+            ifaces.insert(0, "\n".join(warn))
 
     # ── 4  Management VLAN & Gateway ────────────────────────────────────
     # L2 profiles always emit a mgmt SVI from Step 1's Management IP /
@@ -3366,14 +3436,16 @@ class GenerateTab(ttk.Frame):
         in the Routed Interface IPs grid for each port assigned to a
         role with requires_ip=True. Preserves any IPs the user already
         typed for the same interface. Pre-fills the Mask column from
-        the profile's default_routed_mask when the user hasn't typed
-        one for that interface yet."""
+        the profile's Layer 3 -> Routed Interface section when the user
+        hasn't typed one for that interface yet."""
         existing = {r["iface_name"]: (r["ip"].get(), r["mask"].get())
                     for r in self.l3_ip_rows}
         self._clear_l3_ip_rows()
         pn = self.profile_cb.get()
         profile = self.app.profiles.get(pn, {}) or {}
-        default_mask = (profile.get("default_routed_mask") or "").strip()
+        rm_sec = (_normalize_l3_sections(profile).get("routed_mgmt", {})
+                  if profile.get("layer3") else {})
+        default_mask = (rm_sec.get("mask") or "").strip()
         for r in self.pa_rows:
             iface = r["iface"].get().strip()
             role_name = r["role"].get() or ""
@@ -3775,6 +3847,16 @@ class GenerateTab(ttk.Frame):
     def _generate(self):
         mn = self.model_cb.get()
         pn = self.profile_cb.get()
+        # Re-sync the L3 IP grid against the CURRENT Step-2 port
+        # assignments before reading them. Catches the case where the
+        # user edited an interface on Step 2 after the last forward
+        # navigation, which would otherwise leave routed_iface_ips
+        # keyed by stale interface names and the renderer would emit
+        # blank ip address lines.
+        if pn and pn in self.app.profiles:
+            profile_chk = self.app.profiles[pn]
+            if profile_chk.get("layer3"):
+                self._populate_l3_ip_rows()
         sw = self._sw_dict()
         if not sw["hostname"]:
             _dialog("Missing", "Hostname is required.", "warning")
@@ -4084,7 +4166,10 @@ class RolesTab(ttk.Frame):
         ttk.Label(form, style="Hint.TLabel",
                   text="  Tick for routed interfaces (Loopback, routed uplinks, etc.).\n"
                        "  Generate Config will then prompt for IP/Mask per switch and\n"
-                       "  inject {{ ip }} and {{ mask }} into the role template."
+                       "  inject {{ ip }} and {{ mask }} into the role template.\n"
+                       "  If Step 3 leaves IP or Mask blank, the renderer falls back\n"
+                       "  to the profile's Layer 3 -> Routed Interface fields, so a\n"
+                       "  site-wide mask can live on the profile instead of Step 3."
                   ).pack(anchor="w", padx=5, pady=(0, 4))
 
         _section(form, "IOS Commands")
@@ -4455,19 +4540,6 @@ class ProfilesTab(ttk.Frame):
         self.msvi_sec_mask_e = _field(self.msvi_sec_lf, "Mask (default)")
         self.msvi_sec_desc_e = _field(self.msvi_sec_lf, "Description",
                                       "Switch MGMT")
-
-        # Default routed-interface subnet mask - pre-fills the Mask column
-        # of every routed-interface row in Generate Config Step 3.
-        rm = ttk.Frame(self.l3_body); rm.pack(fill="x", padx=5, pady=2)
-        ttk.Label(rm, text="Default Routed Mask", width=22, anchor="w"
-                  ).pack(side="left")
-        self.default_routed_mask_e = ttk.Entry(rm)
-        self.default_routed_mask_e.pack(side="left", fill="x", expand=True)
-        _attach_context_menu(self.default_routed_mask_e)
-        ttk.Label(self.l3_body, style="Hint.TLabel",
-                  text="  Pre-fills the Mask column for each routed\n"
-                       "  interface in Generate Config Step 3."
-                  ).pack(anchor="w", padx=5, pady=(0, 4))
 
         # SVIs (site-wide gateways)
         self.svi_lf = ttk.LabelFrame(self.l3_body, text="SVIs", padding=5)
@@ -5180,9 +5252,6 @@ class ProfilesTab(ttk.Frame):
                      (self.msvi_sec_desc_e, msvi.get("description",
                                                      "Switch MGMT"))):
             w.delete(0, "end"); w.insert(0, v or "")
-        self.default_routed_mask_e.delete(0, "end")
-        self.default_routed_mask_e.insert(
-            0, p.get("default_routed_mask", "") or "")
 
         self._clear_svis()
         for svi in p.get("svis", []) or []:
@@ -5256,7 +5325,6 @@ class ProfilesTab(ttk.Frame):
         self.lb_sec_desc_e.insert(0, "Switch MGMT / Router-ID")
         self.rm_sec_desc_e.insert(0, "Routed Mgmt Uplink")
         self.msvi_sec_desc_e.insert(0, "Switch MGMT")
-        self.default_routed_mask_e.delete(0, "end")
         self._clear_svis()
         self.ospf_enabled.set(False)
         self.ospf_pid_e.delete(0, "end"); self.ospf_pid_e.insert(0, "1")
@@ -5395,9 +5463,6 @@ class ProfilesTab(ttk.Frame):
                                     or "Switch MGMT"),
                 },
             }
-            drm = self.default_routed_mask_e.get().strip()
-            if drm:
-                data["default_routed_mask"] = drm
             svis = []
             for r in self.svi_rows:
                 vlan = r["vlan"].get().strip()
@@ -6429,14 +6494,6 @@ class GuideTab(ttk.Frame):
             "'ip default-gateway' is emitted whenever a Default Gateway is "
             "set, regardless of mgmt_style.")
 
-        subheading("Default Routed Mask")
-        body(
-            "Optional site-wide mask that pre-fills the Mask column of every "
-            "routed-interface row in Generate Config Step 3. Useful when "
-            "every L3 link at the site uses the same prefix length "
-            "(e.g. 255.255.255.252 for /30 point-to-points). Per-switch "
-            "overrides in Step 3 always win.")
-
         subheading("SVIs")
         body(
             "Define the VLANs that need an SVI on every switch at the site. "
@@ -6542,9 +6599,10 @@ class GuideTab(ttk.Frame):
             "  Router-ID          Optional OSPF router-id. Defaults to "
             "Loopback0 IP if blank.\n"
             "  Routed Interface IPs One row per port assigned to a "
-            "Requires-IP role. Fill in the per-switch IP and mask. The Mask "
-            "column pre-fills from the profile's Default Routed Mask when "
-            "set.\n"
+            "Requires-IP role. Fill in the per-switch IP and mask. The "
+            "Mask column pre-fills from the profile's Layer 3 -> Routed "
+            "Interface section when set; leave Step 3 fields blank to "
+            "inherit IP/Mask from that section at render time.\n"
             "  SVI IPs            One row per SVI defined on the profile. "
             "Fill in the per-switch IP/mask for each VLAN's SVI.\n"
             "  Static Routes      Optional 'ip route <prefix> <mask> "
@@ -6643,9 +6701,10 @@ class GuideTab(ttk.Frame):
             "- A role with 'Requires IP' on it produces an extra row in "
             "Step 3 for every port it's assigned to. Use {{ ip }} and "
             "{{ mask }} in the role template to consume those values.\n\n"
-            "- Profile-level Default Routed Mask pre-fills the Mask column "
-            "of every routed-interface row in Step 3, so identical /30 "
-            "links don't need to be typed in for every switch.\n\n"
+            "- The profile's Layer 3 -> Routed Interface section feeds the "
+            "site-wide IP / Mask for routed uplinks. Step 3's Routed "
+            "Interface IPs grid pre-fills from it, and the renderer also "
+            "falls back to it when a Step-3 field is left blank.\n\n"
             "- For Layer 3 edge sites that talk BGP, define one BGP "
             "instance per local ASN and one peer slot per neighbour role. "
             "Each switch in the wizard fills in peer IP / MD5 key / circuit "
