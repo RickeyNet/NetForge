@@ -20,7 +20,7 @@ import zipfile
 from tkinter import colorchooser, ttk, filedialog, scrolledtext
 from jinja2.sandbox import SandboxedEnvironment
 
-VERSION = "1.5.2"
+VERSION = "1.5.3"
 _RECENT_MAX = 10
 
 
@@ -2100,6 +2100,8 @@ def _render_bgp(profile, sw):
             slots = [{"peer_asn": p.get("peer_asn"),
                       "description": p.get("description")}
                      for p in (inst.get("peers") or [])]
+        if not slots and default_peer_asn:
+            slots = [{"peer_asn": default_peer_asn, "description": ""}]
 
         sw_inst = sw_by_asn.get(local_asn, {})
         fills = sw_inst.get("peer_fills") or []
@@ -3098,7 +3100,7 @@ class GenerateTab(ttk.Frame):
         try:
             total = event.width
             if total > 100:
-                self._step3_paned.sashpos(0, int(total * 0.60))
+                self._step3_paned.sashpos(0, int(total * 0.50))
                 self._step3_sash_set = True
         except Exception:
             pass
@@ -3608,9 +3610,12 @@ class GenerateTab(ttk.Frame):
                 slots = [{"peer_asn": p.get("peer_asn"),
                           "description": p.get("description")}
                          for p in (inst.get("peers") or [])]
+            default_peer_asn = str(inst.get("peer_asn") or "").strip()
+            if not slots and default_peer_asn:
+                slots = [{"peer_asn": default_peer_asn, "description": ""}]
             self._add_bgp_inst_block(
                 local_asn,
-                str(inst.get("peer_asn") or "").strip(),
+                default_peer_asn,
                 slots,
                 existing.get(local_asn),
             )
@@ -4858,6 +4863,12 @@ class ProfilesTab(ttk.Frame):
         ttk.Button(top, text="X", width=3, style="Del.TButton",
                    command=lambda f=blk_frame: self._del_acl_block(f)
                    ).pack(side="right")
+        ttk.Button(top, text="↓", width=3,
+                   command=lambda f=blk_frame: self._move_acl_block(f, 1)
+                   ).pack(side="right", padx=(0, 2))
+        ttk.Button(top, text="↑", width=3,
+                   command=lambda f=blk_frame: self._move_acl_block(f, -1)
+                   ).pack(side="right", padx=(0, 2))
 
         # Rules grid: header + every rule row live inside this single
         # frame and use shared `grid` columns, so column widths line up
@@ -4885,6 +4896,8 @@ class ProfilesTab(ttk.Frame):
                   ).grid(row=0, column=6, sticky="ew", padx=2)
         ttk.Label(rules_frame, text="Del", anchor="center"
                   ).grid(row=0, column=7, sticky="ew", padx=2)
+        ttk.Label(rules_frame, text="Move", anchor="center"
+                  ).grid(row=0, column=8, sticky="ew", padx=2)
 
         btn_row = ttk.Frame(blk_frame); btn_row.pack(fill="x", pady=(4, 0))
         block = {"frame": blk_frame, "name": name_e, "type": type_cb,
@@ -4908,6 +4921,21 @@ class ProfilesTab(ttk.Frame):
                               if b["frame"] is not frame]
         frame.destroy()
         self._update_acl_collapsed()
+
+    def _move_acl_block(self, frame, direction):
+        idx = next((i for i, b in enumerate(self.acl_blocks)
+                    if b["frame"] is frame), None)
+        if idx is None:
+            return
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= len(self.acl_blocks):
+            return
+        self.acl_blocks[idx], self.acl_blocks[new_idx] = (
+            self.acl_blocks[new_idx], self.acl_blocks[idx])
+        for blk in self.acl_blocks:
+            blk["frame"].pack_forget()
+        for blk in self.acl_blocks:
+            blk["frame"].pack(fill="x", pady=(0, 6))
 
     def _add_acl_rule(self, block, data=None):
         # All rule widgets grid directly into the shared rules_frame so
@@ -4943,6 +4971,14 @@ class ProfilesTab(ttk.Frame):
         del_btn = ttk.Button(parent, text="X", width=3, style="Del.TButton",
                              command=lambda: self._del_acl_rule(rule, block))
         del_btn.grid(row=r, column=7, padx=2, pady=1)
+        mv_frm = ttk.Frame(parent)
+        mv_frm.grid(row=r, column=8, padx=2, pady=1)
+        ttk.Button(mv_frm, text="↑", width=2,
+                   command=lambda: self._move_acl_rule(rule, block, -1)
+                   ).pack(side="left")
+        ttk.Button(mv_frm, text="↓", width=2,
+                   command=lambda: self._move_acl_rule(rule, block, 1)
+                   ).pack(side="left")
 
         rule_widgets = (action_cb, proto_e, src_e, srcwc_e,
                         dst_e, dstwc_e, log_cb, del_btn)
@@ -5007,6 +5043,55 @@ class ProfilesTab(ttk.Frame):
         if rmk is not None:
             rmk.destroy()
         block["rules"][:] = [r for r in block["rules"] if r is not rule]
+
+    def _move_acl_rule(self, rule, block, direction):
+        rules = block["rules"]
+        idx = next((i for i, r in enumerate(rules) if r is rule), None)
+        if idx is None:
+            return
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= len(rules):
+            return
+        a_data = self._read_acl_rule(rules[idx])
+        b_data = self._read_acl_rule(rules[new_idx])
+        self._write_acl_rule(rules[idx], b_data)
+        self._write_acl_rule(rules[new_idx], a_data)
+
+    def _read_acl_rule(self, rule):
+        act = rule["action"].get() or "permit"
+        if act == "remark":
+            rmk = rule.get("remark")
+            return {"action": "remark", "text": rmk.get() if rmk else ""}
+        return {
+            "action": act,
+            "protocol": rule["proto"].get(),
+            "source": rule["src"].get(),
+            "source_wildcard": rule["src_wc"].get(),
+            "dest": rule["dst"].get(),
+            "dest_wildcard": rule["dst_wc"].get(),
+            "log": bool(rule["log"].get()),
+        }
+
+    def _write_acl_rule(self, rule, data):
+        act = data.get("action", "permit") or "permit"
+        rule["action"].set(act)
+        rule["action"].event_generate("<<ComboboxSelected>>")
+        if act == "remark":
+            rmk = rule.get("remark")
+            if rmk:
+                rmk.delete(0, "end")
+                rmk.insert(0, data.get("text", ""))
+        else:
+            for widget, key, default in (
+                (rule["proto"],  "protocol",        "ip"),
+                (rule["src"],    "source",          ""),
+                (rule["src_wc"], "source_wildcard", ""),
+                (rule["dst"],    "dest",            ""),
+                (rule["dst_wc"], "dest_wildcard",   ""),
+            ):
+                widget.delete(0, "end")
+                widget.insert(0, data.get(key, default) or default)
+            rule["log"].set(bool(data.get("log", False)))
 
     # -- BGP instance blocks --
     def _clear_bgp_blocks(self):

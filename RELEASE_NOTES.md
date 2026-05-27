@@ -1,3 +1,25 @@
+# NetForge v1.5.3 - Release Notes
+
+## ACL Rule Reordering
+
+Rules inside a named ACL can now be reordered directly in the Site Profile editor. Each rule row has a **↑** and **↓** button to the right of the delete button. Clicking either swaps the rule's values with the adjacent row above or below; clicking at the top or bottom boundary is a no-op. The new order is reflected immediately in the saved profile and in any config generated from it.
+
+## ACL Block Reordering
+
+The ACL blocks themselves (each named access-list) can now also be reordered within the Site Profile editor using **↑** and **↓** buttons in each block's header row. This makes it easy to add new ACLs before existing ones without deleting and recreating them.
+
+## BGP Neighbor Lines Now Generate Without Explicit Slots
+
+Previously, `neighbor` lines were only emitted in the BGP block if the profile's BGP instance had explicit peer slots defined under **Site Profiles -> BGP -> Add Slot**. Profiles that set a **Default Peer ASN** but left the slots table empty produced a `router bgp` block with no neighbor statements, and **Generate Config Step 3** showed "No peer slots defined" with no rows to fill in.
+
+The renderer and Step 3 UI now treat a non-empty **Default Peer ASN** as an implied single slot when no explicit slots exist. Step 3 shows one peer row (Remote ASN pre-filled from the default) where you enter the per-switch Peer IP and Password. The rendered output emits the corresponding `neighbor <ip> remote-as <asn>` and `neighbor <ip> password <pwd>` lines. Profiles with explicit slots are unaffected.
+
+## Step 3 Preview Pane Defaults to 50/50
+
+The adjustable divider between the Step 3 form and the config preview pane now defaults to an even 50/50 split on first load. Previously it opened at 60/40, which left the preview visibly cramped before the user manually adjusted it.
+
+---
+
 # NetForge v1.5.2 - Release Notes
 
 ## Routed Interface IPs Now Always Apply
