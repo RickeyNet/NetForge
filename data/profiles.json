@@ -7,9 +7,14 @@
     "role_variables": {},
     "port_assignments": [],
     "credentials": {
-      "local_username": "testusername",
-      "admin_password": "testpassword",
-      "enable_secret": "testenable"
+      "enable_secret": "testenable",
+      "users": [
+        {
+          "name": "testusername",
+          "password": "testpassword",
+          "privilege": 15
+        }
+      ]
     },
     "layer3": true,
     "l3_sections": {
@@ -55,9 +60,14 @@
     },
     "port_assignments": [],
     "credentials": {
-      "local_username": "testusername",
-      "admin_password": "testpassword",
-      "enable_secret": "testenable"
+      "enable_secret": "testenable",
+      "users": [
+        {
+          "name": "testusername",
+          "password": "testpassword",
+          "privilege": 15
+        }
+      ]
     },
     "layer3": true,
     "l3_sections": {
@@ -276,9 +286,14 @@
     },
     "port_assignments": [],
     "credentials": {
-      "local_username": "testusername",
-      "admin_password": "testpassword",
-      "enable_secret": "testenable"
+      "enable_secret": "testenable",
+      "users": [
+        {
+          "name": "testusername",
+          "password": "testpassword",
+          "privilege": 15
+        }
+      ]
     }
   },
   "Cisco L2 Baseline (example)": {

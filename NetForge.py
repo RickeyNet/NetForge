@@ -3097,10 +3097,15 @@ class GenerateTab(ttk.Frame):
     def _step3_size_sash(self, event):
         if self._step3_sash_set:
             return
+        self.after_idle(self._apply_step3_sash)
+
+    def _apply_step3_sash(self):
+        if self._step3_sash_set:
+            return
         try:
-            total = event.width
-            if total > 100:
-                self._step3_paned.sashpos(0, int(total * 0.50))
+            w = self._step3_paned.winfo_width()
+            if w > 100:
+                self._step3_paned.sashpos(0, w // 2)
                 self._step3_sash_set = True
         except Exception:
             pass
