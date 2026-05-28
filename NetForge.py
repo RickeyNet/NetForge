@@ -2858,20 +2858,91 @@ def _parse_vlan_names(text):
 
 
 def _vlan_id_remap(profile, sw):
-    """Map profile VLAN IDs to per-switch IDs by matching vlan `name` lines."""
+    """Map profile VLAN IDs to per-switch IDs for this switch.
+
+    Sources (merged): vlan-definition `name` lines, Step 3 SVI rows, and
+    Step 3 management-VLAN rows.
+    """
     if not profile.get("allow_per_switch_vlans"):
         return {}
+    remap = {}
     prof_by_id, _ = _parse_vlan_names(profile.get("vlan_definitions", ""))
     sw_text = (sw.get("vlan_definitions") or "").strip()
-    if not sw_text:
-        return {}
-    _, sw_by_name = _parse_vlan_names(sw_text)
-    remap = {}
-    for prof_id, name in prof_by_id.items():
-        sw_id = sw_by_name.get(name)
-        if sw_id and sw_id != prof_id:
-            remap[prof_id] = sw_id
+    if sw_text:
+        _, sw_by_name = _parse_vlan_names(sw_text)
+        for prof_id, name in prof_by_id.items():
+            sw_id = sw_by_name.get(name)
+            if sw_id and sw_id != prof_id:
+                remap[prof_id] = sw_id
+
+    for i, psvi in enumerate(profile.get("svis") or []):
+        old_id = str(psvi.get("vlan") or "").strip()
+        if not old_id:
+            continue
+        new_id = old_id
+        sw_svis = sw.get("svis") or []
+        if i < len(sw_svis) and isinstance(sw_svis[i], dict):
+            new_id = str(sw_svis[i].get("vlan") or "").strip() or old_id
+        if new_id != old_id:
+            remap[old_id] = new_id
+
+    if profile.get("layer3"):
+        sections = _normalize_l3_sections(profile)
+        mgmt_entries = (sections.get("mgmt_svi") or {}).get("entries") or []
+        sw_msvi = sw.get("mgmt_svis") or []
+        for i, entry in enumerate(mgmt_entries):
+            old_id = str(entry.get("vlan") or "").strip()
+            if not old_id:
+                continue
+            new_id = old_id
+            if i < len(sw_msvi) and isinstance(sw_msvi[i], dict):
+                new_id = str(sw_msvi[i].get("vlan") or "").strip() or old_id
+            if new_id != old_id:
+                remap[old_id] = new_id
+
     return remap
+
+
+def _role_variables_for_switch(profile, sw):
+    """Apply per-switch VLAN overrides to profile role_variables values.
+
+    Role templates often reference VLAN IDs via keys like ``user_vlan``.
+    When Step 3 changes VLAN numbers, remap any variable whose value matches
+    an overridden profile VLAN ID, and refresh ``*_vlan`` keys from matching
+    vlan ``name`` lines in the per-switch definitions block.
+    """
+    role_vars = dict(profile.get("role_variables", {}) or {})
+    if not profile.get("allow_per_switch_vlans"):
+        return role_vars
+
+    remap = _vlan_id_remap(profile, sw)
+    for key, val in list(role_vars.items()):
+        sval = str(val).strip()
+        if sval in remap:
+            role_vars[key] = remap[sval]
+
+    _, prof_by_name = _parse_vlan_names(profile.get("vlan_definitions", ""))
+    sw_text = (sw.get("vlan_definitions") or "").strip()
+    if not sw_text:
+        return role_vars
+    _, sw_by_name = _parse_vlan_names(sw_text)
+    for key in profile.get("role_variables", {}) or {}:
+        m = re.match(r"^(.+?)_?vlan$", key, re.I)
+        if not m:
+            continue
+        token = re.sub(r"[_\s]+", "", m.group(1)).lower()
+        if not token:
+            continue
+        for name in prof_by_name:
+            norm_name = re.sub(r"[_\s]+", "", name).lower()
+            if token in norm_name or norm_name in token:
+                prof_id = prof_by_name[name]
+                sw_id = sw_by_name.get(name)
+                if sw_id and sw_id != prof_id:
+                    role_vars[key] = sw_id
+                break
+
+    return role_vars
 
 
 def _remap_svi_ips(svi_ips, remap):
@@ -2981,7 +3052,7 @@ def render_config_sections(model, profile, roles, base, sw):
     # user-editable JSON (and can be replaced via Import Settings), so
     # block attribute access that would allow Jinja SSTI -> code execution.
     env = SandboxedEnvironment()
-    role_vars = profile.get("role_variables", {})
+    role_vars = _role_variables_for_switch(profile, sw)
     stack = model.get("stack_members", 1)
     layer3 = bool(profile.get("layer3", False))
 
