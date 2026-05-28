@@ -7024,32 +7024,120 @@ class GuideTab(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
+        self._guide_sections = []
         self._build()
 
+    def _clear_guide_search(self):
+        self._guide_search.delete(0, "end")
+        self._apply_guide_search()
+
+    def _on_guide_search(self, _event=None):
+        self._apply_guide_search()
+
+    def _apply_guide_search(self):
+        q = self._guide_search.get().strip().lower()
+        terms = [t for t in q.split() if t]
+        visible = 0
+        first_visible = None
+        for sec in self._guide_sections:
+            haystacks = [t.lower() for _, t in sec["texts"]]
+            if not terms:
+                match = True
+            else:
+                match = all(
+                    any(term in text for text in haystacks)
+                    for term in terms
+                )
+            if match:
+                if not sec["frame"].winfo_ismapped():
+                    sec["frame"].pack(fill="x")
+                visible += 1
+                if first_visible is None:
+                    first_visible = sec["frame"]
+            else:
+                sec["frame"].pack_forget()
+        if terms:
+            word = "section" if visible == 1 else "sections"
+            self._guide_match_lbl.configure(text=f"{visible} {word}")
+        else:
+            self._guide_match_lbl.configure(text="")
+        self._guide_scroll.sync_scrollregion()
+        if first_visible and terms:
+            self.after_idle(lambda w=first_visible: self._scroll_guide_to(w))
+
+    def _scroll_guide_to(self, widget):
+        canvas = self._guide_scroll.canvas
+        try:
+            canvas.update_idletasks()
+            y = widget.winfo_y()
+            total = max(1, self._guide_scroll.inner.winfo_reqheight())
+            canvas.yview_moveto(max(0.0, min(1.0, (y - 12) / total)))
+        except tk.TclError:
+            pass
+
     def _build(self):
-        scroll = ScrollFrame(self)
-        scroll.pack(fill="both", expand=True)
-        f = scroll.inner
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill="x", padx=8, pady=(8, 4))
+        ttk.Label(toolbar, text="Search:").pack(side="left")
+        self._guide_search = ttk.Entry(toolbar)
+        self._guide_search.pack(side="left", fill="x", expand=True, padx=(6, 4))
+        _attach_context_menu(self._guide_search)
+        self._guide_search.bind("<KeyRelease>", self._on_guide_search)
+        self._guide_search.bind("<Return>", self._on_guide_search)
+        self._guide_search.bind("<Escape>", lambda _e: self._clear_guide_search())
+        self._guide_match_lbl = ttk.Label(toolbar, text="", style="Hint.TLabel")
+        self._guide_match_lbl.pack(side="left", padx=(0, 4))
+        ttk.Button(toolbar, text="Clear",
+                   command=self._clear_guide_search).pack(side="left")
+
+        self._guide_scroll = ScrollFrame(self)
+        self._guide_scroll.pack(fill="both", expand=True)
+        f = self._guide_scroll.inner
+
+        self._guide_sections = []
+        current_section = [None]
+
+        def _register(widget, text):
+            if current_section[0] is not None:
+                current_section[0]["texts"].append((widget, text))
+
+        def _start_section():
+            sec = {"frame": ttk.Frame(f), "texts": []}
+            sec["frame"].pack(fill="x")
+            self._guide_sections.append(sec)
+            current_section[0] = sec
+            return sec
 
         def heading(text):
-            ttk.Label(f, text=text, font=("Segoe UI", 13, "bold"),
-                      foreground=C["accent"], background=C["bg"]
-                      ).pack(anchor="w", padx=12, pady=(18, 2))
-            ttk.Separator(f).pack(fill="x", padx=12)
+            sec = _start_section()
+            lbl = ttk.Label(sec["frame"], text=text, font=("Segoe UI", 13, "bold"),
+                            foreground=C["accent"], background=C["bg"])
+            lbl.pack(anchor="w", padx=12, pady=(18, 2))
+            _register(lbl, text)
+            ttk.Separator(sec["frame"]).pack(fill="x", padx=12)
 
         def subheading(text):
-            ttk.Label(f, text=text, font=("Segoe UI", 10, "bold"),
-                      foreground=C["accent"], background=C["bg"]
-                      ).pack(anchor="w", padx=16, pady=(12, 2))
+            if current_section[0] is None:
+                _start_section()
+            lbl = ttk.Label(current_section[0]["frame"], text=text,
+                            font=("Segoe UI", 10, "bold"),
+                            foreground=C["accent"], background=C["bg"])
+            lbl.pack(anchor="w", padx=16, pady=(12, 2))
+            _register(lbl, text)
 
         def body(text):
-            lbl = ttk.Label(f, text=text, wraplength=750, justify="left",
-                            foreground=C["fg"], background=C["bg"],
+            if current_section[0] is None:
+                _start_section()
+            lbl = ttk.Label(current_section[0]["frame"], text=text, wraplength=750,
+                            justify="left", foreground=C["fg"], background=C["bg"],
                             font=("Segoe UI", 9))
             lbl.pack(anchor="w", padx=20, pady=(2, 2))
+            _register(lbl, text)
 
         def code(text):
-            box = tk.Text(f, height=text.count("\n") + 1,
+            if current_section[0] is None:
+                _start_section()
+            box = tk.Text(current_section[0]["frame"], height=text.count("\n") + 1,
                           font=("Consolas", 9), wrap="none",
                           bg=C["bg_input"], fg=C["green"],
                           relief="flat", bd=4, padx=6, pady=4)
@@ -7057,6 +7145,7 @@ class GuideTab(ttk.Frame):
             box.configure(state="disabled")
             box.pack(anchor="w", padx=24, pady=(2, 4), fill="x")
             _attach_context_menu(box)
+            _register(box, text)
 
         # ---- Overview ----
         heading("How To Use This App")
@@ -7070,9 +7159,9 @@ class GuideTab(ttk.Frame):
             "definitions are saved and reused.\n\n"
             "DAILY USE  (tab 1 - Generate Config)\n"
             "Pick a model, pick a profile, review port assignments, enter "
-            "the per-switch details (hostname, IPs, passwords, SVI IPs, "
-            "routed-interface IPs, BGP descriptions, etc.), click "
-            "Generate, then copy or save the config.")
+            "the per-switch details (hostname, local users, IPs, SVI IPs, "
+            "routed-interface IPs, BGP values, etc.), click Generate, then "
+            "copy or save the config.")
 
         # ---- Recommended order ----
         heading("Recommended Setup Order")
@@ -7170,10 +7259,12 @@ class GuideTab(ttk.Frame):
 
         subheading("Disabled Port Template")
         body(
-            "This template is applied to EVERY port on the switch before "
-            "your active port assignments override specific ranges. It is "
-            "the security baseline - typically shuts down ports and puts "
-            "them on a blackhole VLAN.\n\n"
+            "This template is applied to unassigned ports on the switch - "
+            "ports that do not have a role assigned in Step 2 of Generate "
+            "Config (or in the profile's port assignments). Assigned ports "
+            "skip this template and are configured through their role "
+            "instead. It is the security baseline - typically shuts down "
+            "unused ports and puts them on a blackhole VLAN.\n\n"
             "You can use {{ variable }} placeholders here. The variable "
             "values come from the Site Profile's Role Variables section. "
             "For example, {{ blackhole_vlan }} will be replaced with the "
@@ -7258,10 +7349,19 @@ class GuideTab(ttk.Frame):
             "  Start   - First port number in the range\n"
             "  End     - Last port number in the range")
 
+        subheading("Stack Members")
+        body(
+            "Set Stack Members to the number of switches in a stack (1 for "
+            "standalone). Port groups are replicated per member - e.g. "
+            "GigabitEthernet1/0/1-24 on a 4-member stack becomes "
+            "GigabitEthernet1/0/1-24 through GigabitEthernet4/0/1-24 in "
+            "the Generate wizard.")
+
         subheading("Example: C9200L-24T-4G-A")
         code(
             "Model Name:     C9200L-24T-4G-A\n"
             "Provision Type: c9200l-24t\n"
+            "Stack Members:  1\n"
             "\n"
             "Port Group 1:   GigabitEthernet1/0/    Start: 1    End: 24\n"
             "Port Group 2:   GigabitEthernet1/1/    Start: 1    End: 4")
@@ -7337,12 +7437,13 @@ class GuideTab(ttk.Frame):
 
         subheading("Routed Interfaces (Requires IP)")
         body(
-            "Tick the 'Requires IP' checkbox for roles that turn an interface "
-            "into a layer-3 routed port (no switchport). When a port is "
-            "assigned to a role with Requires IP, the wizard's Step 3 grows "
-            "an extra grid where you fill in the per-switch IP and mask for "
-            "that interface. Use {{ ip }} and {{ mask }} as placeholders in "
-            "the role template.")
+            "Tick 'Requires per-switch IP (L3 interface)' for roles that turn "
+            "an interface into a layer-3 routed port (no switchport). When a "
+            "port is assigned to such a role, Step 3 grows a Routed Interface "
+            "IPs row for that port. Use {{ ip }} and {{ mask }} as placeholders "
+            "in the role template. If Step 3 leaves IP or Mask blank, the "
+            "renderer falls back to the profile's Routed Interfaces section "
+            "defaults.")
         code(
             "desc //Routed Uplink\n"
             "no switchport\n"
@@ -7362,9 +7463,11 @@ class GuideTab(ttk.Frame):
         subheading("Profile Name & Management VLAN")
         body(
             "Give the profile a descriptive name. The Management VLAN ID is "
-            "used to create the 'interface vlanXX' block where the switch's "
-            "management IP is assigned (for L2 sites, or L3 sites using "
-            "mgmt_style = svi).")
+            "a legacy/default field used when migrating older profiles. On "
+            "L3 profiles, management IP is configured through the Management "
+            "VLANs L3 section (or Loopbacks / Routed Interfaces). On plain "
+            "L2 profiles, Step 3's Management IP goes on interface "
+            "vlan<mgmt_vlan>.")
 
         subheading("Base Settings Selector")
         body(
@@ -7378,35 +7481,39 @@ class GuideTab(ttk.Frame):
             "These per-profile values render as IOS commands in the generated "
             "config so different sites can point at different DNS/NTP "
             "infrastructure without duplicating Base sets:\n\n"
-            "  DNS Servers          One or more name-server IPs, comma "
-            "separated. Becomes 'ip name-server ...' lines.\n"
-            "  NTP Servers          One or more NTP server IPs, comma "
-            "separated. Becomes 'ntp server ...' lines.\n"
-            "  NTP Source Interface Optional 'ntp source <iface>' line.\n"
-            "  NTP Auth Key ID +    Optional MD5 authenticated NTP. Both "
-            "  NTP Auth Key         fields are needed to enable authentication.\n"
+            "  Name Servers         One or more DNS IPs, comma separated. "
+            "Becomes 'ip name-server ...' lines.\n"
             "  Clock Timezone       Free-form 'clock timezone ...' value, "
             "e.g. 'EST -5'.\n"
             "  Clock Summer-Time    Free-form 'clock summer-time ...' value, "
-            "e.g. 'EDT recurring'.")
+            "e.g. 'EDT recurring'.\n"
+            "  NTP Commands         Free-form paste box - lines emit "
+            "verbatim in the Global section (same pattern as OSPF). Paste "
+            "exactly the 'ntp ...' and related ACL lines you want, e.g. "
+            "ntp authenticate, ntp server, ntp source, access-list for NTP.")
 
         subheading("Credential Defaults")
         body(
-            "Optional defaults that pre-fill the matching fields in Generate "
-            "Config Step 3 when this profile is selected:\n\n"
-            "  Local Username      Becomes 'username <name> ...'.\n"
-            "  Local User Password Plain or secret-style password for the "
-            "local user.\n"
+            "Optional defaults that pre-fill Generate Config Step 3 when "
+            "this profile is selected:\n\n"
+            "  Local Users         One row per IOS local account. Each row "
+            "renders as 'username <name> privilege <P> secret <password>'. "
+            "Step 3 loads an editable copy for each generated switch.\n"
             "  Enable Secret       Privileged EXEC password.\n\n"
-            "These are defaults only - the wizard always lets you change "
-            "them per switch, and per-switch edits are not written back "
-            "to the profile.")
+            "These are defaults only - per-switch edits in the wizard are "
+            "not written back to the profile.")
 
         subheading("VLAN Definitions")
         body(
             "Paste the raw IOS VLAN commands for this site. This includes "
             "standard VLANs, private VLANs, and any VLAN associations. "
-            "These commands are inserted into the config exactly as entered.")
+            "These commands are inserted into the config exactly as entered.\n\n"
+            "Tick 'Allow per-switch VLAN overrides in Step 3' when a site "
+            "needs different VLAN IDs on individual switches. The wizard "
+            "then shows a VLAN editor pre-filled from this block; edits "
+            "replace the profile VLANs for that switch only. On L3 profiles, "
+            "SVI VLAN IDs can also be edited per switch so they stay in sync "
+            "with the VLAN block.")
         code(
             "vlan 100\n"
             "name Data\n"
@@ -7466,29 +7573,38 @@ class GuideTab(ttk.Frame):
             "(L3 interfaces, OSPF paste, BGP, default route, etc.). Leave it "
             "off for plain access-layer switches.")
 
-        subheading("Management Style")
+        subheading("L3 Interface Sections")
         body(
-            "When Layer 3 is on, pick how the switch's management IP is "
-            "assigned:\n\n"
-            "  svi            Management rides an SVI (same as L2). "
-            "Emits 'interface vlan<mgmt_vlan>' with the IP from Step 3.\n"
-            "  loopback       Mgmt rides Loopback0. The wizard prompts for "
-            "Loopback0 IP/Mask in Step 3.\n"
-            "  routed_uplink  Mgmt rides one of the routed uplinks. No "
-            "mgmt SVI is emitted; the routed interface holds the mgmt IP.\n\n"
-            "'ip default-gateway' is emitted whenever a Default Gateway is "
-            "set, regardless of mgmt_style.")
+            "When Layer 3 is on, enable each section you need with its "
+            "checkbox. You can enable more than one. Each section supports "
+            "multiple rows (+ Add ...) and carries site-wide IP/Mask defaults "
+            "that pre-fill Generate Config Step 3:\n\n"
+            "  Loopbacks           One or more loopback interfaces. Typical "
+            "for router-ID and management reachability.\n"
+            "  Routed Interfaces   Standalone routed uplink(s). Interface "
+            "name is optional - leave it blank when the uplink is assigned "
+            "via a Requires-IP role in Step 2 instead.\n"
+            "  Management VLANs    One or more management SVIs (interface "
+            "vlan<ID>). Replaces the old single mgmt-VLAN approach.\n\n"
+            "Typical workflow: set Mask (and optionally IP) on the profile, "
+            "leave IP blank for per-switch entry on Step 3. "
+            "'ip default-gateway' is emitted whenever Default Gateway is set "
+            "on Step 3, regardless of which sections are enabled.")
 
         subheading("SVIs")
         body(
-            "Define the VLANs that need an SVI on every switch at the site. "
-            "Each row carries:\n\n"
+            "Define VLANs that need an SVI on every switch at the site "
+            "(user gateways, voice, ISP handoff VLANs, etc.). Each row "
+            "carries:\n\n"
             "  VLAN          The VLAN ID the SVI belongs to.\n"
             "  Description   Free-form text rendered as the SVI description.\n"
+            "  IP / Mask     Optional site-wide defaults. Often leave IP "
+            "blank and fill per-switch on Step 3.\n"
             "  Helpers (CSV) Optional DHCP helper IPs, comma separated. "
             "Each becomes an 'ip helper-address ...' line.\n\n"
-            "IPs and masks are entered per-switch in Generate Config "
-            "Step 3 under 'SVI IPs'.")
+            "Per-switch IP/Mask (and optionally VLAN ID when per-switch "
+            "VLAN overrides are enabled) are entered in Generate Config "
+            "Step 3 under SVI IPs.")
 
         subheading("OSPF")
         body(
@@ -7505,11 +7621,21 @@ class GuideTab(ttk.Frame):
 
         subheading("BGP")
         body(
-            "Add one BGP instance per local ASN. Each instance renders as "
-            "its own 'router bgp <local_asn>' block. Within an instance, "
-            "Peer Slots describe BGP neighbours that will exist on every "
-            "switch at the site - the peer IP / MD5 key / circuit ID are "
-            "filled in per switch in Generate Config Step 3.")
+            "Add one BGP instance per local ASN (+ Add BGP). Each instance "
+            "renders as its own 'router bgp <local_asn>' block. On the "
+            "profile, define Peer Slots (remote ASN + description) for "
+            "neighbours that exist on every switch. Per-switch values are "
+            "filled in Generate Config Step 3:\n\n"
+            "  ISP Gateway         Next-hop toward the ISP (often matches "
+            "Default Gateway).\n"
+            "  User Network        Prefix advertised to BGP.\n"
+            "  User Network Mask   Mask for the advertised prefix.\n"
+            "  Circuit ID          Optional description on the BGP session.\n"
+            "  Peer IP / Password  One row per peer slot - neighbour address "
+            "and optional MD5 key.\n\n"
+            "Default Gateway on Step 3 auto-fills blank ISP Gateway and "
+            "Peer IP fields (one-way sync). Edit those BGP fields "
+            "independently afterward without changing Default Gateway.")
         code(
             "Local ASN: 65000\n"
             "Peer Slots:\n"
@@ -7547,12 +7673,15 @@ class GuideTab(ttk.Frame):
             "  - Modify assignments for this specific switch\n"
             "  - Add new rows with '+ Add Row'\n"
             "  - Remove rows with the X button\n"
+            "  - Toggle Port Display between Range and Individual Ports\n"
             "  - Split a range into sub-ranges (e.g. change "
             "'range Gi1/0/1-24' into two rows: "
             "'range Gi1/0/1-12' and 'range Gi1/0/13-24' with different "
             "roles)\n\n"
-            "Leave the Role dropdown empty for ranges you want to stay "
-            "disabled. Click Next.")
+            "Leave the Role dropdown on 'unassigned' for ranges you want to "
+            "stay disabled. Only unassigned ports receive the Disabled Port "
+            "Template from Base Settings; assigned ports are configured "
+            "through their role instead. Click Next.")
 
         subheading("Wizard Step 3 - Switch Details")
         body(
@@ -7561,43 +7690,58 @@ class GuideTab(ttk.Frame):
             "sections.\n\n"
             "Core fields (always shown):\n"
             "  Hostname         The switch hostname (e.g. SW-FLOOR3-01).\n"
-            "  Local Username   Pre-fills from the profile's Credential "
-            "Defaults; edit per switch as needed.\n"
-            "  Admin Password   Local admin account password.\n"
+            "  Local Users      Editable copy of the profile's user list. "
+            "Each row becomes one 'username ... privilege ... secret ...' "
+            "line. Use + Add User for extra accounts.\n"
             "  Enable Secret    Privileged EXEC password.\n"
             "  Domain Name      IP domain name (also used for SSH key "
             "generation).\n"
-            "  Management IP /  Management interface IP and mask. Goes on "
-            "  Subnet Mask      the mgmt SVI (L2 / svi mgmt_style), "
-            "Loopback0 (loopback), or the routed-uplink interface "
-            "(routed_uplink).\n"
-            "  Default Gateway  The switch default gateway. Always emits "
-            "'ip default-gateway'. For Layer 3 profiles, also auto-emits "
-            "'ip route 0.0.0.0 0.0.0.0 <gateway>' unless you supplied your "
-            "own default route under Static Routes."
-            "\n\n"
-            "Layer 3 sections (only when the profile has Layer 3 enabled):\n"
-            "  Loopback0 IP/Mask  Shown when mgmt_style = loopback. Becomes "
-            "'interface Loopback0' with the given IP/mask.\n"
-            "  Router-ID          Optional OSPF router-id. Defaults to "
-            "Loopback0 IP if blank.\n"
+            "  Default Gateway  Always emits 'ip default-gateway'. For "
+            "Layer 3 profiles, also auto-emits 'ip route 0.0.0.0 0.0.0.0 "
+            "<gateway>' unless you supplied your own default route under "
+            "Static Routes. When the profile has BGP, blank ISP Gateway "
+            "and Peer IP fields auto-fill from Default Gateway (edit them "
+            "independently afterward if needed).\n"
+            "  Work Order #     Optional comment line in the config header.\n\n"
+            "L2-only fields (hidden when the profile is Layer 3):\n"
+            "  Management IP / Subnet Mask  Used for the management SVI on "
+            "plain L2 profiles.\n\n"
+            "Optional sections (shown when applicable):\n"
+            "  OOB Management Port (Gi0/0)  Shown when the model defines "
+            "GigabitEthernet0/x. Leave blank to use Base Settings default.\n"
+            "  VLAN Definitions (this switch)  Shown when the profile allows "
+            "per-switch VLAN overrides. Replaces the profile VLAN block for "
+            "this switch only.\n\n"
+            "Layer 3 sections (shown when the profile has Layer 3 enabled, "
+            "each sub-section only when enabled on the profile):\n"
+            "  Loopbacks            Per-switch IP/Mask for each loopback "
+            "defined on the profile.\n"
+            "  Routed Interfaces    Per-switch IP/Mask for standalone routed "
+            "uplinks from the profile. Use this when the profile leaves "
+            "interface blank and the uplink is assigned via a Requires-IP "
+            "role - the IP typed here applies to that port.\n"
+            "  Management VLANs     Per-switch IP/Mask for each management "
+            "SVI defined on the profile.\n"
+            "  OSPF Router ID       Shown when the profile has OSPF pasted. "
+            "Optional; defaults to the first loopback IP if blank.\n"
             "  Routed Interface IPs One row per port assigned to a "
-            "Requires-IP role. Fill in the per-switch IP and mask. The "
-            "Mask column pre-fills from the profile's Layer 3 -> Routed "
-            "Interface section when set; leave Step 3 fields blank to "
-            "inherit IP/Mask from that section at render time.\n"
-            "  SVI IPs            One row per SVI defined on the profile. "
-            "Fill in the per-switch IP/mask for each VLAN's SVI.\n"
-            "  Static Routes      Optional 'ip route <prefix> <mask> "
-            "<next-hop>' entries with optional descriptions.\n"
-            "  BGP Peers          One row per peer slot defined on the "
-            "profile. Fill in the neighbour IP, optional MD5 key, and "
-            "optional circuit ID per switch.\n\n"
+            "Requires-IP role. Alternative to Routed Interfaces above - "
+            "fill IP/Mask per port. Mask pre-fills from the profile; blank "
+            "IP/Mask inherit from the profile's Routed Interfaces section "
+            "at render time.\n"
+            "  SVI IPs              One row per SVI on the profile. Fill "
+            "per-switch IP/Mask (and VLAN ID when per-switch VLAN overrides "
+            "are enabled).\n"
+            "  Static Routes        Optional 'ip route ...' entries with "
+            "optional descriptions. A live preview shows what will emit, "
+            "including the auto default route from Default Gateway.\n"
+            "  BGP                  One block per BGP instance on the "
+            "profile: ISP Gateway, User Network, User Network Mask, Circuit "
+            "ID, plus Peer IP / Password rows for each peer slot.\n\n"
             "Click 'Generate Config' to build the configuration. It appears "
-            "in the preview pane on the right. Use 'Copy to Clipboard' to "
-            "paste directly into the switch console, or 'Save to File' to "
-            "save a .txt file (which is also added to your Recent Configs "
-            "menu).\n\n"
+            "in the preview pane on the right. Use the quick-copy section "
+            "buttons or 'Copy to Clipboard' to paste into the switch console, "
+            "or 'Save to File' to save a .txt file (added to Recent Configs).\n\n"
             "'Push to Switch...' opens a dialog that streams the generated "
             "config to a switch over its console port via a USB-to-serial "
             "adapter. Pick the COM port, baud (9600 is the Cisco default), "
@@ -7630,28 +7774,36 @@ class GuideTab(ttk.Frame):
             "   SSH / Crypto (Base)\n"
             "   Switching Features (Base)\n\n"
             "VLANs\n"
-            "   VLAN Definitions (Profile)\n"
+            "   VLAN Definitions (Profile, or per-switch override from Step 3)\n"
             "   Custom Sections - Before Interfaces (Base)\n"
-            "   Disable ALL ports (Model port groups + Disabled Port Template)\n"
+            "   Disable unassigned ports (Model port groups + Disabled Port "
+            "Template; assigned ports skip this)\n"
             "   VLAN 1 shutdown\n"
             "   Management Port (Base)\n\n"
             "L3 Interfaces  (Layer 3 only)\n"
-            "   Loopback0 (when mgmt_style = loopback)\n"
-            "   SVIs with per-switch IP / mask / helpers\n\n"
+            "   ip routing\n"
+            "   Loopbacks (when Loopbacks section enabled on profile)\n"
+            "   Standalone routed interfaces (when Routed Interfaces section "
+            "enabled and not already covered by a Requires-IP role)\n"
+            "   SVIs from profile svis list (user/voice gateways, etc.)\n"
+            "   Embedded interface-Vlan blocks peeled from VLAN definitions\n\n"
             "Interfaces\n"
-            "   Port Assignments (Profile roles applied to interfaces, "
-            "including routed interfaces with per-switch IP/mask)\n\n"
+            "   Port Assignments - role templates applied per Step 2 row, "
+            "including routed uplinks via Requires-IP roles with {{ ip }} / "
+            "{{ mask }} from Step 3\n\n"
             "Management\n"
-            "   Management VLAN interface (when L2 or mgmt_style = svi)\n"
+            "   Management VLAN interface(s) (when Management VLANs section "
+            "enabled on profile, or L2 mgmt SVI from Step 3 Management IP)\n"
             "   ip default-gateway (always when set)\n\n"
             "Post-Interface\n"
             "   Custom Sections - After Interfaces (Base)\n"
             "   Profile ACLs (named extended ACLs)\n\n"
             "Routing  (Layer 3 only)\n"
-            "   OSPF block pasted in the profile (router-id per switch when "
-            "omitted)\n"
-            "   router bgp <asn> block(s) with neighbours and MD5 auth\n"
-            "   Static Routes\n"
+            "   OSPF block pasted in the profile (router-id injected from "
+            "Step 3 when omitted from the paste)\n"
+            "   router bgp <asn> block(s) with neighbours, user-network "
+            "advertisement, and MD5 auth\n"
+            "   Static Routes from Step 3\n"
             "   Auto default route via Default Gateway (if no user-supplied "
             "0.0.0.0/0)\n\n"
             "Line Config\n"
@@ -7673,29 +7825,36 @@ class GuideTab(ttk.Frame):
             "default, adjust it in the wizard's Step 2 - the changes only "
             "affect the current config, not the saved profile. The same is "
             "true for credentials and other per-switch fields in Step 3.\n\n"
-            "- The Disabled Port Template runs on every port BEFORE your "
-            "assignments, so any port you don't explicitly assign a role to "
-            "will be shut down and placed on the blackhole VLAN.\n\n"
+            "- The Disabled Port Template runs on unassigned ports only. "
+            "Ports you assign a role to in Step 2 are configured through "
+            "that role instead and do not receive the disabled template.\n\n"
             "- Leave any Base Settings section blank to omit it entirely "
             "from the generated config.\n\n"
             "- The 'interface' keyword is added automatically. In port "
             "assignments, just enter the range text - e.g. "
             "'range GigabitEthernet1/0/1-12' (not 'interface range ...').\n\n"
-            "- A role with 'Requires IP' on it produces an extra row in "
-            "Step 3 for every port it's assigned to. Use {{ ip }} and "
-            "{{ mask }} in the role template to consume those values.\n\n"
-            "- The profile's Layer 3 -> Routed Interface section feeds the "
-            "site-wide IP / Mask for routed uplinks. Step 3's Routed "
-            "Interface IPs grid pre-fills from it, and the renderer also "
-            "falls back to it when a Step-3 field is left blank.\n\n"
-            "- For Layer 3 edge sites that talk BGP, define one BGP "
-            "instance per local ASN and one peer slot per neighbour role. "
-            "Each switch in the wizard fills in peer IP / MD5 key / circuit "
-            "ID for that slot.\n\n"
-            "- The Default Gateway field is always required. For Layer 3 "
-            "profiles, it also seeds the auto 'ip route 0.0.0.0 0.0.0.0' "
-            "default route unless you supplied your own under Static "
-            "Routes.\n\n"
+            "- A role with 'Requires per-switch IP' produces an extra row in "
+            "Step 3's Routed Interface IPs grid for every port it is assigned "
+            "to. Use {{ ip }} and {{ mask }} in the role template.\n\n"
+            "- Routed uplink IPs can be entered in either place on Step 3: "
+            "the Routed Interface IPs grid (per port) or the Routed "
+            "Interfaces grid (especially when the profile leaves interface "
+            "blank). The renderer merges both sources; profile defaults fill "
+            "in any blank IP or Mask at render time.\n\n"
+            "- Enable L3 Interface Sections independently on the profile "
+            "(Loopbacks, Routed Interfaces, Management VLANs). Old profiles "
+            "that used mgmt_style are migrated automatically.\n\n"
+            "- Per-switch VLAN overrides remap role variables (e.g. user_vlan) "
+            "when VLAN IDs change on Step 3, so interface roles stay aligned "
+            "with updated VLAN numbers.\n\n"
+            "- For Layer 3 edge sites that talk BGP, define one BGP instance "
+            "per local ASN and one peer slot per neighbour role. Each switch "
+            "fills in ISP Gateway, User Network, Circuit ID, and peer "
+            "IP/Password on Step 3. Default Gateway auto-fills blank ISP "
+            "Gateway and Peer IP fields.\n\n"
+            "- Default Gateway is required for most deployments. For Layer 3 "
+            "profiles it also seeds the auto 'ip route 0.0.0.0 0.0.0.0' "
+            "default route unless you supplied your own under Static Routes.\n\n"
             "- Use the Theme menu to switch between built-in palettes or "
             "open the custom theme editor to build your own.")
 
