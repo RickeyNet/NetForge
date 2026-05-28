@@ -2672,6 +2672,10 @@ class L3EntryGrid:
             out.append(entry)
         return out
 
+    def _row_has_sw_data(self, item):
+        return any(str(item.get(f) or "").strip()
+                   for f in self._profile_value_fields())
+
     def collect_sw_items(self, editable_key=False):
         items = []
         id_field = self.spec["id_field"]
@@ -2692,7 +2696,14 @@ class L3EntryGrid:
             else:
                 key_val = str(w or "").strip()
             if not key_val:
-                continue
+                # Site profiles often leave routed_mgmt.interface blank
+                # so one Step 3 IP applies to whichever uplink port was
+                # assigned in Step 2. Keep those rows (keyed by "").
+                if (self.mode == "generate" and self.kind == "routed_mgmt"
+                        and self._row_has_sw_data(item)):
+                    key_val = ""
+                else:
+                    continue
             item[id_field] = key_val
             if self.kind == "loopback":
                 item.setdefault("mask", "255.255.255.255")
@@ -2710,6 +2721,20 @@ def _collect_l3_sw_from_grids(grids, editable_vlan=False):
         sw[spec["sw_list"]] = items
         _apply_l3_legacy_sw_aliases(sw, kind, items)
     return sw
+
+
+def _site_routed_mgmt_override(sw):
+    """Per-switch routed uplink values when the profile interface is blank."""
+    items = [i for i in (sw.get("routed_mgmt_interfaces") or [])
+             if isinstance(i, dict)]
+    blanks = [i for i in items if not str(i.get("interface") or "").strip()]
+    if len(blanks) == 1:
+        return blanks[0]
+    legacy_ip = (sw.get("routed_mgmt_ip") or "").strip()
+    legacy_mask = (sw.get("routed_mgmt_mask") or "").strip()
+    if legacy_ip or legacy_mask:
+        return {"interface": "", "ip": legacy_ip, "mask": legacy_mask}
+    return {}
 
 
 def _apply_l3_legacy_sw_aliases(sw, kind, items):
@@ -4769,6 +4794,16 @@ class GenerateTab(ttk.Frame):
                               "mask": r["mask"].get().strip()}
             for r in self.l3_ip_rows
         }
+        # When the profile leaves routed_mgmt.interface blank, the user
+        # types the uplink IP in the Routed Interfaces grid. Merge that
+        # site-wide override into any per-port rows that are still blank.
+        site_rm = _site_routed_mgmt_override(sw)
+        if site_rm:
+            for entry in sw["routed_iface_ips"].values():
+                if not entry.get("ip") and (site_rm.get("ip") or "").strip():
+                    entry["ip"] = site_rm["ip"].strip()
+                if not entry.get("mask") and (site_rm.get("mask") or "").strip():
+                    entry["mask"] = site_rm["mask"].strip()
         svi_ips = {}
         sw_svis = []
         pn = self.profile_cb.get()
