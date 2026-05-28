@@ -626,6 +626,28 @@ def expand_range_iface(iface_str):
     return [f"{prefix}{i}" for i in range(int(start_s), int(end_s) + 1)]
 
 
+def _assigned_port_names(port_assignments, roles=None, requires_ip_only=False):
+    """Expand Step 2 / profile port assignments into individual interfaces.
+
+    Skips blank roles and explicit 'unassigned'. When *requires_ip_only* is
+    True, only ports mapped to a role with requires_ip=True are returned.
+    """
+    names = set()
+    for pa in port_assignments or []:
+        role_name = pa.get("role")
+        if not role_name or role_name == "unassigned":
+            continue
+        if requires_ip_only:
+            role = (roles or {}).get(role_name, {}) or {}
+            if not role.get("requires_ip"):
+                continue
+        for iface in expand_range_iface(pa.get("interfaces", "")):
+            iface = iface.strip()
+            if iface:
+                names.add(iface)
+    return names
+
+
 # ---------------------------------------------------------------------------
 # PanedWindow with non-opaque sash drag
 # ---------------------------------------------------------------------------
@@ -2195,6 +2217,85 @@ def _first_loopback_ip(sw, l3_sections):
     return (sw.get("loopback0_ip") or "").strip()
 
 
+def _legacy_ospf_to_config(ospf):
+    """Convert the old structured ospf dict into IOS lines for editing."""
+    if not isinstance(ospf, dict) or not ospf.get("enabled"):
+        return ""
+    pid = (str(ospf.get("process_id") or "1")).strip() or "1"
+    lines = [f"router ospf {pid}"]
+    passive_default = bool(ospf.get("passive_default"))
+    passive_ifaces = ospf.get("passive_interfaces") or []
+    if passive_default:
+        lines.append("passive-interface default")
+        for pi in passive_ifaces:
+            pi = str(pi).strip()
+            if pi:
+                lines.append(f"no passive-interface {pi}")
+    else:
+        for pi in passive_ifaces:
+            pi = str(pi).strip()
+            if pi:
+                lines.append(f"passive-interface {pi}")
+    for n in ospf.get("networks") or []:
+        if not isinstance(n, dict):
+            continue
+        net = (n.get("network") or "").strip()
+        wc = (n.get("wildcard") or "").strip()
+        area = (str(n.get("area") or "0")).strip() or "0"
+        if net and wc:
+            lines.append(f"network {net} {wc} area {area}")
+    lines.append("exit")
+    return "\n".join(lines)
+
+
+def _ospf_config_for_edit(profile):
+    raw = profile.get("ospf_config")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return _legacy_ospf_to_config(profile.get("ospf") or {})
+
+
+def _profile_has_ospf(profile):
+    return bool(_ospf_config_for_edit(profile).strip())
+
+
+def _ospf_process_id(profile):
+    for line in _ospf_config_for_edit(profile).splitlines():
+        m = re.match(r"router\s+ospf\s+(\S+)", line.strip(), re.I)
+        if m:
+            return m.group(1)
+    ospf = profile.get("ospf") or {}
+    if isinstance(ospf, dict) and ospf.get("enabled"):
+        return (str(ospf.get("process_id") or "1")).strip() or "1"
+    return None
+
+
+def _inject_ospf_router_id(raw, sw, l3_sections):
+    """Insert per-switch router-id after 'router ospf' when not already set."""
+    rid = ((sw.get("router_id") or "").strip()
+           or _first_loopback_ip(sw, l3_sections))
+    if not rid:
+        return raw.strip()
+    lines = raw.splitlines()
+    if any(re.match(r"router-id\s+", ln.strip(), re.I) for ln in lines):
+        return raw.strip()
+    out = []
+    injected = False
+    for line in lines:
+        out.append(line)
+        if not injected and re.match(r"router\s+ospf\s+", line.strip(), re.I):
+            out.append(f"router-id {rid}")
+            injected = True
+    return "\n".join(out).strip()
+
+
+def _render_ospf_routing(profile, sw, l3_sections):
+    raw = _ospf_config_for_edit(profile)
+    if not raw:
+        return ""
+    return _inject_ospf_router_id(raw, sw, l3_sections)
+
+
 _L3_UI_ALIAS = {"loopback": "lb", "routed_mgmt": "rm", "mgmt_svi": "msvi"}
 
 _L3_KINDS = {
@@ -2356,6 +2457,23 @@ class L3EntryGrid:
             row["frame"].destroy()
         self.rows.clear()
 
+    def _profile_value_fields(self):
+        columns = (self.spec["profile"]["columns"] if self.mode == "profile"
+                   else self.spec["generate"]["columns"])
+        id_field = self.spec["id_field"]
+        return [c[0] for c in columns
+                if c[0] not in (id_field, "description")]
+
+    def _entry_has_profile_data(self, entry):
+        id_field = self.spec["id_field"]
+        if str(entry.get(id_field) or "").strip():
+            return True
+        return any(str(entry.get(f) or "").strip()
+                   for f in self._profile_value_fields())
+
+    def _default_row_key(self):
+        return f"__default__:{self.kind}"
+
     def add(self, data=None, editable_key=False):
         if self.mode == "profile":
             columns = self.spec["profile"]["columns"]
@@ -2419,7 +2537,8 @@ class L3EntryGrid:
                 entry["number"] = "0"
             key = _l3_entry_key(self.kind, entry)
             if self.kind != "loopback" and not key:
-                continue
+                if not self._entry_has_profile_data(entry):
+                    continue
             self.add(entry, editable_key=editable_key)
             vals = saved.get(key, {})
             cur = self.rows[-1]
@@ -2445,8 +2564,8 @@ class L3EntryGrid:
         else:
             val = str(w or "").strip()
         if self.kind == "routed_mgmt":
-            return _canon_iface(val)
-        return val
+            return _canon_iface(val) if val else self._default_row_key()
+        return val if val else self._default_row_key()
 
     def _iter_fields(self, row):
         for field, w in row["fields"].items():
@@ -2468,7 +2587,7 @@ class L3EntryGrid:
                 if field == "number" and not val:
                     val = "0"
                 entry[field] = val
-            if not entry.get(id_field):
+            if not entry.get(id_field) and not self._entry_has_profile_data(entry):
                 continue
             if not entry.get("description"):
                 entry["description"] = defaults.get("description", "")
@@ -2581,16 +2700,27 @@ def _render_l3_routed_mgmt(l3, rm_sec, sw, routed_iface_names):
 def _render_l3_mgmt_svis(mgmt, svi_sec, sw, profile):
     if not svi_sec.get("enabled"):
         return
-    sw_msvi_map = _sw_mgmt_svis_map(sw)
+    sw_msvi_list = [
+        item for item in (sw.get("mgmt_svis") or [])
+        if isinstance(item, dict)
+    ]
+    sw_msvi_by_vlan = _sw_mgmt_svis_map(sw)
+    remap = _vlan_id_remap(profile, sw)
     mgmt_entries = svi_sec.get("entries") or []
-    for entry in mgmt_entries:
+    for i, entry in enumerate(mgmt_entries):
         profile_vlan = str(entry.get("vlan") or "").strip()
-        sw_entry = sw_msvi_map.get(profile_vlan, {})
-        if not sw_entry and len(mgmt_entries) == 1:
-            sw_entry = sw_msvi_map.get("", {})
-        mgmt_vlan = (sw_entry.get("vlan") or profile_vlan
-                     or profile.get("mgmt_vlan") or "1")
-        mgmt_vlan = str(mgmt_vlan).strip() or "1"
+        sw_entry = {}
+        if i < len(sw_msvi_list):
+            sw_entry = sw_msvi_list[i]
+        elif profile_vlan in sw_msvi_by_vlan:
+            sw_entry = sw_msvi_by_vlan[profile_vlan]
+        elif len(mgmt_entries) == 1 and len(sw_msvi_list) == 1:
+            sw_entry = sw_msvi_list[0]
+        mgmt_vlan = (sw_entry.get("vlan") or "").strip()
+        if not mgmt_vlan:
+            mgmt_vlan = remap.get(profile_vlan, profile_vlan)
+        if not mgmt_vlan:
+            mgmt_vlan = str(profile.get("mgmt_vlan") or "1").strip() or "1"
         svi_ip = (sw_entry.get("ip") or entry.get("ip") or "").strip()
         if not svi_ip and len(mgmt_entries) == 1:
             svi_ip = (sw.get("mgmt_svi_ip") or sw.get("mgmt_ip") or "").strip()
@@ -2598,7 +2728,8 @@ def _render_l3_mgmt_svis(mgmt, svi_sec, sw, profile):
         if not svi_mask and len(mgmt_entries) == 1:
             svi_mask = (sw.get("mgmt_svi_mask")
                         or sw.get("mgmt_mask") or "").strip()
-        svi_desc = (entry.get("description") or "Switch MGMT").strip()
+        svi_desc = (sw_entry.get("description")
+                    or entry.get("description") or "Switch MGMT").strip()
         if svi_ip and svi_mask:
             mgmt.append(
                 f"interface vlan{mgmt_vlan}\n"
@@ -2702,15 +2833,105 @@ def _split_vlan_definitions(text):
     return "\n\n".join(vlan_parts), embedded
 
 
+def _parse_vlan_names(text):
+    """Parse vlan/name pairs from IOS vlan-definition blocks.
+
+    Returns (by_id, by_name) where by_id maps vlan ID -> lowercased name
+    and by_name maps lowercased name -> vlan ID.
+    """
+    by_id = {}
+    by_name = {}
+    current_id = None
+    for line in (text or "").splitlines():
+        line = line.strip()
+        m = re.match(r"^vlan\s+(\d+)", line, re.I)
+        if m:
+            current_id = m.group(1)
+            continue
+        m = re.match(r"^name\s+(.+)", line, re.I)
+        if m and current_id:
+            name = m.group(1).strip().lower()
+            by_id[current_id] = name
+            by_name[name] = current_id
+            current_id = None
+    return by_id, by_name
+
+
+def _vlan_id_remap(profile, sw):
+    """Map profile VLAN IDs to per-switch IDs by matching vlan `name` lines."""
+    if not profile.get("allow_per_switch_vlans"):
+        return {}
+    prof_by_id, _ = _parse_vlan_names(profile.get("vlan_definitions", ""))
+    sw_text = (sw.get("vlan_definitions") or "").strip()
+    if not sw_text:
+        return {}
+    _, sw_by_name = _parse_vlan_names(sw_text)
+    remap = {}
+    for prof_id, name in prof_by_id.items():
+        sw_id = sw_by_name.get(name)
+        if sw_id and sw_id != prof_id:
+            remap[prof_id] = sw_id
+    return remap
+
+
+def _remap_svi_ips(svi_ips, remap):
+    out = dict(svi_ips or {})
+    if not remap:
+        return out
+    for old_id, new_id in remap.items():
+        if old_id in out and new_id not in out:
+            out[new_id] = out.pop(old_id)
+    return out
+
+
+def _apply_vlan_remap_to_svi(svi, remap):
+    svi = dict(svi)
+    vid = str(svi.get("vlan") or "").strip()
+    if vid in remap:
+        svi["vlan"] = remap[vid]
+    return svi
+
+
+def _remap_embedded_svi_text(text, old_vlan, new_vlan):
+    if not text or old_vlan == new_vlan:
+        return text
+    return re.sub(
+        r"^\s*interface\s+(?:Vlan|vlan)\s*\d+\s*$",
+        f"interface Vlan{new_vlan}",
+        text,
+        count=1,
+        flags=re.I | re.M,
+    )
+
+
 def _effective_svis(profile, sw):
     """Return the SVI list to render for this switch. When the profile
     allows per-switch VLAN overrides and Step 3 supplied SVI rows, those
     replace profile['svis'] so VLAN IDs stay in sync with overrides."""
+    profile_svis = profile.get("svis", []) or []
+    remap = _vlan_id_remap(profile, sw)
+
     if profile.get("allow_per_switch_vlans"):
         sw_svis = sw.get("svis")
         if isinstance(sw_svis, list) and sw_svis:
             return sw_svis
-    return profile.get("svis", []) or []
+
+    if not profile_svis:
+        return []
+
+    out = []
+    sw_svis = sw.get("svis") or []
+    for i, svi in enumerate(profile_svis):
+        entry = dict(svi)
+        if i < len(sw_svis) and isinstance(sw_svis[i], dict):
+            sw_row = sw_svis[i]
+            for key in ("vlan", "description", "ip", "mask", "helper_addresses"):
+                val = sw_row.get(key)
+                if val not in (None, ""):
+                    entry[key] = val
+        entry = _apply_vlan_remap_to_svi(entry, remap)
+        out.append(entry)
+    return out
 
 
 def _render_svi_block(svi, svi_ips):
@@ -2782,19 +3003,12 @@ def render_config_sections(model, profile, roles, base, sw):
     # the generated config (typically a key mismatch).
     routed_iface_consumed = set()
 
-    # Build a set of L3-role interface names so the disabled-port pass
-    # skips them (they'll be rendered with their role + per-switch IP).
-    routed_iface_names = set()
-    if layer3:
-        for pa in profile.get("port_assignments", []) or []:
-            role_name = pa.get("role")
-            if not role_name or role_name == "unassigned":
-                continue
-            role = roles.get(role_name, {}) or {}
-            if role.get("requires_ip"):
-                iface = (pa.get("interfaces") or "").strip()
-                if iface:
-                    routed_iface_names.add(iface)
+    # Build sets of ports claimed by Step 2 assignments so the disabled-
+    # port pass and standalone L3 routed blocks skip them.
+    pa_list = profile.get("port_assignments", []) or []
+    assigned_iface_names = _assigned_port_names(pa_list, roles)
+    routed_iface_names = _assigned_port_names(
+        pa_list, roles, requires_ip_only=True)
 
     def build(parts):
         return "\n\n".join(p.strip() for p in parts if p.strip())
@@ -2906,7 +3120,8 @@ def render_config_sections(model, profile, roles, base, sw):
         _render_l3_routed_mgmt(l3, l3_sections.get("routed_mgmt", {}), sw,
                                routed_iface_names)
 
-        svi_ips = sw.get("svi_ips", {}) or {}
+        svi_ips = _remap_svi_ips(sw.get("svi_ips", {}) or {},
+                                 _vlan_id_remap(profile, sw))
         rendered_svi_vlans = set()
         for svi in _effective_svis(profile, sw):
             block = _render_svi_block(svi, svi_ips)
@@ -2916,17 +3131,20 @@ def render_config_sections(model, profile, roles, base, sw):
 
         # Embedded interface-Vlan blocks from vlan_definitions (e.g.
         # shutdown vlan1) that are not already covered by structured SVIs.
+        vlan_remap = _vlan_id_remap(profile, sw)
         for emb in embedded_vlan_svis:
             vlan = emb.get("vlan", "")
-            if vlan and vlan not in rendered_svi_vlans:
-                text = emb.get("text", "")
-                per_sw = svi_ips.get(vlan, {}) or {}
+            new_vlan = vlan_remap.get(vlan, vlan)
+            if new_vlan and new_vlan not in rendered_svi_vlans:
+                text = _remap_embedded_svi_text(
+                    emb.get("text", ""), vlan, new_vlan)
+                per_sw = svi_ips.get(new_vlan, {}) or svi_ips.get(vlan, {}) or {}
                 ip = (per_sw.get("ip") or "").strip()
                 mask = (per_sw.get("mask") or "").strip()
                 if ip and mask and "ip address" not in text.lower():
                     text = text.rstrip() + f"\nip address {ip} {mask}"
                 l3.append(text)
-                rendered_svi_vlans.add(vlan)
+                rendered_svi_vlans.add(new_vlan)
 
     # ── 3  Interfaces ───────────────────────────────────────────────────
     ifaces = []
@@ -2938,9 +3156,8 @@ def render_config_sections(model, profile, roles, base, sw):
         for pg in all_pgs:
             if pg.get("prefix", "").startswith("GigabitEthernet0/"):
                 continue
-            # expand the range and skip any individual port that is
-            # claimed by a routed_uplink (those are emitted in the L3
-            # Interfaces section as routed ports, not L2 access ports)
+            # expand the range and skip ports assigned a role in Step 2
+            # (those are rendered below with their role template).
             single_ports = [
                 f"{pg['prefix']}{i}"
                 for i in range(pg["start"], pg["end"] + 1)
@@ -2949,7 +3166,7 @@ def render_config_sections(model, profile, roles, base, sw):
             run_start = None
             run_end = None
             for i, p in zip(range(pg["start"], pg["end"] + 1), single_ports):
-                if p in routed_iface_names:
+                if p in assigned_iface_names:
                     if run_start is not None:
                         if run_start == run_end:
                             hdr = f"interface {pg['prefix']}{run_start}"
@@ -2990,10 +3207,9 @@ def render_config_sections(model, profile, roles, base, sw):
             else:
                 ifaces.append(f"interface {iface}\n"
                               f"no ip address\nnegotiation auto\nexit")
-    ospf_cfg = profile.get("ospf", {}) or {}
     ospf_pid_for_iface = (
-        (str(ospf_cfg.get("process_id") or "1")).strip() or "1"
-        if layer3 and ospf_cfg.get("enabled") else None
+        _ospf_process_id(profile)
+        if layer3 and _profile_has_ospf(profile) else None
     )
     for pa in profile.get("port_assignments", []):
         if not pa.get("role") or pa["role"] == "unassigned":
@@ -3116,37 +3332,9 @@ def render_config_sections(model, profile, roles, base, sw):
     # (site-wide). Router-ID and static routes come from sw (per-switch).
     routing = []
     if layer3:
-        ospf = profile.get("ospf", {}) or {}
-        if ospf.get("enabled"):
-            pid = (str(ospf.get("process_id") or "1")).strip() or "1"
-            rid = ((sw.get("router_id") or "").strip()
-                   or _first_loopback_ip(sw, l3_sections))
-            networks = ospf.get("networks", []) or []
-            passive_default = bool(ospf.get("passive_default"))
-            passive_ifaces = ospf.get("passive_interfaces", []) or []
-            lines = [f"router ospf {pid}"]
-            if rid:
-                lines.append(f"router-id {rid}")
-            if passive_default:
-                lines.append("passive-interface default")
-                # listed interfaces become exceptions (no passive-interface ...)
-                for pi in passive_ifaces:
-                    pi = str(pi).strip()
-                    if pi:
-                        lines.append(f"no passive-interface {pi}")
-            else:
-                for pi in passive_ifaces:
-                    pi = str(pi).strip()
-                    if pi:
-                        lines.append(f"passive-interface {pi}")
-            for n in networks:
-                net = (n.get("network") or "").strip()
-                wc = (n.get("wildcard") or "").strip()
-                area = (str(n.get("area") or "0")).strip() or "0"
-                if net and wc:
-                    lines.append(f"network {net} {wc} area {area}")
-            lines.append("exit")
-            routing.append("\n".join(lines))
+        ospf_block = _render_ospf_routing(profile, sw, l3_sections)
+        if ospf_block:
+            routing.append(ospf_block)
 
         bgp_block = _render_bgp(profile, sw)
         if bgp_block:
@@ -3480,7 +3668,7 @@ class GenerateTab(ttk.Frame):
         self.l3_frame = ttk.Frame(form)
         _section(self.l3_frame, "Layer 3 Details")
         ttk.Label(self.l3_frame,
-                  text="Per-switch L3 values. SVIs and OSPF networks come\n"
+                  text="Per-switch L3 values. SVIs and OSPF come\n"
                        "from the profile.",
                   style="Hint.TLabel").pack(anchor="w", padx=5, pady=(2, 4))
 
@@ -3871,7 +4059,7 @@ class GenerateTab(ttk.Frame):
         always editable - it's required on every device."""
         layer3 = bool(profile.get("layer3", False))
         sections = _normalize_l3_sections(profile) if layer3 else {}
-        ospf_enabled = bool((profile.get("ospf") or {}).get("enabled", False))
+        ospf_enabled = _profile_has_ospf(profile)
 
         self._gateway_label.configure(text="Default Gateway")
         self.gateway.configure(state="normal")
@@ -4056,27 +4244,25 @@ class GenerateTab(ttk.Frame):
         VLAN ID and Description are editable Entry fields and the full
         row is stored in sw['svis'] at render time."""
         existing = {}
-        for r in self.svi_ip_rows:
+        for idx, r in enumerate(self.svi_ip_rows):
             if r.get("editable"):
-                key = r["vlan"].get().strip()
-                existing[key] = {
-                    "vlan": key,
+                existing[idx] = {
+                    "vlan": r["vlan"].get().strip(),
                     "desc": r["desc"].get().strip() if r.get("desc") else "",
                     "ip": r["ip"].get(),
                     "mask": r["mask"].get(),
                     "helpers": r.get("helpers", ""),
                 }
             else:
-                key = r["vlan"]
-                existing[key] = {
-                    "vlan": key,
+                existing[idx] = {
+                    "vlan": r["vlan"],
                     "desc": "",
                     "ip": r["ip"].get(),
                     "mask": r["mask"].get(),
                     "helpers": r.get("helpers", ""),
                 }
         self._clear_svi_ip_rows()
-        for svi in profile.get("svis", []) or []:
+        for idx, svi in enumerate(profile.get("svis", []) or []):
             vlan = (svi.get("vlan") or "").strip()
             if not vlan:
                 continue
@@ -4088,7 +4274,7 @@ class GenerateTab(ttk.Frame):
                 helpers = ", ".join(str(h) for h in helpers_raw if str(h).strip())
             else:
                 helpers = str(helpers_raw or "").strip()
-            saved = existing.get(vlan, {})
+            saved = existing.get(idx, {})
             row = ttk.Frame(self.svi_ip_frame); row.pack(fill="x", pady=1)
             row.columnconfigure(0, weight=2, uniform="sviip")
             row.columnconfigure(1, weight=2, uniform="sviip")
@@ -4116,9 +4302,6 @@ class GenerateTab(ttk.Frame):
             if saved:
                 ip.insert(0, saved.get("ip", ""))
                 mask.insert(0, saved.get("mask", ""))
-            elif vlan in existing:
-                ip.insert(0, existing[vlan].get("ip", ""))
-                mask.insert(0, existing[vlan].get("mask", ""))
             if not ip.get() and default_ip:
                 ip.insert(0, default_ip)
             if not mask.get() and default_mask:
@@ -4127,6 +4310,7 @@ class GenerateTab(ttk.Frame):
                 "frame": row, "vlan": vlan_w, "desc": desc_w,
                 "ip": ip, "mask": mask, "editable": editable,
                 "helpers": saved.get("helpers") or helpers,
+                "profile_vlan": vlan,
             })
 
     def _clear_l3_statics(self):
@@ -4420,11 +4604,17 @@ class GenerateTab(ttk.Frame):
         }
         svi_ips = {}
         sw_svis = []
+        pn = self.profile_cb.get()
+        profile = self.app.profiles.get(pn, {}) or {}
+        vlan_remap = _vlan_id_remap(profile, sw)
         for r in self.svi_ip_rows:
             if r.get("editable"):
                 vlan = r["vlan"].get().strip()
+                profile_vlan = (r.get("profile_vlan") or "").strip()
                 if not vlan:
                     continue
+                if profile_vlan and vlan == profile_vlan and profile_vlan in vlan_remap:
+                    vlan = vlan_remap[profile_vlan]
                 desc = r["desc"].get().strip() if r.get("desc") else ""
                 ip_val = r["ip"].get().strip()
                 mask_val = r["mask"].get().strip()
@@ -4920,7 +5110,6 @@ class ProfilesTab(ttk.Frame):
         self.pa_rows  = []
         self.svi_rows = []
         self.l3_profile_grids = {}
-        self.ospf_net_rows = []
         self.acl_blocks = []   # list of dicts: one per ACL editor block
         self.bgp_blocks = []   # list of dicts: one per BGP instance block
         self._build()
@@ -5124,7 +5313,7 @@ class ProfilesTab(ttk.Frame):
         _section(form, "Layer 3")
         ttk.Label(form, style="Hint.TLabel",
                   text="  Enable for sites that do L3 (routed uplinks,\n"
-                       "  SVIs as gateways, OSPF). Per-switch values like\n"
+                       "  SVIs as gateways, BGP). Per-switch values like\n"
                        "  Loopback0 IP, routed-interface IPs, and static\n"
                        "  routes are entered later in Generate Config."
                   ).pack(anchor="w", padx=5, pady=(4, 0))
@@ -5191,75 +5380,45 @@ class ProfilesTab(ttk.Frame):
         ttk.Frame(sh, width=30).grid(row=0, column=5, padx=(6, 1))
         self.svi_frame = ttk.Frame(self.svi_lf); self.svi_frame.pack(fill="x")
 
-        # OSPF
+        # OSPF (raw IOS paste)
         self.ospf_lf = ttk.LabelFrame(self.l3_body, text="OSPF", padding=5)
         self.ospf_lf.pack(fill="x", padx=5, pady=4)
-        self.ospf_enabled = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.ospf_lf, text="Enable OSPF",
-                        variable=self.ospf_enabled
-                        ).pack(anchor="w")
-        self.ospf_pid_e = _field(self.ospf_lf, "Process ID", "1")
-        self.ospf_passive_default = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            self.ospf_lf, text="Passive interface default",
-            variable=self.ospf_passive_default
-            ).pack(anchor="w", padx=5, pady=(2, 0))
-        self.ospf_passive_e = _field(
-            self.ospf_lf,
-            "Passive Interfaces (CSV)")
-        ospf_hint = ttk.Frame(self.ospf_lf)
-        ospf_hint.pack(fill="x", padx=5, pady=(0, 4))
-        ttk.Label(ospf_hint, style="Hint.TLabel",
-                  text="  When 'passive default' is on, listed interfaces "
-                       "become exceptions (active).\n"
-                       "  When off, only listed interfaces are passive.\n"
-                       "  Router-ID is set per switch in Generate Config\n"
-                       "  (defaults to the first loopback IP)."
-                  ).pack(side="left", anchor="w")
-        ttk.Button(ospf_hint, text="+ Add Network",
-                   command=self._add_ospf_net
-                   ).pack(side="right", anchor="ne", padx=(6, 1))
-
-        nh = ttk.Frame(self.ospf_lf); nh.pack(fill="x", pady=(4, 0))
-        ttk.Label(nh, text="Network", width=18).pack(side="left", padx=1)
-        ttk.Label(nh, text="Wildcard", width=18).pack(side="left", padx=1)
-        ttk.Label(nh, text="Area", width=8).pack(side="left", padx=1)
-        self.ospf_net_frame = ttk.Frame(self.ospf_lf)
-        self.ospf_net_frame.pack(fill="x")
+        ttk.Label(self.ospf_lf, style="Hint.TLabel",
+                  text="  Paste the site-wide OSPF block here. Lines emit\n"
+                       "  verbatim in Routing. Router-ID can be included\n"
+                       "  here or filled per switch in Generate Config."
+                  ).pack(anchor="w", padx=2, pady=(0, 4))
+        self.ospf_text = tk.Text(
+            self.ospf_lf, height=2, font=("Consolas", 9),
+            bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
+            selectbackground=C["sel_bg"], relief="flat", bd=2, wrap="none")
+        self.ospf_text.pack(fill="x", padx=2, pady=(0, 2))
+        _attach_context_menu(self.ospf_text)
+        _autosize_textarea(self.ospf_text, min_h=2, max_h=20)
 
         # BGP - one or more instances, each rendered as its own
         # `router bgp <asn>` block. Same +Add/X pattern as ACLs.
-        # The hint paragraph is only shown while no instances exist,
-        # so the section collapses to a single + Add row when empty.
+        # When empty the section collapses to the title bar + Add button.
         self.bgp_outer_lf = ttk.LabelFrame(
             self.l3_body, text="BGP", padding=5)
         self.bgp_outer_lf.pack(fill="x", padx=5, pady=4)
-        self._bgp_hint = ttk.Label(
-            self.bgp_outer_lf, style="Hint.TLabel",
-            text="  Add one BGP instance per local ASN. Each renders\n"
-                 "  as its own `router bgp <asn>` block with its own\n"
-                 "  peers and advertised network.")
-        self._bgp_hint.pack(anchor="w", padx=2, pady=(0, 4))
-        self._bgp_add_btn = ttk.Button(self.bgp_outer_lf, text="+ Add BGP",
+        bgp_top = ttk.Frame(self.bgp_outer_lf); bgp_top.pack(fill="x")
+        self._bgp_add_btn = ttk.Button(bgp_top, text="+ Add BGP",
                    command=lambda: self._add_bgp_block())
-        self._bgp_add_btn.pack(anchor="w", pady=(0, 4))
+        self._bgp_add_btn.pack(side="right", anchor="ne", padx=(6, 1))
         self.bgp_container = ttk.Frame(self.bgp_outer_lf)
-        self.bgp_container.pack(fill="x")
 
         # ACLs (site-wide named access-lists)
         self.acl_lf = ttk.LabelFrame(self.l3_body, text="Access Lists", padding=5)
         self.acl_lf.pack(fill="x", padx=5, pady=4)
-        self._acl_hint = ttk.Label(
-            self.acl_lf, style="Hint.TLabel",
-            text="  Named ACLs rendered after the interfaces section.\n"
-                 "  Order matters - rules emit in the order shown.")
-        self._acl_hint.pack(anchor="w", padx=2, pady=(0, 4))
-        self._acl_add_btn = ttk.Button(self.acl_lf, text="+ Add ACL",
+        acl_top = ttk.Frame(self.acl_lf); acl_top.pack(fill="x")
+        self._acl_add_btn = ttk.Button(acl_top, text="+ Add ACL",
                    command=lambda: self._add_acl_block())
-        self._acl_add_btn.pack(anchor="w", pady=(0, 4))
+        self._acl_add_btn.pack(side="right", anchor="ne", padx=(6, 1))
         self.acl_container = ttk.Frame(self.acl_lf)
-        self.acl_container.pack(fill="x")
 
+        self._update_bgp_collapsed()
+        self._update_acl_collapsed()
         self._refresh()
 
     # -- list helpers --
@@ -5400,54 +5559,51 @@ class ProfilesTab(ttk.Frame):
         self.svi_rows.append({"frame": row, "vlan": vlan, "desc": desc,
                               "ip": ip, "mask": mask, "hlp": hlp})
 
-    def _clear_ospf_nets(self):
-        for r in self.ospf_net_rows:
-            r["frame"].destroy()
-        self.ospf_net_rows.clear()
-
-    def _add_ospf_net(self, data=None):
-        row = ttk.Frame(self.ospf_net_frame); row.pack(fill="x", pady=1)
-        net  = ttk.Entry(row, width=18);  net.pack(side="left", padx=1)
-        wc   = ttk.Entry(row, width=18);  wc.pack(side="left", padx=1)
-        area = ttk.Entry(row, width=8);   area.pack(side="left", padx=1)
-        for w in (net, wc, area):
-            _attach_context_menu(w)
-        ttk.Button(row, text="X", width=3, style="Del.TButton",
-                   command=lambda: self._del_row(row, self.ospf_net_rows)
-                   ).pack(side="left", padx=2)
-        if data:
-            net.insert(0, data.get("network", ""))
-            wc.insert(0, data.get("wildcard", ""))
-            area.insert(0, str(data.get("area", "") or ""))
-        self.ospf_net_rows.append({"frame": row, "net": net, "wc": wc,
-                                   "area": area})
-
     # -- ACL editor --
     _ACL_ACTIONS = ("permit", "deny", "remark")
     _ACL_PROTOCOLS = ("ip", "tcp", "udp", "icmp", "gre", "esp", "ahp",
                       "eigrp", "ospf", "pim", "igmp", "sctp")
 
     def _update_acl_collapsed(self):
-        """Hide the descriptive hint when ACL blocks exist; show it
-        when the section is empty, so the box stays compact."""
-        hint = getattr(self, "_acl_hint", None)
-        if hint is None:
-            return
+        """Show only the Add button when no ACLs; expand once blocks exist."""
         if self.acl_blocks:
-            hint.pack_forget()
-        elif not hint.winfo_ismapped():
-            hint.pack(anchor="w", padx=2, pady=(0, 4),
-                      before=self._acl_add_btn)
+            if not self.acl_container.winfo_ismapped():
+                self.acl_container.pack(fill="x")
+        elif self.acl_container.winfo_ismapped():
+            self.acl_container.pack_forget()
 
     def _update_bgp_collapsed(self):
-        hint = getattr(self, "_bgp_hint", None)
-        if hint is None:
-            return
+        """Show only the Add button when no BGP instances; expand once blocks exist."""
         if self.bgp_blocks:
-            hint.pack_forget()
-        elif not hint.winfo_ismapped():
-            hint.pack(anchor="w", padx=2, pady=(0, 4),
-                      before=self._bgp_add_btn)
+            if not self.bgp_container.winfo_ismapped():
+                self.bgp_container.pack(fill="x")
+        elif self.bgp_container.winfo_ismapped():
+            self.bgp_container.pack_forget()
+
+    def _sync_acl_block_rules(self, block):
+        """Hide the rules grid header until the ACL has at least one rule."""
+        has_rules = bool(block["rules"])
+        rules_frame = block["rules_frame"]
+        btn_row = block["btn_row"]
+        if has_rules:
+            if not rules_frame.winfo_ismapped():
+                rules_frame.pack(fill="x", pady=(6, 0), before=btn_row)
+        elif rules_frame.winfo_ismapped():
+            rules_frame.pack_forget()
+
+    def _sync_bgp_block_slots(self, block):
+        """Hide peer-slot column headers until at least one slot exists."""
+        has_slots = bool(block["slots"])
+        if has_slots:
+            if not block["slots_hdr"].winfo_ismapped():
+                block["slots_hdr"].pack(fill="x")
+            block["peer_hint"].pack_forget()
+            block["slots_hint"].pack_forget()
+        else:
+            if block["slots_hdr"].winfo_ismapped():
+                block["slots_hdr"].pack_forget()
+            block["peer_hint"].pack_forget()
+            block["slots_hint"].pack_forget()
 
     def _clear_acls(self):
         for blk in self.acl_blocks:
@@ -5485,7 +5641,6 @@ class ProfilesTab(ttk.Frame):
         # frame and use shared `grid` columns, so column widths line up
         # exactly between the header labels and the field widgets below.
         rules_frame = ttk.Frame(blk_frame)
-        rules_frame.pack(fill="x", pady=(6, 0))
         for col in (2, 3, 4, 5):
             rules_frame.columnconfigure(col, weight=1, uniform="acladdrs")
         rules_frame.columnconfigure(6, minsize=44)
@@ -5513,7 +5668,7 @@ class ProfilesTab(ttk.Frame):
         btn_row = ttk.Frame(blk_frame); btn_row.pack(fill="x", pady=(4, 0))
         block = {"frame": blk_frame, "name": name_e, "type": type_cb,
                  "rules": rule_rows, "rules_frame": rules_frame,
-                 "next_row": 1}
+                 "btn_row": btn_row, "next_row": 1}
         ttk.Button(btn_row, text="+ Add Rule",
                    command=lambda b=block: self._add_acl_rule(b)
                    ).pack(side="left")
@@ -5526,6 +5681,7 @@ class ProfilesTab(ttk.Frame):
             type_cb.set(data.get("type", "extended") or "extended")
             for rule in data.get("rules", []) or []:
                 self._add_acl_rule(block, rule)
+        self._sync_acl_block_rules(block)
 
     def _del_acl_block(self, frame):
         self.acl_blocks[:] = [b for b in self.acl_blocks
@@ -5646,6 +5802,7 @@ class ProfilesTab(ttk.Frame):
             proto_e.insert(0, "ip")
 
         block["rules"].append(rule)
+        self._sync_acl_block_rules(block)
 
     def _del_acl_rule(self, rule, block):
         for w in rule["widgets"]:
@@ -5654,6 +5811,7 @@ class ProfilesTab(ttk.Frame):
         if rmk is not None:
             rmk.destroy()
         block["rules"][:] = [r for r in block["rules"] if r is not rule]
+        self._sync_acl_block_rules(block)
 
     def _move_acl_rule(self, rule, block, direction):
         rules = block["rules"]
@@ -5727,33 +5885,34 @@ class ProfilesTab(ttk.Frame):
         ttk.Button(top, text="X", width=3, style="Del.TButton",
                    command=lambda f=blk_frame: self._del_bgp_block(f)
                    ).pack(side="right")
-        ttk.Label(blk_frame, style="Hint.TLabel",
+        peer_hint = ttk.Label(blk_frame, style="Hint.TLabel",
                   text="  Default Peer ASN pre-fills new peer rows below\n"
                        "  and per-switch peers in Generate Config. Each peer\n"
                        "  carries its own ASN, so peers from different\n"
-                       "  upstreams within this instance are fine."
-                  ).pack(anchor="w", padx=2, pady=(2, 4))
+                       "  upstreams within this instance are fine.")
 
         slots_lf = ttk.LabelFrame(blk_frame, text="Peer Slots", padding=5)
         slots_lf.pack(fill="x", padx=2, pady=(4, 0))
 
         hint_row = ttk.Frame(slots_lf); hint_row.pack(fill="x", pady=(0, 4))
-        ttk.Label(hint_row, style="Hint.TLabel",
+        slots_hint = ttk.Label(hint_row, style="Hint.TLabel",
                   text="  Each slot describes one BGP neighbor that will\n"
                        "  exist on every switch built from this profile.\n"
                        "  Peer IP and password are entered per-switch in\n"
-                       "  Generate Config."
-                  ).pack(side="left", anchor="w", padx=2)
+                       "  Generate Config.")
 
         slot_frame = ttk.Frame(slots_lf)
         block = {"frame": blk_frame, "local_asn": local_e,
                  "peer_asn": peer_asn_e, "slot_frame": slot_frame,
+                 "slots_lf": slots_lf, "peer_hint": peer_hint,
+                 "slots_hint": slots_hint, "slots_hdr": None,
                  "slots": []}
         ttk.Button(hint_row, text="+ Add Slot",
                    command=lambda b=block: self._add_bgp_slot(b)
                    ).pack(side="right", anchor="ne", padx=(6, 1))
 
-        ph = ttk.Frame(slots_lf); ph.pack(fill="x")
+        ph = ttk.Frame(slots_lf)
+        block["slots_hdr"] = ph
         ph.columnconfigure(0, weight=1, uniform="bgpslots")
         ph.columnconfigure(1, weight=3, uniform="bgpslots")
         ttk.Label(ph, text="Remote ASN", anchor="w").grid(
@@ -5782,6 +5941,7 @@ class ProfilesTab(ttk.Frame):
         else:
             local_e.insert(0, "65000")
             peer_asn_e.insert(0, "65001")
+        self._sync_bgp_block_slots(block)
 
     def _del_bgp_block(self, frame):
         self.bgp_blocks[:] = [b for b in self.bgp_blocks
@@ -5807,11 +5967,13 @@ class ProfilesTab(ttk.Frame):
         else:
             asn_e.insert(0, block["peer_asn"].get().strip())
         block["slots"].append({"frame": row, "asn": asn_e, "desc": desc_e})
+        self._sync_bgp_block_slots(block)
 
     def _del_bgp_slot(self, row, block):
         block["slots"][:] = [r for r in block["slots"]
                              if r["frame"] is not row]
         row.destroy()
+        self._sync_bgp_block_slots(block)
 
     def _collect_bgp_instances(self):
         out = []
@@ -5934,19 +6096,10 @@ class ProfilesTab(ttk.Frame):
         for svi in p.get("svis", []) or []:
             self._add_svi(svi)
 
-        ospf = p.get("ospf", {}) or {}
-        self.ospf_enabled.set(bool(ospf.get("enabled", False)))
-        self.ospf_pid_e.delete(0, "end")
-        self.ospf_pid_e.insert(0, str(ospf.get("process_id", "1") or "1"))
-        self.ospf_passive_default.set(bool(ospf.get("passive_default", False)))
-        passive = ospf.get("passive_interfaces", []) or []
-        if isinstance(passive, list):
-            passive = ", ".join(str(x) for x in passive)
-        self.ospf_passive_e.delete(0, "end")
-        self.ospf_passive_e.insert(0, passive)
-        self._clear_ospf_nets()
-        for n in ospf.get("networks", []) or []:
-            self._add_ospf_net(n)
+        self.ospf_text.delete("1.0", "end")
+        self.ospf_text.insert("1.0", _ospf_config_for_edit(p))
+        if hasattr(self.ospf_text, "_autosize"):
+            self.ospf_text._autosize()
 
         bgp = p.get("bgp", {}) or {}
         self._clear_bgp_blocks()
@@ -5993,11 +6146,9 @@ class ProfilesTab(ttk.Frame):
             grid.enabled.set(False)
             grid.clear()
         self._clear_svis()
-        self.ospf_enabled.set(False)
-        self.ospf_pid_e.delete(0, "end"); self.ospf_pid_e.insert(0, "1")
-        self.ospf_passive_default.set(False)
-        self.ospf_passive_e.delete(0, "end")
-        self._clear_ospf_nets()
+        self.ospf_text.delete("1.0", "end")
+        if hasattr(self.ospf_text, "_autosize"):
+            self.ospf_text._autosize()
         self._clear_bgp_blocks()
         self._clear_acls()
         self._on_layer3_toggle()
@@ -6131,27 +6282,9 @@ class ProfilesTab(ttk.Frame):
                     entry["mask"] = mask_val
                 svis.append(entry)
             data["svis"] = svis
-            networks = []
-            for r in self.ospf_net_rows:
-                net = r["net"].get().strip()
-                if not net:
-                    continue
-                networks.append({
-                    "network":  net,
-                    "wildcard": r["wc"].get().strip(),
-                    "area":     r["area"].get().strip() or "0",
-                })
-            passive_ifaces = [
-                p.strip() for p in self.ospf_passive_e.get().split(",")
-                if p.strip()
-            ]
-            data["ospf"] = {
-                "enabled":             self.ospf_enabled.get(),
-                "process_id":          self.ospf_pid_e.get().strip() or "1",
-                "passive_default":     self.ospf_passive_default.get(),
-                "passive_interfaces":  passive_ifaces,
-                "networks":            networks,
-            }
+            ospf_cfg = self.ospf_text.get("1.0", "end").strip()
+            if ospf_cfg:
+                data["ospf_config"] = ospf_cfg
             bgp_instances = self._collect_bgp_instances()
             if bgp_instances:
                 data["bgp"] = {"instances": bgp_instances}
@@ -6161,7 +6294,10 @@ class ProfilesTab(ttk.Frame):
 
         self.app.profiles[name] = data
         save_json("profiles.json", self.app.profiles)
-        self._refresh(); self.app.gen_tab.refresh_combos()
+        self._refresh()
+        if name in self.app.profiles:
+            self.lb.select(name)
+        self.app.gen_tab.refresh_combos()
         _dialog("Saved", f"Profile '{name}' saved.")
 
 
@@ -7125,8 +7261,8 @@ class GuideTab(ttk.Frame):
         body(
             "Tick 'Enable Layer 3' for sites that route. This reveals the L3 "
             "editor and tells the generator to emit routing-related blocks "
-            "(L3 interfaces, OSPF, BGP, default route, etc.). Leave it off "
-            "for plain access-layer switches.")
+            "(L3 interfaces, OSPF paste, BGP, default route, etc.). Leave it "
+            "off for plain access-layer switches.")
 
         subheading("Management Style")
         body(
@@ -7154,18 +7290,16 @@ class GuideTab(ttk.Frame):
 
         subheading("OSPF")
         body(
-            "Tick 'Enable OSPF' to render a 'router ospf <id>' block. "
-            "Fields:\n\n"
-            "  Process ID                The OSPF process number.\n"
-            "  Passive interface default Tick to emit "
-            "'passive-interface default'. Interfaces listed below then become "
-            "exceptions (no passive-interface ...). When off, only listed "
-            "interfaces are passive.\n"
-            "  Passive Interfaces (CSV)  Comma-separated interface names.\n"
-            "  Networks                  One row per 'network ... area ...' "
-            "statement.\n\n"
-            "Router-ID is set per switch in Generate Config Step 3 and "
-            "defaults to the Loopback0 IP.")
+            "Paste the site-wide OSPF IOS block for this profile. Lines "
+            "emit verbatim in the Routing section. Router-ID can be "
+            "included in the paste or left to Generate Config Step 3, "
+            "which defaults to the first loopback IP.")
+        code(
+            "router ospf 1\n"
+            "passive-interface default\n"
+            "no passive-interface TenGigabitEthernet1/1/1\n"
+            "network 10.0.0.0 0.0.255.255 area 0\n"
+            "exit")
 
         subheading("BGP")
         body(
@@ -7312,7 +7446,8 @@ class GuideTab(ttk.Frame):
             "   Custom Sections - After Interfaces (Base)\n"
             "   Profile ACLs (named extended ACLs)\n\n"
             "Routing  (Layer 3 only)\n"
-            "   router ospf <id> block\n"
+            "   OSPF block pasted in the profile (router-id per switch when "
+            "omitted)\n"
             "   router bgp <asn> block(s) with neighbours and MD5 auth\n"
             "   Static Routes\n"
             "   Auto default route via Default Gateway (if no user-supplied "
