@@ -2136,6 +2136,70 @@ def _render_bgp(profile, sw):
     return "\n\n".join(blocks)
 
 
+_IFACE_VLAN_HEAD_RE = re.compile(
+    r'^\s*interface\s+(?:Vlan|vlan)\s*(\d+)\s*$', re.I | re.M)
+
+
+def _split_vlan_definitions(text):
+    """Split vlan_definitions IOS into L2 VLAN stanzas and embedded
+    interface-Vlan SVI stanzas. Embedded SVIs render under L3 Interfaces
+    instead of the VLAN section."""
+    text = (text or "").strip()
+    if not text:
+        return "", []
+    vlan_parts = []
+    embedded = []
+    for block in re.split(r'\n\s*\n', text):
+        block = block.strip()
+        if not block:
+            continue
+        m = _IFACE_VLAN_HEAD_RE.match(block)
+        if m:
+            embedded.append({"vlan": m.group(1), "text": block})
+        else:
+            vlan_parts.append(block)
+    return "\n\n".join(vlan_parts), embedded
+
+
+def _effective_svis(profile, sw):
+    """Return the SVI list to render for this switch. When the profile
+    allows per-switch VLAN overrides and Step 3 supplied SVI rows, those
+    replace profile['svis'] so VLAN IDs stay in sync with overrides."""
+    if profile.get("allow_per_switch_vlans"):
+        sw_svis = sw.get("svis")
+        if isinstance(sw_svis, list) and sw_svis:
+            return sw_svis
+    return profile.get("svis", []) or []
+
+
+def _render_svi_block(svi, svi_ips):
+    """Build one interface Vlan stanza from a structured SVI dict."""
+    vlan = (svi.get("vlan") or "").strip()
+    if not vlan:
+        return ""
+    per_sw = (svi_ips or {}).get(vlan, {}) or {}
+    ip = (per_sw.get("ip") or svi.get("ip") or "").strip()
+    mask = (per_sw.get("mask") or svi.get("mask") or "").strip()
+    desc = (svi.get("description") or svi.get("name") or "").strip()
+    helpers_raw = svi.get("helper_addresses") or ""
+    if isinstance(helpers_raw, list):
+        helpers = [h.strip() for h in helpers_raw if str(h).strip()]
+    else:
+        helpers = [h.strip() for h in str(helpers_raw).split(",") if h.strip()]
+    lines = [f"interface Vlan{vlan}"]
+    if desc:
+        lines.append(f"description //{desc}")
+    if ip and mask:
+        lines.append(f"ip address {ip} {mask}")
+    else:
+        lines.append("no ip address")
+    for h in helpers:
+        lines.append(f"ip helper-address {h}")
+    lines.append("no shutdown")
+    lines.append("exit")
+    return "\n".join(lines)
+
+
 def render_config_sections(model, profile, roles, base, sw):
     """Return an ordered dict of named config sections.
 
@@ -2273,12 +2337,18 @@ def render_config_sections(model, profile, roles, base, sw):
     vl = []
     # Per-switch override: if the profile allows it and Step 3 supplied a
     # non-empty block, it REPLACES the profile's VLAN definitions for
-    # this one switch.
+    # this one switch. Embedded interface-Vlan blocks are peeled off and
+    # emitted under L3 Interfaces so SVIs stay with routing, not VLANs.
     sw_vlans = (sw.get("vlan_definitions") or "").strip()
-    if sw_vlans:
-        vl.append(sw_vlans)
+    vlan_src = sw_vlans if sw_vlans else profile.get("vlan_definitions", "")
+    if layer3:
+        vlan_only, embedded_vlan_svis = _split_vlan_definitions(vlan_src)
+        if vlan_only:
+            vl.append(vlan_only)
     else:
-        vl.append(profile.get("vlan_definitions", ""))
+        embedded_vlan_svis = []
+        if vlan_src:
+            vl.append(vlan_src)
     for cs in base.get("custom_sections", []):
         if cs.get("position") == "pre-interface":
             cmds = cs.get("commands", "").strip()
@@ -2338,32 +2408,26 @@ def render_config_sections(model, profile, roles, base, sw):
                 )
 
         svi_ips = sw.get("svi_ips", {}) or {}
-        for svi in profile.get("svis", []) or []:
-            vlan = (svi.get("vlan") or "").strip()
-            if not vlan:
-                continue
-            per_sw = svi_ips.get(vlan, {}) or {}
-            ip = (per_sw.get("ip") or "").strip()
-            mask = (per_sw.get("mask") or "").strip()
-            desc = (svi.get("description") or svi.get("name") or "").strip()
-            helpers_raw = svi.get("helper_addresses") or ""
-            if isinstance(helpers_raw, list):
-                helpers = [h.strip() for h in helpers_raw if str(h).strip()]
-            else:
-                helpers = [h.strip() for h in str(helpers_raw).split(",")
-                           if h.strip()]
-            lines = [f"interface Vlan{vlan}"]
-            if desc:
-                lines.append(f"description //{desc}")
-            if ip and mask:
-                lines.append(f"ip address {ip} {mask}")
-            else:
-                lines.append("no ip address")
-            for h in helpers:
-                lines.append(f"ip helper-address {h}")
-            lines.append("no shutdown")
-            lines.append("exit")
-            l3.append("\n".join(lines))
+        rendered_svi_vlans = set()
+        for svi in _effective_svis(profile, sw):
+            block = _render_svi_block(svi, svi_ips)
+            if block:
+                l3.append(block)
+                rendered_svi_vlans.add((svi.get("vlan") or "").strip())
+
+        # Embedded interface-Vlan blocks from vlan_definitions (e.g.
+        # shutdown vlan1) that are not already covered by structured SVIs.
+        for emb in embedded_vlan_svis:
+            vlan = emb.get("vlan", "")
+            if vlan and vlan not in rendered_svi_vlans:
+                text = emb.get("text", "")
+                per_sw = svi_ips.get(vlan, {}) or {}
+                ip = (per_sw.get("ip") or "").strip()
+                mask = (per_sw.get("mask") or "").strip()
+                if ip and mask and "ip address" not in text.lower():
+                    text = text.rstrip() + f"\nip address {ip} {mask}"
+                l3.append(text)
+                rendered_svi_vlans.add(vlan)
 
     # ── 3  Interfaces ───────────────────────────────────────────────────
     ifaces = []
@@ -2519,7 +2583,8 @@ def render_config_sections(model, profile, roles, base, sw):
     else:
         svi_sec = l3_sections.get("mgmt_svi", {})
         if svi_sec.get("enabled"):
-            mgmt_vlan = (svi_sec.get("vlan")
+            mgmt_vlan = (sw.get("mgmt_svi_vlan")
+                         or svi_sec.get("vlan")
                          or profile.get("mgmt_vlan") or "1").strip() or "1"
             svi_ip = (sw.get("mgmt_svi_ip")
                       or sw.get("mgmt_ip")
@@ -2906,7 +2971,9 @@ class GenerateTab(ttk.Frame):
         _section(self.vlans_frame, "VLAN Definitions (this switch)")
         ttk.Label(self.vlans_frame, style="Hint.TLabel",
                   text="Edits apply to this switch only and replace the\n"
-                       "profile's VLAN block at render time."
+                       "profile's VLAN block at render time. For L3 profiles,\n"
+                       "interface-Vlan blocks here move to L3 Interfaces;\n"
+                       "edit SVI VLAN IDs in the SVIs section below."
                   ).pack(anchor="w", padx=5, pady=(2, 2))
         self.sw_vlans_text = tk.Text(
             self.vlans_frame, height=8, font=("Consolas", 9),
@@ -2947,6 +3014,9 @@ class GenerateTab(ttk.Frame):
         self.msvi_lf = ttk.LabelFrame(self.l3_frame, text="Management VLAN",
                                       padding=5)
         self.msvi_lf.pack(fill="x", padx=5, pady=4)
+        self.msvi_vlan = _field(self.msvi_lf, "VLAN ID")
+        self.msvi_vlan_row = self.msvi_vlan.master
+        self.msvi_vlan_row.pack_forget()
         self.msvi_ip   = _field(self.msvi_lf, "IP")
         self.msvi_mask = _field(self.msvi_lf, "Mask")
 
@@ -2985,21 +3055,25 @@ class GenerateTab(ttk.Frame):
         self.svi_ip_lf = ttk.LabelFrame(
             self.l3_frame, text="SVI IPs", padding=5)
         self.svi_ip_lf.pack(fill="x", padx=5, pady=4)
-        ttk.Label(self.svi_ip_lf, style="Hint.TLabel",
+        self.svi_ip_hint = ttk.Label(self.svi_ip_lf, style="Hint.TLabel",
                   text="  One row per SVI defined in the profile. IP /\n"
                        "  Mask pre-fill from the profile when set;\n"
                        "  override here for per-switch values."
-                  ).pack(anchor="w", padx=2, pady=(0, 4))
+                  )
+        self.svi_ip_hint.pack(anchor="w", padx=2, pady=(0, 4))
         sih = ttk.Frame(self.svi_ip_lf); sih.pack(fill="x")
         sih.columnconfigure(0, weight=2, uniform="sviip")
-        sih.columnconfigure(1, weight=1, uniform="sviip")
+        sih.columnconfigure(1, weight=2, uniform="sviip")
         sih.columnconfigure(2, weight=1, uniform="sviip")
-        ttk.Label(sih, text="VLAN", anchor="w").grid(
-            row=0, column=0, sticky="ew", padx=1)
+        sih.columnconfigure(3, weight=1, uniform="sviip")
+        self.svi_ip_hdr_vlan = ttk.Label(sih, text="VLAN", anchor="w")
+        self.svi_ip_hdr_vlan.grid(row=0, column=0, sticky="ew", padx=1)
+        self.svi_ip_hdr_desc = ttk.Label(sih, text="Description", anchor="w")
+        self.svi_ip_hdr_desc.grid(row=0, column=1, sticky="ew", padx=1)
         ttk.Label(sih, text="IP", anchor="w").grid(
-            row=0, column=1, sticky="ew", padx=1)
-        ttk.Label(sih, text="Mask", anchor="w").grid(
             row=0, column=2, sticky="ew", padx=1)
+        ttk.Label(sih, text="Mask", anchor="w").grid(
+            row=0, column=3, sticky="ew", padx=1)
         self.svi_ip_frame = ttk.Frame(self.svi_ip_lf)
         self.svi_ip_frame.pack(fill="x")
         self.svi_ip_rows = []
@@ -3392,17 +3466,30 @@ class GenerateTab(ttk.Frame):
 
         # Management VLAN SVI section.
         svi_sec = sections.get("mgmt_svi", {})
+        allow_sw_vlans = bool(profile.get("allow_per_switch_vlans"))
         if svi_sec.get("enabled"):
             vlan = (svi_sec.get("vlan") or "").strip()
             title = f"Management VLAN {vlan}" if vlan else "Management VLAN"
             self.msvi_lf.configure(text=title)
             self.msvi_lf.pack(fill="x", padx=5, pady=4)
+            if allow_sw_vlans:
+                if not self.msvi_vlan_row.winfo_ismapped():
+                    self.msvi_vlan_row.pack(fill="x", padx=5, pady=2,
+                                            before=self.msvi_ip.master)
+                if not self.msvi_vlan.get().strip() and vlan:
+                    self.msvi_vlan.insert(0, vlan)
+            else:
+                self.msvi_vlan_row.pack_forget()
+                self.msvi_vlan.delete(0, "end")
             default_mask = (svi_sec.get("mask") or "").strip()
             if not self.msvi_mask.get().strip() and default_mask:
                 self.msvi_mask.insert(0, default_mask)
             default_ip = (svi_sec.get("ip") or "").strip()
             if not self.msvi_ip.get().strip() and default_ip:
                 self.msvi_ip.insert(0, default_ip)
+        else:
+            self.msvi_vlan_row.pack_forget()
+            self.msvi_vlan.delete(0, "end")
 
         # Router ID only relevant when OSPF is enabled in the profile.
         if ospf_enabled:
@@ -3415,10 +3502,30 @@ class GenerateTab(ttk.Frame):
         if self.l3_ip_rows:
             self.l3_ip_lf.pack(fill="x", padx=5, pady=4)
 
-        # SVI IPs section only when the profile actually defines SVIs.
+        # SVI section when the profile defines SVIs. With per-switch VLAN
+        # overrides enabled, VLAN ID and Description become editable so
+        # SVIs stay in sync with the VLAN block above.
         if profile.get("svis"):
+            if allow_sw_vlans:
+                self.svi_ip_lf.configure(text="SVIs (this switch)")
+                self.svi_ip_hint.configure(
+                    text="  Per-switch SVI definitions. VLAN IDs can differ\n"
+                         "  from the profile so they stay in sync with the\n"
+                         "  VLAN block above. IP / Mask override profile defaults."
+                )
+                self.svi_ip_hdr_vlan.configure(text="VLAN ID")
+                self.svi_ip_hdr_desc.grid()
+            else:
+                self.svi_ip_lf.configure(text="SVI IPs")
+                self.svi_ip_hint.configure(
+                    text="  One row per SVI defined in the profile. IP /\n"
+                         "  Mask pre-fill from the profile when set;\n"
+                         "  override here for per-switch values."
+                )
+                self.svi_ip_hdr_vlan.configure(text="VLAN")
+                self.svi_ip_hdr_desc.grid_remove()
             self.svi_ip_lf.pack(fill="x", padx=5, pady=4)
-            self._populate_svi_ip_rows(profile)
+            self._populate_svi_ip_rows(profile, editable=allow_sw_vlans)
         else:
             self._clear_svi_ip_rows()
 
@@ -3484,42 +3591,89 @@ class GenerateTab(ttk.Frame):
             r["frame"].destroy()
         self.svi_ip_rows.clear()
 
-    def _populate_svi_ip_rows(self, profile):
+    def _populate_svi_ip_rows(self, profile, editable=False):
         """One row per SVI defined in the profile. Preserves any IPs
         the user already typed for the same VLAN. Pre-fills IP / Mask
         from profile.svis[].ip / .mask when the user hasn't typed a
         per-switch value yet (typical workflow: profile sets the mask
-        site-wide, optionally a default IP)."""
-        existing = {r["vlan"]: (r["ip"].get(), r["mask"].get())
-                    for r in self.svi_ip_rows}
+        site-wide, optionally a default IP).
+
+        When *editable* is True (per-switch VLAN overrides enabled),
+        VLAN ID and Description are editable Entry fields and the full
+        row is stored in sw['svis'] at render time."""
+        existing = {}
+        for r in self.svi_ip_rows:
+            if r.get("editable"):
+                key = r["vlan"].get().strip()
+                existing[key] = {
+                    "vlan": key,
+                    "desc": r["desc"].get().strip() if r.get("desc") else "",
+                    "ip": r["ip"].get(),
+                    "mask": r["mask"].get(),
+                    "helpers": r.get("helpers", ""),
+                }
+            else:
+                key = r["vlan"]
+                existing[key] = {
+                    "vlan": key,
+                    "desc": "",
+                    "ip": r["ip"].get(),
+                    "mask": r["mask"].get(),
+                    "helpers": r.get("helpers", ""),
+                }
         self._clear_svi_ip_rows()
         for svi in profile.get("svis", []) or []:
             vlan = (svi.get("vlan") or "").strip()
             if not vlan:
                 continue
             desc = (svi.get("description") or "").strip()
-            label = f"Vlan{vlan}" + (f" - {desc}" if desc else "")
             default_ip = (svi.get("ip") or "").strip()
             default_mask = (svi.get("mask") or "").strip()
+            helpers_raw = svi.get("helper_addresses") or ""
+            if isinstance(helpers_raw, list):
+                helpers = ", ".join(str(h) for h in helpers_raw if str(h).strip())
+            else:
+                helpers = str(helpers_raw or "").strip()
+            saved = existing.get(vlan, {})
             row = ttk.Frame(self.svi_ip_frame); row.pack(fill="x", pady=1)
             row.columnconfigure(0, weight=2, uniform="sviip")
-            row.columnconfigure(1, weight=1, uniform="sviip")
+            row.columnconfigure(1, weight=2, uniform="sviip")
             row.columnconfigure(2, weight=1, uniform="sviip")
-            ttk.Label(row, text=label, anchor="w").grid(
-                row=0, column=0, sticky="ew", padx=1)
-            ip = ttk.Entry(row); ip.grid(row=0, column=1, sticky="ew", padx=1)
-            mask = ttk.Entry(row); mask.grid(row=0, column=2, sticky="ew", padx=1)
+            row.columnconfigure(3, weight=1, uniform="sviip")
+            if editable:
+                vlan_w = ttk.Entry(row)
+                vlan_w.grid(row=0, column=0, sticky="ew", padx=1)
+                vlan_w.insert(0, saved.get("vlan") or vlan)
+                desc_w = ttk.Entry(row)
+                desc_w.grid(row=0, column=1, sticky="ew", padx=1)
+                desc_w.insert(0, saved.get("desc") or desc)
+                _attach_context_menu(vlan_w)
+                _attach_context_menu(desc_w)
+            else:
+                label = f"Vlan{vlan}" + (f" - {desc}" if desc else "")
+                vlan_w = label
+                ttk.Label(row, text=label, anchor="w").grid(
+                    row=0, column=0, sticky="ew", padx=1)
+                desc_w = None
+            ip = ttk.Entry(row); ip.grid(row=0, column=2, sticky="ew", padx=1)
+            mask = ttk.Entry(row); mask.grid(row=0, column=3, sticky="ew", padx=1)
             _attach_context_menu(ip)
             _attach_context_menu(mask)
-            if vlan in existing:
-                ip.insert(0, existing[vlan][0])
-                mask.insert(0, existing[vlan][1])
+            if saved:
+                ip.insert(0, saved.get("ip", ""))
+                mask.insert(0, saved.get("mask", ""))
+            elif vlan in existing:
+                ip.insert(0, existing[vlan].get("ip", ""))
+                mask.insert(0, existing[vlan].get("mask", ""))
             if not ip.get() and default_ip:
                 ip.insert(0, default_ip)
             if not mask.get() and default_mask:
                 mask.insert(0, default_mask)
-            self.svi_ip_rows.append({"frame": row, "vlan": vlan,
-                                     "ip": ip, "mask": mask})
+            self.svi_ip_rows.append({
+                "frame": row, "vlan": vlan_w, "desc": desc_w,
+                "ip": ip, "mask": mask, "editable": editable,
+                "helpers": saved.get("helpers") or helpers,
+            })
 
     def _clear_l3_statics(self):
         for r in self.l3_static_rows:
@@ -3805,17 +3959,44 @@ class GenerateTab(ttk.Frame):
         sw["routed_mgmt_mask"] = self.rm_mask.get().strip()
         sw["mgmt_svi_ip"]      = self.msvi_ip.get().strip()
         sw["mgmt_svi_mask"]    = self.msvi_mask.get().strip()
+        sw["mgmt_svi_vlan"]    = self.msvi_vlan.get().strip()
         sw["router_id"]      = self.router_id.get().strip()
         sw["routed_iface_ips"] = {
             r["iface_name"]: {"ip": r["ip"].get().strip(),
                               "mask": r["mask"].get().strip()}
             for r in self.l3_ip_rows
         }
-        sw["svi_ips"] = {
-            r["vlan"]: {"ip": r["ip"].get().strip(),
-                        "mask": r["mask"].get().strip()}
-            for r in self.svi_ip_rows
-        }
+        svi_ips = {}
+        sw_svis = []
+        for r in self.svi_ip_rows:
+            if r.get("editable"):
+                vlan = r["vlan"].get().strip()
+                if not vlan:
+                    continue
+                desc = r["desc"].get().strip() if r.get("desc") else ""
+                ip_val = r["ip"].get().strip()
+                mask_val = r["mask"].get().strip()
+                helpers_raw = r.get("helpers") or ""
+                if isinstance(helpers_raw, str):
+                    helpers = [h.strip() for h in helpers_raw.split(",")
+                               if h.strip()]
+                else:
+                    helpers = list(helpers_raw or [])
+                sw_svis.append({
+                    "vlan": vlan,
+                    "description": desc,
+                    "ip": ip_val,
+                    "mask": mask_val,
+                    "helper_addresses": helpers,
+                })
+                svi_ips[vlan] = {"ip": ip_val, "mask": mask_val}
+            else:
+                vlan = r["vlan"]
+                svi_ips[vlan] = {"ip": r["ip"].get().strip(),
+                                 "mask": r["mask"].get().strip()}
+        sw["svi_ips"] = svi_ips
+        if sw_svis:
+            sw["svis"] = sw_svis
         sw["static_routes"] = [
             {"prefix":      r["prefix"].get().strip(),
              "mask":        r["mask"].get().strip(),
@@ -4358,7 +4539,9 @@ class ProfilesTab(ttk.Frame):
         ttk.Label(form, style="Hint.TLabel",
                   text="  When on, Generate Step 3 shows a VLAN editor\n"
                        "  pre-filled with this block. Step 3 edits replace\n"
-                       "  these definitions for that one switch only."
+                       "  these definitions for that one switch only.\n"
+                       "  On L3 profiles, SVI VLAN IDs can also be edited\n"
+                       "  per switch so they stay in sync with VLAN overrides."
                   ).pack(anchor="w", padx=5, pady=(0, 2))
         self.vlans_text = tk.Text(form, height=10, font=("Consolas", 9),
                                   bg=C["bg_input"], fg=C["fg"],
@@ -6730,7 +6913,6 @@ class GuideTab(ttk.Frame):
             "   Credentials (enable secret + local username/password)\n"
             "   AAA (Base)\n"
             "   Security (Base)\n"
-            "   switch 1 provision (from Model)\n"
             "   ip domain name\n"
             "   ip name-server lines (Profile Services)\n"
             "   clock timezone / summer-time (Profile Services)\n"
