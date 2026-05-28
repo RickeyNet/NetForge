@@ -14,13 +14,16 @@ import json
 import os
 import re
 import sys
+import weakref
+import ctypes
+from ctypes import wintypes
 from datetime import date
 import tkinter as tk
 import zipfile
-from tkinter import colorchooser, ttk, filedialog, scrolledtext
+from tkinter import colorchooser, ttk, filedialog
 from jinja2.sandbox import SandboxedEnvironment
 
-VERSION = "1.5.3"
+VERSION = "1.4.0"
 _RECENT_MAX = 10
 
 
@@ -138,10 +141,6 @@ def _merge_bundled_data():
 
 _merge_bundled_data()
 
-
-import weakref
-import ctypes
-from ctypes import wintypes
 
 # Windows DWM attributes (Win10 1809+ for dark-mode; Win11 22H2+ for colors)
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
@@ -2039,11 +2038,11 @@ def _normalize_l3_sections(profile):
         legacy_drm = (profile.get("default_routed_mask") or "").strip()
         if legacy_drm and not (out["routed_mgmt"].get("mask") or "").strip():
             out["routed_mgmt"]["mask"] = legacy_drm
-        return out
+        return _enrich_l3_sections(out)
     # Migrate from legacy mgmt_style.
     style = (profile.get("mgmt_style") or "svi").strip().lower()
     mgmt_vlan = str(profile.get("mgmt_vlan") or "").strip()
-    return {
+    return _enrich_l3_sections({
         "loopback": {
             "enabled":     style == "loopback",
             "ip":          "",
@@ -2064,7 +2063,549 @@ def _normalize_l3_sections(profile):
             "mask":        "",
             "description": "Switch MGMT",
         },
-    }
+    })
+
+
+_L3_LOOPBACK_DEFAULTS = {
+    "number": "0", "ip": "", "mask": "255.255.255.255",
+    "description": "Switch MGMT / Router-ID",
+}
+_L3_ROUTED_MGMT_DEFAULTS = {
+    "interface": "", "ip": "", "mask": "", "description": "Routed Mgmt Uplink",
+}
+_L3_MGMT_SVI_DEFAULTS = {
+    "vlan": "", "ip": "", "mask": "", "description": "Switch MGMT",
+}
+
+
+def _canon_iface(s):
+    s = (s or "").strip()
+    if s[:6].lower() == "range ":
+        s = "range " + s[6:].strip()
+    return s
+
+
+def _l3_section_entries(section, field_defaults):
+    """Normalize an l3_sections block to a list of entry dicts."""
+    if not isinstance(section, dict):
+        return []
+    entries = section.get("entries")
+    if isinstance(entries, list):
+        out = []
+        for raw in entries:
+            if not isinstance(raw, dict):
+                continue
+            entry = dict(field_defaults)
+            entry.update({k: v for k, v in raw.items() if v is not None})
+            out.append(entry)
+        if out:
+            return out
+    legacy = dict(field_defaults)
+    for k in field_defaults:
+        if k in section and section[k] is not None:
+            legacy[k] = section[k]
+    if section.get("enabled") or any(str(legacy.get(k) or "").strip()
+                                   for k in field_defaults):
+        return [legacy]
+    return []
+
+
+def _enrich_l3_sections(sections):
+    """Attach normalized `entries` lists to each l3_sections block."""
+    if not isinstance(sections, dict):
+        return {}
+    out = dict(sections)
+    out["loopback"] = dict(sections.get("loopback") or {})
+    out["routed_mgmt"] = dict(sections.get("routed_mgmt") or {})
+    out["mgmt_svi"] = dict(sections.get("mgmt_svi") or {})
+    out["loopback"]["entries"] = _l3_section_entries(
+        out["loopback"], _L3_LOOPBACK_DEFAULTS)
+    out["routed_mgmt"]["entries"] = _l3_section_entries(
+        out["routed_mgmt"], _L3_ROUTED_MGMT_DEFAULTS)
+    out["mgmt_svi"]["entries"] = _l3_section_entries(
+        out["mgmt_svi"], _L3_MGMT_SVI_DEFAULTS)
+    return out
+
+
+def _sw_loopbacks_map(sw):
+    result = {}
+    for item in sw.get("loopbacks") or []:
+        if isinstance(item, dict):
+            num = str(item.get("number") or "").strip()
+            if num:
+                result[num] = item
+    if "0" not in result and any((sw.get(k) or "").strip()
+                                  for k in ("loopback0_ip", "loopback0_desc")):
+        result["0"] = {
+            "number": "0",
+            "ip": sw.get("loopback0_ip", ""),
+            "mask": sw.get("loopback0_mask", ""),
+            "description": sw.get("loopback0_desc", ""),
+        }
+    return result
+
+
+def _sw_routed_mgmt_map(sw):
+    result = {}
+    for item in sw.get("routed_mgmt_interfaces") or []:
+        if isinstance(item, dict):
+            iface = _canon_iface(item.get("interface") or "")
+            if iface:
+                result[iface] = item
+    legacy_ip = (sw.get("routed_mgmt_ip") or "").strip()
+    legacy_mask = (sw.get("routed_mgmt_mask") or "").strip()
+    if legacy_ip or legacy_mask:
+        result.setdefault("", {
+            "interface": "",
+            "ip": legacy_ip,
+            "mask": legacy_mask,
+        })
+    return result
+
+
+def _sw_mgmt_svis_map(sw):
+    result = {}
+    for item in sw.get("mgmt_svis") or []:
+        if isinstance(item, dict):
+            vlan = str(item.get("vlan") or "").strip()
+            if vlan:
+                result[vlan] = item
+    legacy_vlan = (sw.get("mgmt_svi_vlan") or "").strip()
+    legacy_ip = (sw.get("mgmt_svi_ip") or sw.get("mgmt_ip") or "").strip()
+    legacy_mask = (sw.get("mgmt_svi_mask") or sw.get("mgmt_mask") or "").strip()
+    if legacy_vlan or legacy_ip or legacy_mask:
+        result.setdefault(legacy_vlan or "", {
+            "vlan": legacy_vlan,
+            "ip": legacy_ip,
+            "mask": legacy_mask,
+        })
+    return result
+
+
+def _first_loopback_ip(sw, l3_sections):
+    lb_sec = l3_sections.get("loopback", {}) or {}
+    if lb_sec.get("enabled"):
+        sw_map = _sw_loopbacks_map(sw)
+        for entry in lb_sec.get("entries") or []:
+            num = str(entry.get("number") or "0").strip() or "0"
+            sw_lb = sw_map.get(num, {})
+            ip = (sw_lb.get("ip") or entry.get("ip") or "").strip()
+            if ip:
+                return ip
+    return (sw.get("loopback0_ip") or "").strip()
+
+
+_L3_UI_ALIAS = {"loopback": "lb", "routed_mgmt": "rm", "mgmt_svi": "msvi"}
+
+_L3_KINDS = {
+    "loopback": {
+        "defaults": _L3_LOOPBACK_DEFAULTS,
+        "id_field": "number",
+        "sw_list": "loopbacks",
+        "legacy_sw": {
+            "loopback0_ip": "ip", "loopback0_mask": "mask",
+            "loopback0_desc": "description",
+        },
+        "profile": {
+            "checkbox": "Loopbacks",
+            "add_label": "+ Add Loopback",
+            "uniform": "lbcol",
+            "columns": (
+                ("number", "Number", 1),
+                ("ip", "IP (default)", 2),
+                ("mask", "Mask (default)", 2),
+                ("description", "Description", 3),
+            ),
+            "new_defaults": {
+                "number": "0", "mask": "255.255.255.255",
+                "description": "Switch MGMT / Router-ID",
+            },
+        },
+        "generate": {
+            "title": "Loopbacks",
+            "hint": "  One row per loopback defined in the profile.",
+            "uniform": "genlb",
+            "columns": (
+                ("number", "Loopback", 1, {"readonly": True, "display": "Loopback{}"}),
+                ("ip", "IP", 2),
+                ("mask", "Mask", 2),
+                ("description", "Description", 3),
+            ),
+        },
+    },
+    "routed_mgmt": {
+        "defaults": _L3_ROUTED_MGMT_DEFAULTS,
+        "id_field": "interface",
+        "sw_list": "routed_mgmt_interfaces",
+        "legacy_sw": {"routed_mgmt_ip": "ip", "routed_mgmt_mask": "mask"},
+        "profile": {
+            "checkbox": "Routed Interfaces",
+            "add_label": "+ Add Routed Interface",
+            "uniform": "rmcol",
+            "columns": (
+                ("interface", "Interface", 2),
+                ("ip", "IP (default)", 2),
+                ("mask", "Mask (default)", 2),
+                ("description", "Description", 3),
+            ),
+            "new_defaults": {"description": "Routed Mgmt Uplink"},
+        },
+        "generate": {
+            "title": "Routed Interfaces",
+            "hint": "  One row per routed interface defined in the profile.",
+            "uniform": "genrm",
+            "columns": (
+                ("interface", "Interface", 2, {"readonly": True}),
+                ("ip", "IP", 2),
+                ("mask", "Mask", 2),
+            ),
+        },
+    },
+    "mgmt_svi": {
+        "defaults": _L3_MGMT_SVI_DEFAULTS,
+        "id_field": "vlan",
+        "sw_list": "mgmt_svis",
+        "legacy_sw": {
+            "mgmt_svi_ip": "ip", "mgmt_svi_mask": "mask",
+            "mgmt_svi_vlan": "vlan",
+        },
+        "profile": {
+            "checkbox": "Management VLANs",
+            "add_label": "+ Add Management VLAN",
+            "uniform": "msvicol",
+            "columns": (
+                ("vlan", "VLAN ID", 1),
+                ("ip", "IP (default)", 2),
+                ("mask", "Mask (default)", 2),
+                ("description", "Description", 3),
+            ),
+            "new_defaults": {"description": "Switch MGMT"},
+        },
+        "generate": {
+            "title": "Management VLANs",
+            "hint": "  One row per management VLAN defined in the profile.",
+            "uniform": "genmsvi",
+            "columns": (
+                ("vlan", "VLAN", 1, {"readonly": True, "display": "Vlan{}"}),
+                ("ip", "IP", 2),
+                ("mask", "Mask", 2),
+            ),
+        },
+    },
+}
+
+
+def _l3_entry_key(kind, entry):
+    spec = _L3_KINDS[kind]
+    val = str(entry.get(spec["id_field"]) or "").strip()
+    if kind == "routed_mgmt":
+        return _canon_iface(val)
+    return val
+
+
+class L3EntryGrid:
+    """Shared row editor for l3_sections profile and generate UIs."""
+
+    def __init__(self, kind, mode):
+        self.kind = kind
+        self.mode = mode
+        self.spec = _L3_KINDS[kind]
+        self.rows = []
+        self.lf = None
+        self.enabled = None
+        self.row_frame = None
+        self.hint = None
+
+    def build_profile(self, parent):
+        cfg = self.spec["profile"]
+        self.lf = ttk.LabelFrame(parent, padding=5)
+        self.lf.pack(fill="x", padx=5, pady=(4, 0 if self.kind != "mgmt_svi" else 4))
+        self.enabled = tk.BooleanVar(value=False)
+        top = ttk.Frame(self.lf); top.pack(fill="x")
+        ttk.Checkbutton(top, text=cfg["checkbox"],
+                        variable=self.enabled).pack(side="left")
+        ttk.Button(top, text=cfg["add_label"],
+                   command=lambda: self.add()).pack(side="right", padx=(6, 1))
+        hdr = ttk.Frame(self.lf); hdr.pack(fill="x", pady=(4, 0))
+        for col, (field, label, weight, *_) in enumerate(cfg["columns"]):
+            hdr.columnconfigure(col, weight=weight, uniform=cfg["uniform"])
+            ttk.Label(hdr, text=label, anchor="w").grid(
+                row=0, column=col, sticky="ew", padx=1)
+        ttk.Frame(hdr, width=30).grid(row=0, column=len(cfg["columns"]),
+                                        padx=(6, 1))
+        self.row_frame = ttk.Frame(self.lf); self.row_frame.pack(fill="x")
+        return self
+
+    def build_generate(self, parent):
+        cfg = self.spec["generate"]
+        self.lf = ttk.LabelFrame(parent, text=cfg["title"], padding=5)
+        self.lf.pack(fill="x", padx=5, pady=4)
+        self.hint = ttk.Label(self.lf, style="Hint.TLabel", text=cfg["hint"])
+        self.hint.pack(anchor="w", padx=2, pady=(0, 4))
+        hdr = ttk.Frame(self.lf); hdr.pack(fill="x")
+        for col, col_spec in enumerate(cfg["columns"]):
+            field, label, weight = col_spec[:3]
+            hdr.columnconfigure(col, weight=weight, uniform=cfg["uniform"])
+            ttk.Label(hdr, text=label, anchor="w").grid(
+                row=0, column=col, sticky="ew", padx=1)
+        self.row_frame = ttk.Frame(self.lf); self.row_frame.pack(fill="x")
+        return self
+
+    def clear(self):
+        for row in self.rows:
+            row["frame"].destroy()
+        self.rows.clear()
+
+    def add(self, data=None, editable_key=False):
+        if self.mode == "profile":
+            columns = self.spec["profile"]["columns"]
+            uniform = self.spec["profile"]["uniform"]
+            deletable = True
+            new_defaults = self.spec["profile"].get("new_defaults", {})
+        else:
+            columns = self.spec["generate"]["columns"]
+            uniform = self.spec["generate"]["uniform"]
+            deletable = False
+            new_defaults = {}
+        data = data or {}
+        row_fr = ttk.Frame(self.row_frame); row_fr.pack(fill="x", pady=1)
+        fields = {}
+        for col, col_spec in enumerate(columns):
+            field = col_spec[0]
+            weight = col_spec[2]
+            opts = col_spec[3] if len(col_spec) > 3 else {}
+            row_fr.columnconfigure(col, weight=weight, uniform=uniform)
+            readonly = opts.get("readonly") and not (
+                editable_key and field == self.spec["id_field"])
+            if readonly:
+                raw = str(data.get(field, "") or "").strip()
+                if field == "number" and not raw:
+                    raw = "0"
+                text = opts.get("display", "{}").format(raw)
+                widget = text
+                ttk.Label(row_fr, text=text, anchor="w").grid(
+                    row=0, column=col, sticky="ew", padx=1)
+            else:
+                widget = ttk.Entry(row_fr)
+                widget.grid(row=0, column=col, sticky="ew", padx=1)
+                _attach_context_menu(widget)
+                val = data.get(field, "")
+                if not val and field in new_defaults:
+                    val = new_defaults[field]
+                if val:
+                    widget.insert(0, str(val))
+            fields[field] = widget
+        if deletable:
+            ttk.Button(row_fr, text="X", width=3, style="Del.TButton",
+                       command=lambda fr=row_fr: self._delete(fr)
+                       ).grid(row=0, column=len(columns), padx=(6, 1))
+        self.rows.append({"frame": row_fr, "fields": fields})
+
+    def _delete(self, frame):
+        self.rows = [r for r in self.rows if r["frame"] is not frame]
+        frame.destroy()
+
+    def populate(self, entries, editable_key=False):
+        saved = {}
+        for row in self.rows:
+            key = self._row_key(row, editable_key)
+            if key:
+                saved[key] = {f: self._field_get(row, f)
+                              for f, _ in self._iter_fields(row)}
+        self.clear()
+        for entry in entries or []:
+            entry = dict(entry)
+            if self.kind == "loopback" and not str(entry.get("number") or "").strip():
+                entry["number"] = "0"
+            key = _l3_entry_key(self.kind, entry)
+            if self.kind != "loopback" and not key:
+                continue
+            self.add(entry, editable_key=editable_key)
+            vals = saved.get(key, {})
+            cur = self.rows[-1]
+            for field, val in vals.items():
+                w = cur["fields"].get(field)
+                if hasattr(w, "insert"):
+                    w.delete(0, "end")
+                    if val:
+                        w.insert(0, val)
+
+    def _row_key(self, row, editable_key):
+        id_field = self.spec["id_field"]
+        w = row["fields"].get(id_field)
+        if hasattr(w, "get"):
+            val = w.get().strip()
+        elif isinstance(w, str):
+            if self.kind == "loopback":
+                val = w.replace("Loopback", "").strip()
+            elif self.kind == "mgmt_svi":
+                val = w.replace("Vlan", "").strip()
+            else:
+                val = w.strip()
+        else:
+            val = str(w or "").strip()
+        if self.kind == "routed_mgmt":
+            return _canon_iface(val)
+        return val
+
+    def _iter_fields(self, row):
+        for field, w in row["fields"].items():
+            if hasattr(w, "get"):
+                yield field, w
+
+    def _field_get(self, row, field):
+        w = row["fields"].get(field)
+        return w.get().strip() if hasattr(w, "get") else ""
+
+    def collect_profile_entries(self):
+        id_field = self.spec["id_field"]
+        defaults = self.spec["defaults"]
+        out = []
+        for row in self.rows:
+            entry = {}
+            for field, w in self._iter_fields(row):
+                val = w.get().strip()
+                if field == "number" and not val:
+                    val = "0"
+                entry[field] = val
+            if not entry.get(id_field):
+                continue
+            if not entry.get("description"):
+                entry["description"] = defaults.get("description", "")
+            if not entry.get("mask") and defaults.get("mask"):
+                entry["mask"] = defaults["mask"]
+            out.append(entry)
+        return out
+
+    def collect_sw_items(self, editable_key=False):
+        items = []
+        id_field = self.spec["id_field"]
+        for row in self.rows:
+            item = {}
+            for field, w in self._iter_fields(row):
+                item[field] = w.get().strip()
+            w = row["fields"].get(id_field)
+            if editable_key and hasattr(w, "get"):
+                key_val = w.get().strip()
+            elif isinstance(w, str):
+                if self.kind == "loopback":
+                    key_val = w.replace("Loopback", "").strip()
+                elif self.kind == "mgmt_svi":
+                    key_val = w.replace("Vlan", "").strip()
+                else:
+                    key_val = w.strip()
+            else:
+                key_val = str(w or "").strip()
+            if not key_val:
+                continue
+            item[id_field] = key_val
+            if self.kind == "loopback":
+                item.setdefault("mask", "255.255.255.255")
+                item.setdefault("description", "")
+            items.append(item)
+        return items
+
+
+def _collect_l3_sw_from_grids(grids, editable_vlan=False):
+    sw = {}
+    for kind, grid in grids.items():
+        spec = _L3_KINDS[kind]
+        editable = editable_vlan and kind == "mgmt_svi"
+        items = grid.collect_sw_items(editable_key=editable)
+        sw[spec["sw_list"]] = items
+        _apply_l3_legacy_sw_aliases(sw, kind, items)
+    return sw
+
+
+def _apply_l3_legacy_sw_aliases(sw, kind, items):
+    spec = _L3_KINDS[kind]
+    legacy = spec.get("legacy_sw") or {}
+    if not items:
+        for legacy_key in legacy:
+            sw[legacy_key] = ""
+        return
+    first = items[0]
+    for legacy_key, field in legacy.items():
+        sw[legacy_key] = first.get(field, "")
+
+
+def _render_l3_loopbacks(l3, lb_sec, sw):
+    if not lb_sec.get("enabled"):
+        return
+    sw_lbs = _sw_loopbacks_map(sw)
+    for entry in lb_sec.get("entries") or []:
+        number = str(entry.get("number") or "0").strip() or "0"
+        sw_lb = sw_lbs.get(number, {})
+        lb_ip = (sw_lb.get("ip") or entry.get("ip") or "").strip()
+        lb_mask = (sw_lb.get("mask") or entry.get("mask")
+                   or "255.255.255.255").strip()
+        lb_desc = (sw_lb.get("description") or entry.get("description")
+                   or "Switch MGMT / Router-ID").strip()
+        if lb_ip:
+            l3.append(
+                f"interface Loopback{number}\n"
+                f"description //{lb_desc}\n"
+                f"ip address {lb_ip} {lb_mask}\n"
+                f"exit"
+            )
+
+
+def _render_l3_routed_mgmt(l3, rm_sec, sw, routed_iface_names):
+    if not rm_sec.get("enabled"):
+        return
+    sw_rms = _sw_routed_mgmt_map(sw)
+    for entry in rm_sec.get("entries") or []:
+        rm_if = (entry.get("interface") or "").strip()
+        rm_canon = _canon_iface(rm_if)
+        sw_rm = sw_rms.get(rm_canon, sw_rms.get("", {}))
+        rm_ip = (sw_rm.get("ip") or entry.get("ip") or "").strip()
+        if not rm_ip:
+            rm_ip = (sw.get("routed_mgmt_ip") or "").strip()
+        rm_mask = (sw_rm.get("mask") or entry.get("mask") or "").strip()
+        if not rm_mask:
+            rm_mask = (sw.get("routed_mgmt_mask") or "").strip()
+        rm_desc = (entry.get("description") or "Routed Mgmt Uplink").strip()
+        if rm_if and rm_if in routed_iface_names:
+            continue
+        if rm_if and rm_ip and rm_mask:
+            l3.append(
+                f"interface {rm_if}\n"
+                f"description //{rm_desc}\n"
+                f"no switchport\n"
+                f"ip address {rm_ip} {rm_mask}\n"
+                f"no shutdown\n"
+                f"exit"
+            )
+
+
+def _render_l3_mgmt_svis(mgmt, svi_sec, sw, profile):
+    if not svi_sec.get("enabled"):
+        return
+    sw_msvi_map = _sw_mgmt_svis_map(sw)
+    mgmt_entries = svi_sec.get("entries") or []
+    for entry in mgmt_entries:
+        profile_vlan = str(entry.get("vlan") or "").strip()
+        sw_entry = sw_msvi_map.get(profile_vlan, {})
+        if not sw_entry and len(mgmt_entries) == 1:
+            sw_entry = sw_msvi_map.get("", {})
+        mgmt_vlan = (sw_entry.get("vlan") or profile_vlan
+                     or profile.get("mgmt_vlan") or "1")
+        mgmt_vlan = str(mgmt_vlan).strip() or "1"
+        svi_ip = (sw_entry.get("ip") or entry.get("ip") or "").strip()
+        if not svi_ip and len(mgmt_entries) == 1:
+            svi_ip = (sw.get("mgmt_svi_ip") or sw.get("mgmt_ip") or "").strip()
+        svi_mask = (sw_entry.get("mask") or entry.get("mask") or "").strip()
+        if not svi_mask and len(mgmt_entries) == 1:
+            svi_mask = (sw.get("mgmt_svi_mask")
+                        or sw.get("mgmt_mask") or "").strip()
+        svi_desc = (entry.get("description") or "Switch MGMT").strip()
+        if svi_ip and svi_mask:
+            mgmt.append(
+                f"interface vlan{mgmt_vlan}\n"
+                f"description //{svi_desc}\n"
+                f"ip address {svi_ip} {svi_mask}\n"
+                f"exit"
+            )
 
 
 def _render_bgp(profile, sw):
@@ -2234,12 +2775,6 @@ def render_config_sections(model, profile, roles, base, sw):
     # canonicalize keys (strip + lowercase the "range " token) so a
     # lookup tolerates trivial differences between what Step-2 stored
     # and what Step-3 used as the dict key.
-    def _canon_iface(s):
-        s = (s or "").strip()
-        if s[:6].lower() == "range ":
-            s = "range " + s[6:].strip()
-        return s
-
     raw_routed = sw.get("routed_iface_ips", {}) or {}
     routed_iface_ips = {_canon_iface(k): v for k, v in raw_routed.items()}
     # Track which entries the renderer actually consumed so we can
@@ -2367,45 +2902,9 @@ def render_config_sections(model, profile, roles, base, sw):
     if layer3:
         l3.append("ip routing")
 
-        lb_sec = l3_sections.get("loopback", {})
-        if lb_sec.get("enabled"):
-            lb_ip = (sw.get("loopback0_ip") or lb_sec.get("ip") or "").strip()
-            lb_mask = (sw.get("loopback0_mask")
-                       or lb_sec.get("mask")
-                       or "255.255.255.255").strip()
-            lb_desc = (sw.get("loopback0_desc")
-                       or lb_sec.get("description")
-                       or "Switch MGMT / Router-ID").strip()
-            if lb_ip:
-                l3.append(
-                    f"interface Loopback0\n"
-                    f"description //{lb_desc}\n"
-                    f"ip address {lb_ip} {lb_mask}\n"
-                    f"exit"
-                )
-
-        rm_sec = l3_sections.get("routed_mgmt", {})
-        if rm_sec.get("enabled"):
-            rm_if = (rm_sec.get("interface") or "").strip()
-            rm_ip = (sw.get("routed_mgmt_ip") or rm_sec.get("ip") or "").strip()
-            rm_mask = (sw.get("routed_mgmt_mask")
-                       or rm_sec.get("mask") or "").strip()
-            rm_desc = (rm_sec.get("description") or "Routed Mgmt Uplink").strip()
-            # Skip the standalone block when a port_assignment with a
-            # requires_ip role already claims this interface. The role
-            # template wins because it may carry extra config (MTU,
-            # OSPF, etc.) the user expects.
-            if rm_if and rm_if in routed_iface_names:
-                pass
-            elif rm_if and rm_ip and rm_mask:
-                l3.append(
-                    f"interface {rm_if}\n"
-                    f"description //{rm_desc}\n"
-                    f"no switchport\n"
-                    f"ip address {rm_ip} {rm_mask}\n"
-                    f"no shutdown\n"
-                    f"exit"
-                )
+        _render_l3_loopbacks(l3, l3_sections.get("loopback", {}), sw)
+        _render_l3_routed_mgmt(l3, l3_sections.get("routed_mgmt", {}), sw,
+                               routed_iface_names)
 
         svi_ips = sw.get("svi_ips", {}) or {}
         rendered_svi_vlans = set()
@@ -2523,12 +3022,23 @@ def render_config_sections(model, profile, roles, base, sw):
             # Step 3's Routed Interface box, without retyping either
             # one on every routed-port row in Step 3.
             if not ip_val or not mask_val:
-                rm_fallback = (l3_sections.get("routed_mgmt", {}) or {})
+                rm_block = l3_sections.get("routed_mgmt", {}) or {}
+                rm_entries = rm_block.get("entries") or []
+                rm_by_iface = {}
+                for rm_entry in rm_entries:
+                    rm_name = (rm_entry.get("interface") or "").strip()
+                    if rm_name:
+                        rm_by_iface[_canon_iface(rm_name)] = rm_entry
+                rm_fallback = rm_by_iface.get(canon_iface, {})
+                sw_rms = _sw_routed_mgmt_map(sw)
+                sw_rm = sw_rms.get(canon_iface, sw_rms.get("", {}))
                 if not ip_val:
-                    ip_val = ((sw.get("routed_mgmt_ip") or "").strip()
+                    ip_val = ((sw_rm.get("ip") or "").strip()
+                              or (sw.get("routed_mgmt_ip") or "").strip()
                               or (rm_fallback.get("ip") or "").strip())
                 if not mask_val:
-                    mask_val = ((sw.get("routed_mgmt_mask") or "").strip()
+                    mask_val = ((sw_rm.get("mask") or "").strip()
+                                or (sw.get("routed_mgmt_mask") or "").strip()
                                 or (rm_fallback.get("mask") or "").strip())
             ctx["ip"] = ip_val
             ctx["mask"] = mask_val
@@ -2581,25 +3091,7 @@ def render_config_sections(model, profile, roles, base, sw):
                 f"exit"
             )
     else:
-        svi_sec = l3_sections.get("mgmt_svi", {})
-        if svi_sec.get("enabled"):
-            mgmt_vlan = (sw.get("mgmt_svi_vlan")
-                         or svi_sec.get("vlan")
-                         or profile.get("mgmt_vlan") or "1").strip() or "1"
-            svi_ip = (sw.get("mgmt_svi_ip")
-                      or sw.get("mgmt_ip")
-                      or svi_sec.get("ip") or "").strip()
-            svi_mask = (sw.get("mgmt_svi_mask")
-                        or sw.get("mgmt_mask")
-                        or svi_sec.get("mask") or "").strip()
-            svi_desc = (svi_sec.get("description") or "Switch MGMT").strip()
-            if svi_ip and svi_mask:
-                mgmt.append(
-                    f"interface vlan{mgmt_vlan}\n"
-                    f"description //{svi_desc}\n"
-                    f"ip address {svi_ip} {svi_mask}\n"
-                    f"exit"
-                )
+        _render_l3_mgmt_svis(mgmt, l3_sections.get("mgmt_svi", {}), sw, profile)
     if sw.get("default_gateway"):
         mgmt.append(f"ip default-gateway {sw['default_gateway']}")
 
@@ -2628,7 +3120,7 @@ def render_config_sections(model, profile, roles, base, sw):
         if ospf.get("enabled"):
             pid = (str(ospf.get("process_id") or "1")).strip() or "1"
             rid = ((sw.get("router_id") or "").strip()
-                   or (sw.get("loopback0_ip") or "").strip())
+                   or _first_loopback_ip(sw, l3_sections))
             networks = ospf.get("networks", []) or []
             passive_default = bool(ospf.get("passive_default"))
             passive_ifaces = ospf.get("passive_interfaces", []) or []
@@ -2735,6 +3227,7 @@ class GenerateTab(ttk.Frame):
         self.pa_rows = []          # port-assignment rows in step 2
         self._sections = {}        # populated after each generate
         self.l3_ip_rows = []       # routed-interface IP rows in step 3
+        self.l3_gen_grids = {}
         self.l3_static_rows = []   # static-route rows in step 3
         self._build()
 
@@ -2991,43 +3484,24 @@ class GenerateTab(ttk.Frame):
                        "from the profile.",
                   style="Hint.TLabel").pack(anchor="w", padx=5, pady=(2, 4))
 
-        # Loopback0
-        self.lb_lf = ttk.LabelFrame(self.l3_frame, text="Loopback0", padding=5)
-        self.lb_lf.pack(fill="x", padx=5, pady=4)
-        self.lb_ip   = _field(self.lb_lf, "IP")
-        self.lb_mask = _field(self.lb_lf, "Mask", "255.255.255.255")
-        self.lb_desc = _field(self.lb_lf, "Description",
-                              "Switch MGMT / Router-ID")
+        for kind in ("loopback", "routed_mgmt", "mgmt_svi"):
+            grid = L3EntryGrid(kind, mode="generate").build_generate(self.l3_frame)
+            self.l3_gen_grids[kind] = grid
+            alias = _L3_UI_ALIAS[kind]
+            setattr(self, f"{alias}_lf", grid.lf)
+            setattr(self, f"{alias}_frame", grid.row_frame)
+            setattr(self, f"{alias}_rows", grid.rows)
+            if kind == "mgmt_svi":
+                self.msvi_hint = grid.hint
 
-        # Routed Mgmt Interface (the interface name and description come
-        # from the profile; IP / Mask are per-switch). Title is updated
-        # in _apply_l3_visibility to include the interface name.
-        self.rm_lf = ttk.LabelFrame(self.l3_frame, text="Routed Interface",
-                                    padding=5)
-        self.rm_lf.pack(fill="x", padx=5, pady=4)
-        self.rm_ip   = _field(self.rm_lf, "IP")
-        self.rm_mask = _field(self.rm_lf, "Mask")
-
-        # Management VLAN SVI (VLAN ID and description come from the
-        # profile; IP / Mask are per-switch). Title is updated in
-        # _apply_l3_visibility to include the VLAN number.
-        self.msvi_lf = ttk.LabelFrame(self.l3_frame, text="Management VLAN",
-                                      padding=5)
-        self.msvi_lf.pack(fill="x", padx=5, pady=4)
-        self.msvi_vlan = _field(self.msvi_lf, "VLAN ID")
-        self.msvi_vlan_row = self.msvi_vlan.master
-        self.msvi_vlan_row.pack_forget()
-        self.msvi_ip   = _field(self.msvi_lf, "IP")
-        self.msvi_mask = _field(self.msvi_lf, "Mask")
-
-        # Router ID (defaults to Loopback0 IP if blank). Shown only when
+        # Router ID (defaults to first loopback IP if blank). Shown only when
         # the profile has OSPF enabled.
         self.rid_lf = ttk.LabelFrame(self.l3_frame, text="OSPF Router ID",
                                      padding=5)
         self.rid_lf.pack(fill="x", padx=5, pady=4)
         self.router_id = _field(self.rid_lf, "Router ID")
         ttk.Label(self.rid_lf, style="Hint.TLabel",
-                  text="  Leave blank to default to the Loopback0 IP."
+                  text="  Leave blank to default to the first loopback IP."
                   ).pack(anchor="w", padx=2, pady=(0, 2))
 
         # Per-routed-interface IP grid (auto-populated from Step 2)
@@ -3419,6 +3893,8 @@ class GenerateTab(ttk.Frame):
 
         if not layer3:
             self.l3_frame.pack_forget()
+            for grid in self.l3_gen_grids.values():
+                grid.clear()
             self._clear_l3_ip_rows()
             self._clear_svi_ip_rows()
             self._clear_l3_statics()
@@ -3435,61 +3911,27 @@ class GenerateTab(ttk.Frame):
                     self.bgp_lf):
             sub.pack_forget()
 
-        # Loopback0 section.
-        lb_sec = sections.get("loopback", {})
-        if lb_sec.get("enabled"):
-            self.lb_lf.pack(fill="x", padx=5, pady=4)
-            default_mask = (lb_sec.get("mask") or "255.255.255.255").strip()
-            if not self.lb_mask.get().strip() and default_mask:
-                self.lb_mask.delete(0, "end")
-                self.lb_mask.insert(0, default_mask)
-            default_ip = (lb_sec.get("ip") or "").strip()
-            if not self.lb_ip.get().strip() and default_ip:
-                self.lb_ip.insert(0, default_ip)
-            default_desc = (lb_sec.get("description") or "").strip()
-            if not self.lb_desc.get().strip() and default_desc:
-                self.lb_desc.insert(0, default_desc)
-
-        # Routed Mgmt Interface section.
-        rm_sec = sections.get("routed_mgmt", {})
-        if rm_sec.get("enabled"):
-            rm_if = (rm_sec.get("interface") or "").strip()
-            title = f"Routed Interface ({rm_if})" if rm_if else "Routed Interface"
-            self.rm_lf.configure(text=title)
-            self.rm_lf.pack(fill="x", padx=5, pady=4)
-            default_mask = (rm_sec.get("mask") or "").strip()
-            if not self.rm_mask.get().strip() and default_mask:
-                self.rm_mask.insert(0, default_mask)
-            default_ip = (rm_sec.get("ip") or "").strip()
-            if not self.rm_ip.get().strip() and default_ip:
-                self.rm_ip.insert(0, default_ip)
-
-        # Management VLAN SVI section.
-        svi_sec = sections.get("mgmt_svi", {})
         allow_sw_vlans = bool(profile.get("allow_per_switch_vlans"))
-        if svi_sec.get("enabled"):
-            vlan = (svi_sec.get("vlan") or "").strip()
-            title = f"Management VLAN {vlan}" if vlan else "Management VLAN"
-            self.msvi_lf.configure(text=title)
-            self.msvi_lf.pack(fill="x", padx=5, pady=4)
-            if allow_sw_vlans:
-                if not self.msvi_vlan_row.winfo_ismapped():
-                    self.msvi_vlan_row.pack(fill="x", padx=5, pady=2,
-                                            before=self.msvi_ip.master)
-                if not self.msvi_vlan.get().strip() and vlan:
-                    self.msvi_vlan.insert(0, vlan)
+        for kind, grid in self.l3_gen_grids.items():
+            sec = sections.get(kind, {})
+            if sec.get("enabled") and sec.get("entries"):
+                if kind == "mgmt_svi":
+                    if allow_sw_vlans:
+                        grid.hint.configure(
+                            text="  Per-switch management VLAN overrides. VLAN "
+                                 "IDs can differ from the profile when needed."
+                        )
+                    else:
+                        grid.hint.configure(
+                            text=_L3_KINDS[kind]["generate"]["hint"]
+                        )
+                grid.lf.pack(fill="x", padx=5, pady=4)
+                grid.populate(
+                    sec.get("entries") or [],
+                    editable_key=(allow_sw_vlans and kind == "mgmt_svi"),
+                )
             else:
-                self.msvi_vlan_row.pack_forget()
-                self.msvi_vlan.delete(0, "end")
-            default_mask = (svi_sec.get("mask") or "").strip()
-            if not self.msvi_mask.get().strip() and default_mask:
-                self.msvi_mask.insert(0, default_mask)
-            default_ip = (svi_sec.get("ip") or "").strip()
-            if not self.msvi_ip.get().strip() and default_ip:
-                self.msvi_ip.insert(0, default_ip)
-        else:
-            self.msvi_vlan_row.pack_forget()
-            self.msvi_vlan.delete(0, "end")
+                grid.clear()
 
         # Router ID only relevant when OSPF is enabled in the profile.
         if ospf_enabled:
@@ -3557,9 +3999,18 @@ class GenerateTab(ttk.Frame):
         self._clear_l3_ip_rows()
         pn = self.profile_cb.get()
         profile = self.app.profiles.get(pn, {}) or {}
-        rm_sec = (_normalize_l3_sections(profile).get("routed_mgmt", {})
-                  if profile.get("layer3") else {})
-        default_mask = (rm_sec.get("mask") or "").strip()
+        rm_block = (_normalize_l3_sections(profile).get("routed_mgmt", {})
+                    if profile.get("layer3") else {})
+        rm_masks = {}
+        for rm_entry in rm_block.get("entries") or []:
+            rm_name = (rm_entry.get("interface") or "").strip()
+            if rm_name:
+                rm_masks[_canon_iface(rm_name)] = (
+                    rm_entry.get("mask") or "").strip()
+        default_mask = ""
+        rm_entries = rm_block.get("entries") or []
+        if rm_entries:
+            default_mask = (rm_entries[0].get("mask") or "").strip()
         for r in self.pa_rows:
             iface = r["iface"].get().strip()
             role_name = r["role"].get() or ""
@@ -3583,6 +4034,9 @@ class GenerateTab(ttk.Frame):
                 mask.insert(0, existing[iface][1])
             if not mask.get() and default_mask:
                 mask.insert(0, default_mask)
+            per_iface_mask = rm_masks.get(_canon_iface(iface), "").strip()
+            if not mask.get() and per_iface_mask:
+                mask.insert(0, per_iface_mask)
             self.l3_ip_rows.append({"frame": row, "iface_name": iface,
                                     "ip": ip, "mask": mask})
 
@@ -3952,15 +4406,13 @@ class GenerateTab(ttk.Frame):
         }
         # L3 fields - only meaningful when the selected profile is L3,
         # but always populated so the renderer can read them safely
-        sw["loopback0_ip"]   = self.lb_ip.get().strip()
-        sw["loopback0_mask"] = self.lb_mask.get().strip() or "255.255.255.255"
-        sw["loopback0_desc"] = self.lb_desc.get().strip()
-        sw["routed_mgmt_ip"]   = self.rm_ip.get().strip()
-        sw["routed_mgmt_mask"] = self.rm_mask.get().strip()
-        sw["mgmt_svi_ip"]      = self.msvi_ip.get().strip()
-        sw["mgmt_svi_mask"]    = self.msvi_mask.get().strip()
-        sw["mgmt_svi_vlan"]    = self.msvi_vlan.get().strip()
-        sw["router_id"]      = self.router_id.get().strip()
+        sw.update(_collect_l3_sw_from_grids(
+            self.l3_gen_grids,
+            editable_vlan=bool(
+                self.app.profiles.get(self.profile_cb.get(), {}).get(
+                    "allow_per_switch_vlans")),
+        ))
+        sw["router_id"] = self.router_id.get().strip()
         sw["routed_iface_ips"] = {
             r["iface_name"]: {"ip": r["ip"].get().strip(),
                               "mask": r["mask"].get().strip()}
@@ -4467,6 +4919,7 @@ class ProfilesTab(ttk.Frame):
         self.var_rows = []
         self.pa_rows  = []
         self.svi_rows = []
+        self.l3_profile_grids = {}
         self.ospf_net_rows = []
         self.acl_blocks = []   # list of dicts: one per ACL editor block
         self.bgp_blocks = []   # list of dicts: one per BGP instance block
@@ -4695,44 +5148,14 @@ class ProfilesTab(ttk.Frame):
                        "  matching section on Generate Config Step 3."
                   ).pack(anchor="w", padx=5, pady=(2, 0))
 
-        # --- Loopback0 section ---
-        self.lb_sec_lf = ttk.LabelFrame(self.l3_body, padding=5)
-        self.lb_sec_lf.pack(fill="x", padx=5, pady=(4, 0))
-        self.lb_sec_enabled = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.lb_sec_lf, text="Loopback0",
-                        variable=self.lb_sec_enabled
-                        ).pack(anchor="w")
-        self.lb_sec_ip_e   = _field(self.lb_sec_lf, "IP (default)")
-        self.lb_sec_mask_e = _field(self.lb_sec_lf, "Mask (default)",
-                                    "255.255.255.255")
-        self.lb_sec_desc_e = _field(self.lb_sec_lf, "Description",
-                                    "Switch MGMT / Router-ID")
-
-        # --- Routed Mgmt Interface section ---
-        self.rm_sec_lf = ttk.LabelFrame(self.l3_body, padding=5)
-        self.rm_sec_lf.pack(fill="x", padx=5, pady=(4, 0))
-        self.rm_sec_enabled = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.rm_sec_lf, text="Routed Interface",
-                        variable=self.rm_sec_enabled
-                        ).pack(anchor="w")
-        self.rm_sec_if_e   = _field(self.rm_sec_lf, "Interface")
-        self.rm_sec_ip_e   = _field(self.rm_sec_lf, "IP (default)")
-        self.rm_sec_mask_e = _field(self.rm_sec_lf, "Mask (default)")
-        self.rm_sec_desc_e = _field(self.rm_sec_lf, "Description",
-                                    "Routed Mgmt Uplink")
-
-        # --- Management VLAN SVI section ---
-        self.msvi_sec_lf = ttk.LabelFrame(self.l3_body, padding=5)
-        self.msvi_sec_lf.pack(fill="x", padx=5, pady=(4, 4))
-        self.msvi_sec_enabled = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.msvi_sec_lf, text="Management VLAN",
-                        variable=self.msvi_sec_enabled
-                        ).pack(anchor="w")
-        self.msvi_sec_vlan_e = _field(self.msvi_sec_lf, "VLAN ID")
-        self.msvi_sec_ip_e   = _field(self.msvi_sec_lf, "IP (default)")
-        self.msvi_sec_mask_e = _field(self.msvi_sec_lf, "Mask (default)")
-        self.msvi_sec_desc_e = _field(self.msvi_sec_lf, "Description",
-                                      "Switch MGMT")
+        for kind in ("loopback", "routed_mgmt", "mgmt_svi"):
+            grid = L3EntryGrid(kind, mode="profile").build_profile(self.l3_body)
+            self.l3_profile_grids[kind] = grid
+            alias = _L3_UI_ALIAS[kind]
+            setattr(self, f"{alias}_sec_lf", grid.lf)
+            setattr(self, f"{alias}_sec_enabled", grid.enabled)
+            setattr(self, f"{alias}_frame", grid.row_frame)
+            setattr(self, f"{alias}_rows", grid.rows)
 
         # SVIs (site-wide gateways)
         self.svi_lf = ttk.LabelFrame(self.l3_body, text="SVIs", padding=5)
@@ -4791,7 +5214,7 @@ class ProfilesTab(ttk.Frame):
                        "become exceptions (active).\n"
                        "  When off, only listed interfaces are passive.\n"
                        "  Router-ID is set per switch in Generate Config\n"
-                       "  (defaults to the Loopback0 IP)."
+                       "  (defaults to the first loopback IP)."
                   ).pack(side="left", anchor="w")
         ttk.Button(ospf_hint, text="+ Add Network",
                    command=self._add_ospf_net
@@ -5502,29 +5925,10 @@ class ProfilesTab(ttk.Frame):
         # Layer 3
         self.l3_enabled.set(bool(p.get("layer3", False)))
         sections = _normalize_l3_sections(p)
-        lb = sections.get("loopback", {})
-        self.lb_sec_enabled.set(bool(lb.get("enabled")))
-        for w, v in ((self.lb_sec_ip_e,   lb.get("ip", "")),
-                     (self.lb_sec_mask_e, lb.get("mask", "255.255.255.255")),
-                     (self.lb_sec_desc_e, lb.get("description",
-                                                  "Switch MGMT / Router-ID"))):
-            w.delete(0, "end"); w.insert(0, v or "")
-        rm = sections.get("routed_mgmt", {})
-        self.rm_sec_enabled.set(bool(rm.get("enabled")))
-        for w, v in ((self.rm_sec_if_e,   rm.get("interface", "")),
-                     (self.rm_sec_ip_e,   rm.get("ip", "")),
-                     (self.rm_sec_mask_e, rm.get("mask", "")),
-                     (self.rm_sec_desc_e, rm.get("description",
-                                                  "Routed Mgmt Uplink"))):
-            w.delete(0, "end"); w.insert(0, v or "")
-        msvi = sections.get("mgmt_svi", {})
-        self.msvi_sec_enabled.set(bool(msvi.get("enabled")))
-        for w, v in ((self.msvi_sec_vlan_e, msvi.get("vlan", "")),
-                     (self.msvi_sec_ip_e,   msvi.get("ip", "")),
-                     (self.msvi_sec_mask_e, msvi.get("mask", "")),
-                     (self.msvi_sec_desc_e, msvi.get("description",
-                                                     "Switch MGMT"))):
-            w.delete(0, "end"); w.insert(0, v or "")
+        for kind, grid in self.l3_profile_grids.items():
+            sec = sections.get(kind, {})
+            grid.enabled.set(bool(sec.get("enabled")))
+            grid.populate(sec.get("entries") or [])
 
         self._clear_svis()
         for svi in p.get("svis", []) or []:
@@ -5585,19 +5989,9 @@ class ProfilesTab(ttk.Frame):
         self._clear_vars(); self._clear_pa()
         # Layer 3 defaults for a new profile
         self.l3_enabled.set(False)
-        self.lb_sec_enabled.set(False)
-        self.rm_sec_enabled.set(False)
-        self.msvi_sec_enabled.set(False)
-        for w in (self.lb_sec_ip_e, self.lb_sec_mask_e, self.lb_sec_desc_e,
-                  self.rm_sec_if_e, self.rm_sec_ip_e, self.rm_sec_mask_e,
-                  self.rm_sec_desc_e,
-                  self.msvi_sec_vlan_e, self.msvi_sec_ip_e,
-                  self.msvi_sec_mask_e, self.msvi_sec_desc_e):
-            w.delete(0, "end")
-        self.lb_sec_mask_e.insert(0, "255.255.255.255")
-        self.lb_sec_desc_e.insert(0, "Switch MGMT / Router-ID")
-        self.rm_sec_desc_e.insert(0, "Routed Mgmt Uplink")
-        self.msvi_sec_desc_e.insert(0, "Switch MGMT")
+        for grid in self.l3_profile_grids.values():
+            grid.enabled.set(False)
+            grid.clear()
         self._clear_svis()
         self.ospf_enabled.set(False)
         self.ospf_pid_e.delete(0, "end"); self.ospf_pid_e.insert(0, "1")
@@ -5711,30 +6105,11 @@ class ProfilesTab(ttk.Frame):
         if self.l3_enabled.get():
             data["layer3"] = True
             data["l3_sections"] = {
-                "loopback": {
-                    "enabled":     bool(self.lb_sec_enabled.get()),
-                    "ip":          self.lb_sec_ip_e.get().strip(),
-                    "mask":        (self.lb_sec_mask_e.get().strip()
-                                    or "255.255.255.255"),
-                    "description": (self.lb_sec_desc_e.get().strip()
-                                    or "Switch MGMT / Router-ID"),
-                },
-                "routed_mgmt": {
-                    "enabled":     bool(self.rm_sec_enabled.get()),
-                    "interface":   self.rm_sec_if_e.get().strip(),
-                    "ip":          self.rm_sec_ip_e.get().strip(),
-                    "mask":        self.rm_sec_mask_e.get().strip(),
-                    "description": (self.rm_sec_desc_e.get().strip()
-                                    or "Routed Mgmt Uplink"),
-                },
-                "mgmt_svi": {
-                    "enabled":     bool(self.msvi_sec_enabled.get()),
-                    "vlan":        self.msvi_sec_vlan_e.get().strip(),
-                    "ip":          self.msvi_sec_ip_e.get().strip(),
-                    "mask":        self.msvi_sec_mask_e.get().strip(),
-                    "description": (self.msvi_sec_desc_e.get().strip()
-                                    or "Switch MGMT"),
-                },
+                kind: {
+                    "enabled": bool(grid.enabled.get()),
+                    "entries": grid.collect_profile_entries(),
+                }
+                for kind, grid in self.l3_profile_grids.items()
             }
             svis = []
             for r in self.svi_rows:
@@ -6056,7 +6431,7 @@ class BaseTab(ttk.Frame):
         if len(per_section) == 1:
             summary = f"{total} match in {per_section[0][0]}"
         else:
-            tops = ", ".join(f"{l} ({c})" for l, c, _w, _i in per_section[:3])
+            tops = ", ".join(f"{name} ({c})" for name, c, _w, _i in per_section[:3])
             more = "" if len(per_section) <= 3 else f", +{len(per_section)-3} more"
             summary = f"{total} matches: {tops}{more}"
         self.search_status.configure(text=summary)
@@ -6153,7 +6528,6 @@ class BaseTab(ttk.Frame):
             return
         data = json.loads(json.dumps(
             self.app.base["sets"].get(cur, {})))
-        names = self.app.base_set_names()
         new_name = _copy_name(cur, self.app.base["sets"])
         self.app.base["sets"][new_name] = data
         save_json("base_settings.json", self.app.base)

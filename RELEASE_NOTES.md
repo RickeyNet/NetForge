@@ -1,4 +1,6 @@
-# NetForge v1.5.3 - Release Notes
+# NetForge v1.4.0 - Release Notes
+
+First public release after v1.3.0. Everything documented below is included in v1.4.0.
 
 ## ACL Rule Reordering
 
@@ -18,10 +20,6 @@ The renderer and Step 3 UI now treat a non-empty **Default Peer ASN** as an impl
 
 The adjustable divider between the Step 3 form and the config preview pane now defaults to an even 50/50 split on first load. Previously it opened at 60/40, which left the preview visibly cramped before the user manually adjusted it.
 
----
-
-# NetForge v1.5.2 - Release Notes
-
 ## Routed Interface IPs Now Always Apply
 
 Fixed a bug where the per-switch IP / Mask typed in **Generate Config Step 3 -> Routed Interface IPs** would silently fail to land on the routed interface, producing an `ip address` line with blank values even though the role template had `{{ ip }}` and `{{ mask }}` and `requires_ip` was on. Root cause: the IP rows could be keyed by a stale interface name if Step 2 was edited after the user typed an IP, and any trivial whitespace difference between the Step-2 string and the Step-3 dict key bypassed the renderer's lookup.
@@ -38,10 +36,6 @@ The standalone **Default Routed Mask** field has been removed from the Site Prof
 
 - **Auto-migration** - Existing profiles with a `default_routed_mask` key still work. On read, `_normalize_l3_sections` promotes the legacy value into `l3_sections.routed_mgmt.mask` when that field is blank. The next save of the profile drops the legacy key. No manual edit required.
 
----
-
-# NetForge v1.5.1 - Release Notes
-
 ## Security Hardening
 
 - **Sandboxed template rendering** - Role and profile command templates now render through Jinja2's `SandboxedEnvironment`. These templates come from user-editable JSON that can be replaced via **Import Settings**, so an unsandboxed environment allowed server-side template injection -> arbitrary code execution on **Generate Config**. The sandbox blocks attribute access to private/dunder names and dangerous builtins while leaving all legitimate `{{ variable }}` substitutions working.
@@ -50,7 +44,7 @@ The standalone **Default Routed Mask** field has been removed from the Site Prof
 - **Redacted enable password in push transcript** - The push-to-switch console log replaces the enable password with `********` in the echoed transcript so a non-standard console or terminal-server setup that echoes the password locally cannot leak it into the visible log.
 - **Security Notes in README** - Added a Security Notes section to `README.md` covering plaintext credential storage in `data/*.json` and exported ZIPs, the type-0 nature of generated `username ... secret` and `enable secret` lines, and the trust expectation around imported settings ZIPs.
 
-## Base Settings Categories Match Spreadsheet
+## Base Settings Categories Changed
 
 The named sections on the **Base Settings** tab have been replaced with a slim category set aligned to the Cisco 9300 Layer 3-2 Switch IOS XE Baseline workbook. The new sections (in order) are:
 
@@ -77,10 +71,6 @@ The earlier draft of this release included additional spreadsheet sections (**Ma
 ## Larger Base Settings Text Boxes
 
 The auto-sizing text areas on the **Base Settings** tab now grow up to **40 lines** before scrolling (was 20 for sections, 30 for the banner, 20 for the disabled-port template). Long ACL blocks, SNMPv3 configs, and multi-line banners can now stay fully visible without forcing a scroll. The minimum height (2 lines) and the auto-shrink-on-delete behavior are unchanged.
-
----
-
-# NetForge v1.5.0 - Release Notes
 
 ## Base Settings Search
 
@@ -193,26 +183,22 @@ Step 3 of the Generate Config tab now has a **Push to Switch...** button that st
 - The `pyserial` package is now in `requirements.txt`. Install with `pip install -r requirements.txt` or `pip install pyserial`.
 - If pyserial isn't installed, the button shows a friendly install-instructions dialog instead of crashing.
 
----
-
-# NetForge v1.4.0 - Release Notes
-
 ## Major Feature: Layer 3 Support
 
 NetForge now generates full Layer 3 configurations alongside the existing Layer 2 workflows. Site Profiles gain a new **Enable Layer 3** toggle that unlocks an L3 editor and tells the generator to emit routing-related blocks.
 
-### Management Style
-- Each Layer 3 profile picks how the switch's management IP is assigned:
-  - **svi** - Management rides an SVI (same as L2). Emits `interface vlan<mgmt_vlan>` with the IP from Step 3.
-  - **loopback** - Mgmt rides Loopback0. The wizard prompts for Loopback0 IP/Mask in Step 3.
-  - **routed_uplink** - Mgmt rides one of the routed uplinks. No mgmt SVI is emitted.
-- `ip default-gateway` is always emitted when a Default Gateway is set, regardless of mgmt_style.
+### L3 Interface Sections
+- Layer 3 profiles use three independently enabled sections instead of a single management-style dropdown:
+  - **Loopbacks** - one or more loopback interfaces (Loopback0, Loopback1, …) with per-switch IP/mask in Step 3
+  - **Routed Interface** - standalone routed ports defined on the profile; site-wide mask defaults pre-fill Step 3
+  - **Management VLAN** - one or more mgmt SVIs with per-switch IP/mask in Step 3
+- `ip default-gateway` is always emitted when a Default Gateway is set, regardless of which sections are enabled.
 
 ### Routed Interfaces (Requires IP)
 - Interface Roles now have a **Requires IP** checkbox - tick it for roles that turn an interface into an L3 routed port (no switchport).
 - When a port is assigned to a Requires-IP role, the wizard's Step 3 grows an extra grid for per-switch IP/mask entry.
 - Use `{{ ip }}` and `{{ mask }}` as placeholders in the role template.
-- The Site Profile's new **Default Routed Mask** pre-fills the Mask column of every routed-interface row in Step 3 (useful for sites with uniform /30 point-to-points).
+- The Site Profile's **Routed Interface** section **Mask** field pre-fills the Mask column of every routed-interface row in Step 3 (useful for sites with uniform /30 point-to-points).
 
 ### SVIs
 - Define VLANs that need an SVI on every switch at the site, with description and optional DHCP helper addresses.
@@ -221,7 +207,7 @@ NetForge now generates full Layer 3 configurations alongside the existing Layer 
 
 ### OSPF
 - Per-profile OSPF block: process ID, passive-interface default toggle, passive interface list, and one or more `network ... area ...` statements.
-- Router-ID is set per switch in Step 3 and defaults to the Loopback0 IP.
+- Router-ID is set per switch in Step 3 and defaults to the first loopback IP.
 
 ### BGP
 - One or more BGP instances per profile, each rendering its own `router bgp <local_asn>` block.
@@ -287,7 +273,7 @@ Per-profile values render directly as IOS commands so different sites can point 
 
 ## Bug Fixes
 
-- **Default gateway on Layer 3 devices** - `ip default-gateway` is now emitted in all `mgmt_style` modes when a value is set (previously gated to L2 / mgmt_style=svi only).
+- **Default gateway on Layer 3 devices** - `ip default-gateway` is now emitted whenever a value is set, regardless of which L3 interface sections are enabled (previously gated to L2-only in some cases).
 - **Routed Uplink template** - fixed a mismatched-brace typo in the bundled Routed Uplink role so per-switch `{{ ip }}` / `{{ mask }}` substitutions actually land in the config.
 - **Role-template errors surface** - if a role template fails to render, the interface block now contains an `! ERROR rendering role '<name>': <exc>` comment instead of silently emitting the unrendered template.
 
