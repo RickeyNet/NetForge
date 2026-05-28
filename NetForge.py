@@ -2107,6 +2107,82 @@ def _canon_iface(s):
     return s
 
 
+def _expand_assigned_ifaces(iface_str):
+    """Return canonical interface names covered by an assignment string."""
+    s = (iface_str or "").strip()
+    if not s:
+        return []
+    return [_canon_iface(i) for i in expand_range_iface(s)]
+
+
+def _find_routed_mgmt_entry(iface_name, rm_entries):
+    """Match a Step 2 assignment to a profile routed_mgmt entry."""
+    assigned = set(_expand_assigned_ifaces(iface_name))
+    if not assigned:
+        return {}
+    blank_entry = None
+    for entry in rm_entries or []:
+        if not isinstance(entry, dict):
+            continue
+        rm_name = (entry.get("interface") or "").strip()
+        if not rm_name:
+            blank_entry = entry
+            continue
+        if assigned & set(_expand_assigned_ifaces(rm_name)):
+            return entry
+    if blank_entry is not None and len(rm_entries) == 1:
+        return blank_entry
+    return {}
+
+
+def _find_sw_routed_mgmt(iface_name, sw):
+    """Match a Step 2 assignment to per-switch routed_mgmt overrides."""
+    assigned = set(_expand_assigned_ifaces(iface_name))
+    sw_rms = _sw_routed_mgmt_map(sw)
+    for iface in assigned:
+        if iface in sw_rms:
+            return sw_rms[iface]
+    for item in sw.get("routed_mgmt_interfaces") or []:
+        if not isinstance(item, dict):
+            continue
+        if assigned & set(_expand_assigned_ifaces(item.get("interface") or "")):
+            return item
+    items = [i for i in (sw.get("routed_mgmt_interfaces") or [])
+             if isinstance(i, dict)]
+    if len(items) == 1 and not str(items[0].get("interface") or "").strip():
+        return items[0]
+    return sw_rms.get("", {})
+
+
+def _lookup_routed_iface_ips(routed_iface_ips, iface_name):
+    """Look up Step 3 routed IP/mask rows, tolerating range vs single-port keys."""
+    canon = _canon_iface(iface_name)
+    info = (routed_iface_ips or {}).get(canon, {}) or {}
+    if info.get("ip") or info.get("mask"):
+        return info
+    assigned = set(_expand_assigned_ifaces(iface_name))
+    for key, val in (routed_iface_ips or {}).items():
+        if assigned & set(_expand_assigned_ifaces(key)):
+            return val or {}
+    return {}
+
+
+def _routed_mgmt_covered_by_role(rm_if, pa_list, roles):
+    """True when a requires_ip role assignment already covers this iface."""
+    rm_ports = set(_expand_assigned_ifaces(rm_if))
+    if not rm_ports:
+        return False
+    for pa in pa_list or []:
+        role_name = pa.get("role")
+        if not role_name or role_name == "unassigned":
+            continue
+        if not (roles.get(role_name, {}) or {}).get("requires_ip"):
+            continue
+        if rm_ports & set(_expand_assigned_ifaces(pa.get("interfaces", ""))):
+            return True
+    return False
+
+
 def _l3_section_entries(section, field_defaults):
     """Normalize an l3_sections block to a list of entry dicts."""
     if not isinstance(section, dict):
@@ -2669,14 +2745,18 @@ def _render_l3_loopbacks(l3, lb_sec, sw):
             )
 
 
-def _render_l3_routed_mgmt(l3, rm_sec, sw, routed_iface_names):
+def _render_l3_routed_mgmt(l3, rm_sec, sw, profile, roles):
     if not rm_sec.get("enabled"):
         return
+    pa_list = profile.get("port_assignments", []) or []
     sw_rms = _sw_routed_mgmt_map(sw)
     for entry in rm_sec.get("entries") or []:
         rm_if = (entry.get("interface") or "").strip()
-        rm_canon = _canon_iface(rm_if)
-        sw_rm = sw_rms.get(rm_canon, sw_rms.get("", {}))
+        if rm_if and _routed_mgmt_covered_by_role(rm_if, pa_list, roles):
+            continue
+        sw_rm = _find_sw_routed_mgmt(rm_if, sw) if rm_if else sw_rms.get("", {})
+        if not sw_rm and rm_if:
+            sw_rm = sw_rms.get(_canon_iface(rm_if), sw_rms.get("", {}))
         rm_ip = (sw_rm.get("ip") or entry.get("ip") or "").strip()
         if not rm_ip:
             rm_ip = (sw.get("routed_mgmt_ip") or "").strip()
@@ -2684,8 +2764,6 @@ def _render_l3_routed_mgmt(l3, rm_sec, sw, routed_iface_names):
         if not rm_mask:
             rm_mask = (sw.get("routed_mgmt_mask") or "").strip()
         rm_desc = (entry.get("description") or "Routed Mgmt Uplink").strip()
-        if rm_if and rm_if in routed_iface_names:
-            continue
         if rm_if and rm_ip and rm_mask:
             l3.append(
                 f"interface {rm_if}\n"
@@ -3078,8 +3156,6 @@ def render_config_sections(model, profile, roles, base, sw):
     # port pass and standalone L3 routed blocks skip them.
     pa_list = profile.get("port_assignments", []) or []
     assigned_iface_names = _assigned_port_names(pa_list, roles)
-    routed_iface_names = _assigned_port_names(
-        pa_list, roles, requires_ip_only=True)
 
     def build(parts):
         return "\n\n".join(p.strip() for p in parts if p.strip())
@@ -3189,7 +3265,7 @@ def render_config_sections(model, profile, roles, base, sw):
 
         _render_l3_loopbacks(l3, l3_sections.get("loopback", {}), sw)
         _render_l3_routed_mgmt(l3, l3_sections.get("routed_mgmt", {}), sw,
-                               routed_iface_names)
+                               profile, roles)
 
         svi_ips = _remap_svi_ips(sw.get("svi_ips", {}) or {},
                                  _vlan_id_remap(profile, sw))
@@ -3295,8 +3371,8 @@ def render_config_sections(model, profile, roles, base, sw):
         ctx["description"] = pa.get("description", "")
         if role.get("requires_ip"):
             canon_iface = _canon_iface(iface_name)
-            ip_info = routed_iface_ips.get(canon_iface, {}) or {}
-            if ip_info:
+            ip_info = _lookup_routed_iface_ips(routed_iface_ips, iface_name)
+            if ip_info.get("ip") or ip_info.get("mask"):
                 routed_iface_consumed.add(canon_iface)
             ip_val = (ip_info.get("ip") or "").strip()
             mask_val = (ip_info.get("mask") or "").strip()
@@ -3309,16 +3385,10 @@ def render_config_sections(model, profile, roles, base, sw):
             # Step 3's Routed Interface box, without retyping either
             # one on every routed-port row in Step 3.
             if not ip_val or not mask_val:
-                rm_block = l3_sections.get("routed_mgmt", {}) or {}
-                rm_entries = rm_block.get("entries") or []
-                rm_by_iface = {}
-                for rm_entry in rm_entries:
-                    rm_name = (rm_entry.get("interface") or "").strip()
-                    if rm_name:
-                        rm_by_iface[_canon_iface(rm_name)] = rm_entry
-                rm_fallback = rm_by_iface.get(canon_iface, {})
-                sw_rms = _sw_routed_mgmt_map(sw)
-                sw_rm = sw_rms.get(canon_iface, sw_rms.get("", {}))
+                rm_entries = (l3_sections.get("routed_mgmt", {})
+                              or {}).get("entries") or []
+                rm_fallback = _find_routed_mgmt_entry(iface_name, rm_entries)
+                sw_rm = _find_sw_routed_mgmt(iface_name, sw)
                 if not ip_val:
                     ip_val = ((sw_rm.get("ip") or "").strip()
                               or (sw.get("routed_mgmt_ip") or "").strip()
@@ -3488,6 +3558,7 @@ class GenerateTab(ttk.Frame):
         self.l3_ip_rows = []       # routed-interface IP rows in step 3
         self.l3_gen_grids = {}
         self.l3_static_rows = []   # static-route rows in step 3
+        self._last_synced_gateway = ""  # tracks auto-fill source for BGP fields
         self._build()
 
     # ------------------------------------------------------------------ build
@@ -3843,10 +3914,9 @@ class GenerateTab(ttk.Frame):
             relief="flat", bd=2, state="disabled")
         self.l3_static_preview.pack(fill="x", padx=2, pady=(0, 2))
         _attach_context_menu(self.l3_static_preview)
-        # Re-render preview whenever the Default Gateway changes.
-        self.gateway.bind("<KeyRelease>",
-                          lambda _e: self._refresh_static_preview(),
-                          add="+")
+        # Re-render preview and sync BGP ISP/peer fields when the Default
+        # Gateway changes (one-way: BGP edits never change Default Gateway).
+        self.gateway.bind("<KeyRelease>", self._on_gateway_changed, add="+")
 
         # BGP per-switch values - one block per profile BGP instance
         self.bgp_lf = ttk.LabelFrame(self.l3_frame, text="BGP", padding=5)
@@ -4236,6 +4306,7 @@ class GenerateTab(ttk.Frame):
         if bgp_instances:
             self.bgp_lf.pack(fill="x", padx=5, pady=4)
             self._populate_bgp_inst_blocks(bgp_instances)
+            self._sync_gateway_to_bgp()
         else:
             self._clear_bgp_inst_blocks()
 
@@ -4260,16 +4331,7 @@ class GenerateTab(ttk.Frame):
         profile = self.app.profiles.get(pn, {}) or {}
         rm_block = (_normalize_l3_sections(profile).get("routed_mgmt", {})
                     if profile.get("layer3") else {})
-        rm_masks = {}
-        for rm_entry in rm_block.get("entries") or []:
-            rm_name = (rm_entry.get("interface") or "").strip()
-            if rm_name:
-                rm_masks[_canon_iface(rm_name)] = (
-                    rm_entry.get("mask") or "").strip()
-        default_mask = ""
         rm_entries = rm_block.get("entries") or []
-        if rm_entries:
-            default_mask = (rm_entries[0].get("mask") or "").strip()
         for r in self.pa_rows:
             iface = r["iface"].get().strip()
             role_name = r["role"].get() or ""
@@ -4291,11 +4353,16 @@ class GenerateTab(ttk.Frame):
             if iface in existing:
                 ip.insert(0, existing[iface][0])
                 mask.insert(0, existing[iface][1])
+            rm_entry = _find_routed_mgmt_entry(iface, rm_entries)
+            if not ip.get() and (rm_entry.get("ip") or "").strip():
+                ip.insert(0, rm_entry.get("ip"))
+            if not mask.get() and (rm_entry.get("mask") or "").strip():
+                mask.insert(0, rm_entry.get("mask"))
+            default_mask = ""
+            if rm_entries:
+                default_mask = (rm_entries[0].get("mask") or "").strip()
             if not mask.get() and default_mask:
                 mask.insert(0, default_mask)
-            per_iface_mask = rm_masks.get(_canon_iface(iface), "").strip()
-            if not mask.get() and per_iface_mask:
-                mask.insert(0, per_iface_mask)
             self.l3_ip_rows.append({"frame": row, "iface_name": iface,
                                     "ip": ip, "mask": mask})
 
@@ -4418,6 +4485,35 @@ class GenerateTab(ttk.Frame):
                                   if r["frame"] is not frame]
         frame.destroy()
         self._refresh_static_preview()
+
+    def _on_gateway_changed(self, _event=None):
+        self._refresh_static_preview()
+        self._sync_gateway_to_bgp()
+
+    def _set_bgp_field_from_gateway(self, entry, dg, prev_dg):
+        """Fill a BGP field from Default Gateway unless the user overrode it."""
+        if not dg:
+            return
+        cur = entry.get().strip()
+        if not cur or (prev_dg and cur == prev_dg):
+            entry.delete(0, "end")
+            entry.insert(0, dg)
+
+    def _sync_gateway_to_bgp(self):
+        """One-way sync: Default Gateway -> ISP Gateway and Peer IP fields.
+        Blank fields are filled; fields still matching the previous gateway
+        value are updated. Manually edited BGP values are left alone."""
+        if not getattr(self, "bgp_inst_blocks", None):
+            return
+        dg = self.gateway.get().strip() if hasattr(self, "gateway") else ""
+        if not dg:
+            return
+        prev = getattr(self, "_last_synced_gateway", "")
+        for blk in self.bgp_inst_blocks:
+            self._set_bgp_field_from_gateway(blk["isp_gateway"], dg, prev)
+            for peer in blk["peers"]:
+                self._set_bgp_field_from_gateway(peer["ip"], dg, prev)
+        self._last_synced_gateway = dg
 
     def _refresh_static_preview(self):
         """Update the Static Routes preview pane with the exact 'ip route'
