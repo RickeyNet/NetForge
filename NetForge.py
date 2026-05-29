@@ -2838,7 +2838,7 @@ def _render_l3_mgmt_svis(mgmt, svi_sec, sw, profile):
         if svi_ip and svi_mask:
             mgmt.append(
                 f"interface vlan{mgmt_vlan}\n"
-                f"description //{svi_desc}\n"
+                f"description {svi_desc}\n"
                 f"ip address {svi_ip} {svi_mask}\n"
                 f"exit"
             )
@@ -3126,7 +3126,7 @@ def _render_svi_block(svi, svi_ips):
         helpers = [h.strip() for h in str(helpers_raw).split(",") if h.strip()]
     lines = [f"interface Vlan{vlan}"]
     if desc:
-        lines.append(f"description //{desc}")
+        lines.append(f"description {desc}")
     if ip and mask:
         lines.append(f"ip address {ip} {mask}")
     else:
@@ -7365,8 +7365,6 @@ class GuideTab(ttk.Frame):
         body(
             "Model Name - The exact Cisco model identifier "
             "(e.g. C9200L-24T-4G-A).\n\n"
-            "Provision Type - The string used in the IOS 'switch 1 provision' "
-            "command (e.g. c9200l-24t, c9300-24). Leave blank if not needed.\n\n"
             "Port Groups - Each group of interfaces on the switch. "
             "Click '+ Add Port Group' for each group and fill in:")
         body(
