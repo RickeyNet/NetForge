@@ -50,7 +50,7 @@
     ]
   },
   "C9300-24S-A": {
-    "provision": "c9300-24s",
+    "provision": "",
     "port_groups": [
       {
         "prefix": "GigabitEthernet1/0/",

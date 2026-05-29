@@ -2092,8 +2092,13 @@ def _normalize_l3_sections(profile):
 
 _L3_LOOPBACK_DEFAULTS = {
     "number": "0", "ip": "", "mask": "255.255.255.255",
-    "description": "Switch MGMT / Router-ID",
+    "description": "Switch MGMT / Router-ID", "commands": "",
 }
+_L3_LOOPBACK_COMMANDS_DEFAULT = (
+    "description //{{ description }}\n"
+    "ip address {{ ip }} {{ mask }}\n"
+    "no shutdown"
+)
 _L3_ROUTED_MGMT_DEFAULTS = {
     "interface": "", "ip": "", "mask": "", "description": "Routed Mgmt Uplink",
 }
@@ -2399,6 +2404,17 @@ _L3_KINDS = {
                 "number": "0", "mask": "255.255.255.255",
                 "description": "Switch MGMT / Router-ID",
             },
+            "textarea": {
+                "field": "commands",
+                "label": "Interface Config",
+                "default": _L3_LOOPBACK_COMMANDS_DEFAULT,
+                "hint": (
+                    "  IOS lines inside the Loopback interface block.\n"
+                    "  Use {{ ip }}, {{ mask }}, and {{ description }} for\n"
+                    "  values from the row above / Generate Config Step 3.\n"
+                    "  Leave blank to use the default description / ip / no shutdown."
+                ),
+            },
         },
         "generate": {
             "title": "Loopbacks",
@@ -2468,6 +2484,7 @@ _L3_KINDS = {
                 ("vlan", "VLAN", 1, {"readonly": True, "display": "Vlan{}"}),
                 ("ip", "IP", 2),
                 ("mask", "Mask", 2),
+                ("description", "Description", 3),
             ),
         },
     },
@@ -2513,6 +2530,10 @@ class L3EntryGrid:
         ttk.Frame(hdr, width=30).grid(row=0, column=len(cfg["columns"]),
                                         padx=(6, 1))
         self.row_frame = ttk.Frame(self.lf); self.row_frame.pack(fill="x")
+        ta_cfg = cfg.get("textarea")
+        if ta_cfg and ta_cfg.get("hint"):
+            ttk.Label(self.lf, style="Hint.TLabel",
+                      text=ta_cfg["hint"]).pack(anchor="w", padx=2, pady=(0, 4))
         return self
 
     def build_generate(self, parent):
@@ -2546,6 +2567,8 @@ class L3EntryGrid:
         id_field = self.spec["id_field"]
         if str(entry.get(id_field) or "").strip():
             return True
+        if str(entry.get("commands") or "").strip():
+            return True
         return any(str(entry.get(f) or "").strip()
                    for f in self._profile_value_fields())
 
@@ -2564,7 +2587,10 @@ class L3EntryGrid:
             deletable = False
             new_defaults = {}
         data = data or {}
-        row_fr = ttk.Frame(self.row_frame); row_fr.pack(fill="x", pady=1)
+        outer_fr = ttk.Frame(self.row_frame)
+        outer_fr.pack(fill="x", pady=1)
+        row_fr = ttk.Frame(outer_fr)
+        row_fr.pack(fill="x")
         fields = {}
         for col, col_spec in enumerate(columns):
             field = col_spec[0]
@@ -2593,9 +2619,32 @@ class L3EntryGrid:
             fields[field] = widget
         if deletable:
             ttk.Button(row_fr, text="X", width=3, style="Del.TButton",
-                       command=lambda fr=row_fr: self._delete(fr)
+                       command=lambda fr=outer_fr: self._delete(fr)
                        ).grid(row=0, column=len(columns), padx=(6, 1))
-        self.rows.append({"frame": row_fr, "fields": fields})
+        commands_widget = None
+        if self.mode == "profile":
+            ta_cfg = self.spec["profile"].get("textarea")
+            if ta_cfg:
+                ta_fr = ttk.Frame(outer_fr)
+                ta_fr.pack(fill="x", pady=(4, 0))
+                ttk.Label(ta_fr, text=ta_cfg.get("label", "Commands"),
+                          anchor="w").pack(anchor="w", padx=1)
+                commands_widget = tk.Text(
+                    ta_fr, height=3, font=("Consolas", 9),
+                    bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
+                    selectbackground=C["sel_bg"], relief="flat", bd=2,
+                    wrap="none")
+                commands_widget.pack(fill="x", padx=1, pady=(2, 0))
+                _attach_context_menu(commands_widget)
+                _autosize_textarea(commands_widget, min_h=2, max_h=12)
+                ta_field = ta_cfg["field"]
+                ta_val = (data.get(ta_field) or "").strip()
+                if not ta_val and not data:
+                    ta_val = ta_cfg.get("default", "")
+                if ta_val:
+                    commands_widget.insert("1.0", ta_val)
+        self.rows.append({"frame": outer_fr, "fields": fields,
+                          "commands": commands_widget})
 
     def _delete(self, frame):
         self.rows = [r for r in self.rows if r["frame"] is not frame]
@@ -2608,6 +2657,9 @@ class L3EntryGrid:
             if key:
                 saved[key] = {f: self._field_get(row, f)
                               for f, _ in self._iter_fields(row)}
+                ta = row.get("commands")
+                if ta is not None:
+                    saved[key]["commands"] = ta.get("1.0", "end").strip()
         self.clear()
         for entry in entries or []:
             entry = dict(entry)
@@ -2621,6 +2673,13 @@ class L3EntryGrid:
             vals = saved.get(key, {})
             cur = self.rows[-1]
             for field, val in vals.items():
+                if field == "commands":
+                    ta = cur.get("commands")
+                    if ta is not None:
+                        ta.delete("1.0", "end")
+                        if val:
+                            ta.insert("1.0", val)
+                    continue
                 w = cur["fields"].get(field)
                 if hasattr(w, "insert"):
                     w.delete(0, "end")
@@ -2671,6 +2730,12 @@ class L3EntryGrid:
                 entry["description"] = defaults.get("description", "")
             if not entry.get("mask") and defaults.get("mask"):
                 entry["mask"] = defaults["mask"]
+            ta_cfg = (self.spec["profile"].get("textarea")
+                      if self.mode == "profile" else None)
+            if ta_cfg:
+                ta = row.get("commands")
+                if ta is not None:
+                    entry[ta_cfg["field"]] = ta.get("1.0", "end").strip()
             out.append(entry)
         return out
 
@@ -2751,6 +2816,18 @@ def _apply_l3_legacy_sw_aliases(sw, kind, items):
         sw[legacy_key] = first.get(field, "")
 
 
+def _substitute_loopback_commands(commands, ip, mask, description):
+    """Fill loopback interface-body placeholders from resolved values."""
+    out = commands or ""
+    for token, val in (
+        ("{{ ip }}", ip),
+        ("{{ mask }}", mask),
+        ("{{ description }}", description),
+    ):
+        out = out.replace(token, val)
+    return out.strip()
+
+
 def _render_l3_loopbacks(l3, lb_sec, sw):
     if not lb_sec.get("enabled"):
         return
@@ -2763,11 +2840,22 @@ def _render_l3_loopbacks(l3, lb_sec, sw):
                    or "255.255.255.255").strip()
         lb_desc = (sw_lb.get("description") or entry.get("description")
                    or "Switch MGMT / Router-ID").strip()
-        if lb_ip:
-            l3.append(
-                f"interface Loopback{number}\n"
+        commands = (entry.get("commands") or "").strip()
+        if commands:
+            body = _substitute_loopback_commands(
+                commands, lb_ip, lb_mask, lb_desc)
+        elif lb_ip:
+            body = (
                 f"description //{lb_desc}\n"
                 f"ip address {lb_ip} {lb_mask}\n"
+                f"no shutdown"
+            )
+        else:
+            body = ""
+        if body:
+            l3.append(
+                f"interface Loopback{number}\n"
+                f"{body}\n"
                 f"exit"
             )
 
@@ -3118,7 +3206,8 @@ def _render_svi_block(svi, svi_ips):
     per_sw = (svi_ips or {}).get(vlan, {}) or {}
     ip = (per_sw.get("ip") or svi.get("ip") or "").strip()
     mask = (per_sw.get("mask") or svi.get("mask") or "").strip()
-    desc = (svi.get("description") or svi.get("name") or "").strip()
+    desc = (per_sw.get("description") or svi.get("description")
+            or svi.get("name") or "").strip()
     helpers_raw = svi.get("helper_addresses") or ""
     if isinstance(helpers_raw, list):
         helpers = [h.strip() for h in helpers_raw if str(h).strip()]
@@ -4316,12 +4405,12 @@ class GenerateTab(ttk.Frame):
             else:
                 self.svi_ip_lf.configure(text="SVI IPs")
                 self.svi_ip_hint.configure(
-                    text="  One row per SVI defined in the profile. IP /\n"
-                         "  Mask pre-fill from the profile when set;\n"
-                         "  override here for per-switch values."
+                    text="  One row per SVI defined in the profile. IP,\n"
+                         "  Mask, and Description can be overridden here\n"
+                         "  for per-switch values."
                 )
                 self.svi_ip_hdr_vlan.configure(text="VLAN")
-                self.svi_ip_hdr_desc.grid_remove()
+                self.svi_ip_hdr_desc.grid()
             self.svi_ip_lf.pack(fill="x", padx=5, pady=4)
             self._populate_svi_ip_rows(profile, editable=allow_sw_vlans)
         else:
@@ -4406,8 +4495,8 @@ class GenerateTab(ttk.Frame):
         site-wide, optionally a default IP).
 
         When *editable* is True (per-switch VLAN overrides enabled),
-        VLAN ID and Description are editable Entry fields and the full
-        row is stored in sw['svis'] at render time."""
+        VLAN ID is an editable Entry field and the full row is stored in
+        sw['svis'] at render time. Description is always editable."""
         existing = {}
         for idx, r in enumerate(self.svi_ip_rows):
             if r.get("editable"):
@@ -4421,7 +4510,7 @@ class GenerateTab(ttk.Frame):
             else:
                 existing[idx] = {
                     "vlan": r["vlan"],
-                    "desc": "",
+                    "desc": r["desc"].get().strip() if r.get("desc") else "",
                     "ip": r["ip"].get(),
                     "mask": r["mask"].get(),
                     "helpers": r.get("helpers", ""),
@@ -4449,17 +4538,15 @@ class GenerateTab(ttk.Frame):
                 vlan_w = ttk.Entry(row)
                 vlan_w.grid(row=0, column=0, sticky="ew", padx=1)
                 vlan_w.insert(0, saved.get("vlan") or vlan)
-                desc_w = ttk.Entry(row)
-                desc_w.grid(row=0, column=1, sticky="ew", padx=1)
-                desc_w.insert(0, saved.get("desc") or desc)
                 _attach_context_menu(vlan_w)
-                _attach_context_menu(desc_w)
             else:
-                label = f"Vlan{vlan}" + (f" - {desc}" if desc else "")
-                vlan_w = label
-                ttk.Label(row, text=label, anchor="w").grid(
+                vlan_w = vlan
+                ttk.Label(row, text=f"Vlan{vlan}", anchor="w").grid(
                     row=0, column=0, sticky="ew", padx=1)
-                desc_w = None
+            desc_w = ttk.Entry(row)
+            desc_w.grid(row=0, column=1, sticky="ew", padx=1)
+            desc_w.insert(0, saved.get("desc") or desc)
+            _attach_context_menu(desc_w)
             ip = ttk.Entry(row); ip.grid(row=0, column=2, sticky="ew", padx=1)
             mask = ttk.Entry(row); mask.grid(row=0, column=3, sticky="ew", padx=1)
             _attach_context_menu(ip)
@@ -4819,27 +4906,27 @@ class GenerateTab(ttk.Frame):
                     continue
                 if profile_vlan and vlan == profile_vlan and profile_vlan in vlan_remap:
                     vlan = vlan_remap[profile_vlan]
-                desc = r["desc"].get().strip() if r.get("desc") else ""
-                ip_val = r["ip"].get().strip()
-                mask_val = r["mask"].get().strip()
-                helpers_raw = r.get("helpers") or ""
-                if isinstance(helpers_raw, str):
-                    helpers = [h.strip() for h in helpers_raw.split(",")
-                               if h.strip()]
-                else:
-                    helpers = list(helpers_raw or [])
-                sw_svis.append({
-                    "vlan": vlan,
-                    "description": desc,
-                    "ip": ip_val,
-                    "mask": mask_val,
-                    "helper_addresses": helpers,
-                })
-                svi_ips[vlan] = {"ip": ip_val, "mask": mask_val}
             else:
                 vlan = r["vlan"]
-                svi_ips[vlan] = {"ip": r["ip"].get().strip(),
-                                 "mask": r["mask"].get().strip()}
+            desc = r["desc"].get().strip() if r.get("desc") else ""
+            ip_val = r["ip"].get().strip()
+            mask_val = r["mask"].get().strip()
+            helpers_raw = r.get("helpers") or ""
+            if isinstance(helpers_raw, str):
+                helpers = [h.strip() for h in helpers_raw.split(",")
+                           if h.strip()]
+            else:
+                helpers = list(helpers_raw or [])
+            sw_svis.append({
+                "vlan": vlan,
+                "description": desc,
+                "ip": ip_val,
+                "mask": mask_val,
+                "helper_addresses": helpers,
+            })
+            svi_ips[vlan] = {"ip": ip_val, "mask": mask_val}
+            if desc:
+                svi_ips[vlan]["description"] = desc
         sw["svi_ips"] = svi_ips
         if sw_svis:
             sw["svis"] = sw_svis
@@ -7604,7 +7691,9 @@ class GuideTab(ttk.Frame):
             "multiple rows (+ Add ...) and carries site-wide IP/Mask defaults "
             "that pre-fill Generate Config Step 3:\n\n"
             "  Loopbacks           One or more loopback interfaces. Typical "
-            "for router-ID and management reachability.\n"
+            "for router-ID and management reachability. Each row has an "
+            "Interface Config box for the full Loopback stanza body; use "
+            "{{ ip }}, {{ mask }}, and {{ description }} placeholders.\n"
             "  Routed Interfaces   Standalone routed uplink(s). Interface "
             "name is optional - leave it blank when the uplink is assigned "
             "via a Requires-IP role in Step 2 instead.\n"
