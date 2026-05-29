@@ -2023,7 +2023,9 @@ def _render_acl(acl):
             parts.append(dst)
             if dst_wc:
                 parts.append(dst_wc)
-        if r.get("log"):
+        if r.get("log_input"):
+            parts.append("log-input")
+        elif r.get("log"):
             parts.append("log")
         lines.append(" ".join(p for p in parts if p))
     lines.append("exit")
@@ -5845,7 +5847,8 @@ class ProfilesTab(ttk.Frame):
         rules_frame = ttk.Frame(blk_frame)
         for col in (2, 3, 4, 5):
             rules_frame.columnconfigure(col, weight=1, uniform="acladdrs")
-        rules_frame.columnconfigure(6, minsize=44)
+        rules_frame.columnconfigure(6, minsize=36)
+        rules_frame.columnconfigure(7, minsize=52)
 
         hdr_kw = dict(sticky="ew", padx=1)
         ttk.Label(rules_frame, text="Action", anchor="w"
@@ -5862,10 +5865,12 @@ class ProfilesTab(ttk.Frame):
                   ).grid(row=0, column=5, **hdr_kw)
         ttk.Label(rules_frame, text="Log", anchor="center"
                   ).grid(row=0, column=6, sticky="ew", padx=2)
-        ttk.Label(rules_frame, text="Del", anchor="center"
+        ttk.Label(rules_frame, text="Log-In", anchor="center"
                   ).grid(row=0, column=7, sticky="ew", padx=2)
-        ttk.Label(rules_frame, text="Move", anchor="center"
+        ttk.Label(rules_frame, text="Del", anchor="center"
                   ).grid(row=0, column=8, sticky="ew", padx=2)
+        ttk.Label(rules_frame, text="Move", anchor="center"
+                  ).grid(row=0, column=9, sticky="ew", padx=2)
 
         btn_row = ttk.Frame(blk_frame); btn_row.pack(fill="x", pady=(4, 0))
         block = {"frame": blk_frame, "name": name_e, "type": type_cb,
@@ -5910,7 +5915,7 @@ class ProfilesTab(ttk.Frame):
         # All rule widgets grid directly into the shared rules_frame so
         # column widths stay aligned with the header row above.
         # Grid columns:  0 action | 1 proto | 2 src | 3 src_wc |
-        #                4 dst    | 5 dst_wc | 6 log | 7 X
+        #                4 dst    | 5 dst_wc | 6 log | 7 log-in | 8 X
         parent = block["rules_frame"]
         r = block["next_row"]
         block["next_row"] = r + 1
@@ -5933,15 +5938,29 @@ class ProfilesTab(ttk.Frame):
         dst_e.grid(  column=4, **gkw)
         dstwc_e.grid(column=5, **gkw)
         log_var = tk.BooleanVar(value=False)
-        log_cb  = ttk.Checkbutton(parent, variable=log_var)
+        log_input_var = tk.BooleanVar(value=False)
+
+        def _on_log_toggle():
+            if log_var.get():
+                log_input_var.set(False)
+
+        def _on_log_input_toggle():
+            if log_input_var.get():
+                log_var.set(False)
+
+        log_cb = ttk.Checkbutton(parent, variable=log_var,
+                               command=_on_log_toggle)
         log_cb.grid(row=r, column=6, padx=2, pady=1)
+        log_input_cb = ttk.Checkbutton(parent, variable=log_input_var,
+                                       command=_on_log_input_toggle)
+        log_input_cb.grid(row=r, column=7, padx=2, pady=1)
         for w in (proto_e, src_e, srcwc_e, dst_e, dstwc_e):
             _attach_context_menu(w)
         del_btn = ttk.Button(parent, text="X", width=3, style="Del.TButton",
                              command=lambda: self._del_acl_rule(rule, block))
-        del_btn.grid(row=r, column=7, padx=2, pady=1)
+        del_btn.grid(row=r, column=8, padx=2, pady=1)
         mv_frm = ttk.Frame(parent)
-        mv_frm.grid(row=r, column=8, padx=2, pady=1)
+        mv_frm.grid(row=r, column=9, padx=2, pady=1)
         ttk.Button(mv_frm, text="↑", width=2,
                    command=lambda: self._move_acl_rule(rule, block, -1)
                    ).pack(side="left")
@@ -5950,11 +5969,12 @@ class ProfilesTab(ttk.Frame):
                    ).pack(side="left")
 
         rule_widgets = (action_cb, proto_e, src_e, srcwc_e,
-                        dst_e, dstwc_e, log_cb, del_btn)
+                        dst_e, dstwc_e, log_cb, log_input_cb, del_btn)
         rule = {"widgets": rule_widgets, "row_idx": r,
                 "action": action_cb, "proto": proto_e,
                 "src": src_e, "src_wc": srcwc_e,
-                "dst": dst_e, "dst_wc": dstwc_e, "log": log_var,
+                "dst": dst_e, "dst_wc": dstwc_e,
+                "log": log_var, "log_input": log_input_var,
                 "del_btn": del_btn}
 
         # When the action is 'remark', collapse the rule fields into a
@@ -5964,14 +5984,15 @@ class ProfilesTab(ttk.Frame):
         def _refresh_action_layout(*_):
             act = action_cb.get() or "permit"
             if act == "remark":
-                for w in (proto_e, src_e, srcwc_e, dst_e, dstwc_e, log_cb):
+                for w in (proto_e, src_e, srcwc_e, dst_e, dstwc_e,
+                          log_cb, log_input_cb):
                     w.grid_remove()
                 rmk = rule.get("remark")
                 if rmk is None:
                     rmk = ttk.Entry(parent)
                     _attach_context_menu(rmk)
                     rule["remark"] = rmk
-                rmk.grid(row=rule["row_idx"], column=1, columnspan=6,
+                rmk.grid(row=rule["row_idx"], column=1, columnspan=7,
                          sticky="ew", padx=1, pady=1)
             else:
                 rmk = rule.get("remark")
@@ -5983,6 +6004,7 @@ class ProfilesTab(ttk.Frame):
                 dst_e.grid()
                 dstwc_e.grid()
                 log_cb.grid()
+                log_input_cb.grid()
 
         action_cb.bind("<<ComboboxSelected>>", _refresh_action_layout)
 
@@ -5999,6 +6021,7 @@ class ProfilesTab(ttk.Frame):
                 dst_e.insert(0, data.get("dest", ""))
                 dstwc_e.insert(0, data.get("dest_wildcard", ""))
                 log_var.set(bool(data.get("log", False)))
+                log_input_var.set(bool(data.get("log_input", False)))
         else:
             action_cb.set("permit")
             proto_e.insert(0, "ip")
@@ -6041,6 +6064,7 @@ class ProfilesTab(ttk.Frame):
             "dest": rule["dst"].get(),
             "dest_wildcard": rule["dst_wc"].get(),
             "log": bool(rule["log"].get()),
+            "log_input": bool(rule["log_input"].get()),
         }
 
     def _write_acl_rule(self, rule, data):
@@ -6063,6 +6087,7 @@ class ProfilesTab(ttk.Frame):
                 widget.delete(0, "end")
                 widget.insert(0, data.get(key, default) or default)
             rule["log"].set(bool(data.get("log", False)))
+            rule["log_input"].set(bool(data.get("log_input", False)))
 
     # -- BGP instance blocks --
     def _clear_bgp_blocks(self):
@@ -6221,6 +6246,7 @@ class ProfilesTab(ttk.Frame):
                         "dest": r["dst"].get().strip(),
                         "dest_wildcard": r["dst_wc"].get().strip(),
                         "log": bool(r["log"].get()),
+                        "log_input": bool(r["log_input"].get()),
                     })
             out.append(acl)
         return out
