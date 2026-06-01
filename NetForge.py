@@ -2773,6 +2773,9 @@ class L3EntryGrid:
                     continue
             item[id_field] = key_val
             if self.kind == "loopback":
+                desc_w = row["fields"].get("description")
+                if hasattr(desc_w, "get"):
+                    item["description"] = desc_w.get().strip()
                 item.setdefault("mask", "255.255.255.255")
                 item.setdefault("description", "")
             items.append(item)
@@ -2816,7 +2819,8 @@ def _apply_l3_legacy_sw_aliases(sw, kind, items):
         sw[legacy_key] = first.get(field, "")
 
 
-def _substitute_loopback_commands(commands, ip, mask, description):
+def _substitute_loopback_commands(commands, ip, mask, description,
+                                  profile_description=""):
     """Fill loopback interface-body placeholders from resolved values."""
     out = commands or ""
     for token, val in (
@@ -2825,7 +2829,33 @@ def _substitute_loopback_commands(commands, ip, mask, description):
         ("{{ description }}", description),
     ):
         out = out.replace(token, val)
+    desc = (description or "").strip()
+    prof = (profile_description or "").strip()
+    if desc and prof and prof != desc:
+        out = out.replace(f"description //{prof}", f"description //{desc}")
+        out = out.replace(f"description {prof}", f"description //{desc}")
+    if desc:
+        out, count = re.subn(
+            r"^description\s+\S.*$",
+            f"description //{desc}",
+            out,
+            count=1,
+            flags=re.I | re.M,
+        )
+        if not count and desc not in out:
+            out = f"description //{desc}\n{out}"
     return out.strip()
+
+
+def _loopback_description(entry, sw_lb):
+    """Prefer per-switch Step 3 description over profile defaults."""
+    profile_desc = (entry.get("description") or "Switch MGMT / Router-ID").strip()
+    if not sw_lb:
+        return profile_desc
+    if "description" not in sw_lb:
+        return profile_desc
+    sw_desc = (sw_lb.get("description") or "").strip()
+    return sw_desc or profile_desc
 
 
 def _render_l3_loopbacks(l3, lb_sec, sw):
@@ -2838,12 +2868,12 @@ def _render_l3_loopbacks(l3, lb_sec, sw):
         lb_ip = (sw_lb.get("ip") or entry.get("ip") or "").strip()
         lb_mask = (sw_lb.get("mask") or entry.get("mask")
                    or "255.255.255.255").strip()
-        lb_desc = (sw_lb.get("description") or entry.get("description")
-                   or "Switch MGMT / Router-ID").strip()
+        lb_desc = _loopback_description(entry, sw_lb)
+        profile_desc = (entry.get("description") or "Switch MGMT / Router-ID").strip()
         commands = (entry.get("commands") or "").strip()
         if commands:
             body = _substitute_loopback_commands(
-                commands, lb_ip, lb_mask, lb_desc)
+                commands, lb_ip, lb_mask, lb_desc, profile_desc)
         elif lb_ip:
             body = (
                 f"description //{lb_desc}\n"
