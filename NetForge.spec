@@ -3,6 +3,8 @@
 
 import os
 
+from PyInstaller.utils.hooks import collect_submodules
+
 block_cipher = None
 root = os.path.abspath('.')
 
@@ -14,7 +16,7 @@ a = Analysis(
         (os.path.join(root, 'data'), 'data'),
         (os.path.join(root, 'NetForge.ico'), '.'),
     ],
-    hiddenimports=[],
+    hiddenimports=collect_submodules('netforge'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

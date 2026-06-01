@@ -53,9 +53,15 @@ class TestImports(unittest.TestCase):
         from netforge.ui.l3_grid import L3EntryGrid
         self.assertTrue(callable(L3EntryGrid))
 
+    def test_app_module(self):
+        from netforge.app import App, main
+        self.assertTrue(callable(App))
+        self.assertTrue(callable(main))
+
     def test_netforge_py_imports(self):
         import NetForge
         self.assertTrue(hasattr(NetForge, "main"))
+        self.assertTrue(hasattr(NetForge, "App"))
 
 
 if __name__ == "__main__":
