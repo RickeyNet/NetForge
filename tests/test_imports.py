@@ -37,6 +37,22 @@ class TestImports(unittest.TestCase):
         self.assertTrue(callable(_SerialPushDialog))
         self.assertTrue(callable(_ThemeEditorDialog))
 
+    def test_tab_modules(self):
+        from netforge.tabs import (
+            BaseTab,
+            GenerateTab,
+            GuideTab,
+            ModelsTab,
+            ProfilesTab,
+            RolesTab,
+        )
+        for cls in (BaseTab, GenerateTab, GuideTab, ModelsTab, ProfilesTab, RolesTab):
+            self.assertTrue(issubclass(cls, __import__("tkinter").ttk.Frame))
+
+    def test_l3_grid_module(self):
+        from netforge.ui.l3_grid import L3EntryGrid
+        self.assertTrue(callable(L3EntryGrid))
+
     def test_netforge_py_imports(self):
         import NetForge
         self.assertTrue(hasattr(NetForge, "main"))
