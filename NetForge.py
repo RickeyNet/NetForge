@@ -17,129 +17,35 @@ import sys
 import weakref
 import ctypes
 from ctypes import wintypes
-from datetime import date
 import tkinter as tk
 import zipfile
 from tkinter import colorchooser, ttk, filedialog
 from jinja2.sandbox import SandboxedEnvironment
 
-VERSION = "1.4.0"
+from netforge import VERSION
+from netforge.data.base_settings import (
+    _migrate_base_set,
+    load_base_settings,
+    resolve_base,
+)
+from netforge.data.iface import (
+    _canon_iface,
+    expand_port_groups_for_stack,
+    expand_range_iface,
+)
+from netforge.data.storage import (
+    BASE_DIR,
+    DATA_DIR,
+    ICON_PATH,
+    load_json,
+    merge_bundled_data,
+    save_json,
+)
+from netforge.ui.filename_template import apply_filename_template as _apply_filename_template
+
 _RECENT_MAX = 10
 
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-if getattr(sys, "frozen", False):
-    BASE_DIR = os.path.dirname(sys.executable)
-    _BUNDLE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    _BUNDLE_DIR = BASE_DIR
-
-DATA_DIR = os.path.join(BASE_DIR, "data")
-ICON_PATH = os.path.join(_BUNDLE_DIR, "NetForge.ico")
-
-
-def _merge_bundled_data():
-    """Seed data/ from bundled defaults and add any new bundled entries.
-
-    On first run, copy the whole bundled data/ folder. On every subsequent
-    launch, merge any new top-level keys from bundled JSON files into the
-    local files so new starter models/roles/profiles/base-sets ship with
-    upgrades. User-edited entries (matching names) are never overwritten.
-    """
-    bundled_data = os.path.join(_BUNDLE_DIR, "data")
-    if not os.path.isdir(bundled_data):
-        return
-    # Running from source: bundled and live data/ are the same folder.
-    if os.path.isdir(DATA_DIR) and os.path.samefile(bundled_data, DATA_DIR):
-        return
-
-    if not os.path.exists(DATA_DIR):
-        import shutil
-        shutil.copytree(bundled_data, DATA_DIR)
-        return
-
-    # Per-file merge: top-level keys are item names; user wins on conflict.
-    # base_settings.json is special - items live under "sets".
-    flat_files = ("models.json", "roles.json", "profiles.json")
-    for name in flat_files:
-        bp = os.path.join(bundled_data, name)
-        lp = os.path.join(DATA_DIR, name)
-        if not os.path.isfile(bp):
-            continue
-        try:
-            with open(bp, "r", encoding="utf-8") as f:
-                bundled = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(bundled, dict):
-            continue
-        if not os.path.isfile(lp):
-            local = {}
-        else:
-            try:
-                with open(lp, "r", encoding="utf-8") as f:
-                    local = json.load(f)
-            except (OSError, ValueError):
-                continue
-            if not isinstance(local, dict):
-                continue
-        added = False
-        for key, val in bundled.items():
-            if key not in local:
-                local[key] = val
-                added = True
-        if added:
-            try:
-                with open(lp, "w", encoding="utf-8") as f:
-                    json.dump(local, f, indent=2)
-            except OSError:
-                pass
-
-    # base_settings.json: merge under "sets", leave "default" alone unless
-    # the local file is missing one entirely.
-    bp = os.path.join(bundled_data, "base_settings.json")
-    lp = os.path.join(DATA_DIR, "base_settings.json")
-    if os.path.isfile(bp):
-        try:
-            with open(bp, "r", encoding="utf-8") as f:
-                bundled = json.load(f)
-        except (OSError, ValueError):
-            bundled = None
-        if isinstance(bundled, dict):
-            if not os.path.isfile(lp):
-                local = {}
-            else:
-                try:
-                    with open(lp, "r", encoding="utf-8") as f:
-                        local = json.load(f)
-                except (OSError, ValueError):
-                    local = None
-            if isinstance(local, dict):
-                bundled_sets = bundled.get("sets") or {}
-                local_sets = local.get("sets")
-                if not isinstance(local_sets, dict):
-                    local_sets = {}
-                    local["sets"] = local_sets
-                added = False
-                for key, val in bundled_sets.items():
-                    if key not in local_sets:
-                        local_sets[key] = val
-                        added = True
-                if "default" not in local and "default" in bundled:
-                    local["default"] = bundled["default"]
-                    added = True
-                if added:
-                    try:
-                        with open(lp, "w", encoding="utf-8") as f:
-                            json.dump(local, f, indent=2)
-                    except OSError:
-                        pass
-
-
-_merge_bundled_data()
+merge_bundled_data()
 
 
 # Windows DWM attributes (Win10 1809+ for dark-mode; Win11 22H2+ for colors)
@@ -460,170 +366,8 @@ def apply_theme(root):
     _restyle_all_windows()
 
 
-# ---------------------------------------------------------------------------
-# JSON helpers
-# ---------------------------------------------------------------------------
-def load_json(name, default=None):
-    p = os.path.join(DATA_DIR, name)
-    if os.path.exists(p):
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
-    return default if default is not None else {}
-
-
-def save_json(name, data):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(os.path.join(DATA_DIR, name), "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-
-#  Old-key -> new-key migration for base settings.  The keys on the left
-#  were the original 9 section slugs; the right side maps each old block
-#  into the closest equivalent in the new spreadsheet-aligned layout.
-#  Multiple old keys may feed into the same new key - their contents are
-#  joined with a blank line in the order listed.  The 'ssh', 'logging',
-#  and 'mgmt_vrf' keys keep their names so they are not listed here.
-_BASE_KEY_MIGRATION = [
-    ("services_functions", ["global_services"]),
-    ("aaa_radius",         ["aaa"]),
-    ("vty_config",         ["line_config"]),
-    ("misc",               ["security", "switching"]),
-]
-
-#  Legacy keys (and short-lived spreadsheet-aligned sections that were
-#  later removed) that should be dropped on load without folding their
-#  content anywhere, so old base_settings.json files clean up to the
-#  current layout.
-_BASE_LEGACY_DROP_KEYS = (
-    "mgmt_port",
-    "management", "ip_routes", "acl", "vlan_config", "ntp", "snmpv3",
-)
-
-
-def _migrate_base_set(entry):
-    """In-place migrate one base-set dict from the legacy 9-section layout
-    to the spreadsheet-aligned layout.  Old keys are removed after their
-    content has been folded into the new keys.  When an old key has the
-    same name as its new destination (e.g. 'ssh' -> 'ssh') it is kept,
-    not popped, so its value survives.  Keys in _BASE_LEGACY_DROP_KEYS
-    are removed unconditionally with their content discarded.  Re-running
-    the migration is a no-op."""
-    if not isinstance(entry, dict):
-        return
-    for new_key, old_keys in _BASE_KEY_MIGRATION:
-        sources = [k for k in old_keys if k != new_key]
-        existing = (entry.get(new_key) or "").strip()
-        pieces = []
-        if existing:
-            pieces.append(existing)
-        for ok in sources:
-            val = entry.get(ok)
-            if isinstance(val, str) and val.strip():
-                pieces.append(val.strip())
-        if pieces:
-            entry[new_key] = "\n\n".join(pieces)
-        for ok in sources:
-            entry.pop(ok, None)
-    for key in _BASE_LEGACY_DROP_KEYS:
-        entry.pop(key, None)
-
-
-def load_base_settings():
-    """Load base_settings.json and normalize to the multi-base shape:
-        {"sets": {<name>: {...}, ...}, "default": <name>}
-    Legacy flat dicts are migrated into a single entry named "Base".
-    Old per-entry section keys are migrated to the new spreadsheet
-    category layout on load."""
-    raw = load_json("base_settings.json", {})
-    if isinstance(raw, dict) and isinstance(raw.get("sets"), dict):
-        sets = {k: v for k, v in raw["sets"].items() if isinstance(v, dict)}
-        if not sets:
-            sets = {"Base": {}}
-        default = raw.get("default") if raw.get("default") in sets \
-            else next(iter(sets))
-        for entry in sets.values():
-            _migrate_base_set(entry)
-        return {"sets": sets, "default": default}
-    # Legacy flat shape (or empty) - wrap as a single "Base" entry.
-    flat = raw if isinstance(raw, dict) else {}
-    _migrate_base_set(flat)
-    return {"sets": {"Base": flat}, "default": "Base"}
-
-
-def resolve_base(base_root, name=None):
-    """Return the base-settings dict matching *name*, falling back to the
-    default entry when the name is missing or unknown."""
-    sets = (base_root or {}).get("sets") or {}
-    if name and name in sets:
-        return sets[name]
-    default = (base_root or {}).get("default")
-    if default and default in sets:
-        return sets[default]
-    if sets:
-        return next(iter(sets.values()))
-    return {}
-
-
 # Apply saved theme preference now that load_json is available
 _load_theme()
-
-
-def expand_port_groups_for_stack(port_groups, stack_members):
-    """Replicate port groups for each member of a switch stack.
-
-    For a prefix like ``GigabitEthernet1/0/`` the leading switch number
-    (the ``1`` before the first ``/``) is replaced with each member number
-    (1 … *stack_members*).  If the prefix doesn't contain a ``/`` or the
-    stack is size 1 the original groups are returned unchanged.
-
-    If the port groups already contain entries for multiple stack members
-    (member numbers > 1) they are returned as-is to avoid duplication.
-    """
-    if stack_members <= 1:
-        return list(port_groups)
-
-    # Check if port_groups already include entries for stack members > 1.
-    # If so, they were defined explicitly and should not be expanded again.
-    for pg in port_groups:
-        m = re.match(r'^([A-Za-z-]*)(\d+)(/.*)$', pg["prefix"])
-        if m and int(m.group(2)) > 1:
-            return list(port_groups)
-
-    expanded = []
-    for pg in port_groups:
-        prefix = pg["prefix"]
-        # Match the switch number before the first slash
-        m = re.match(r'^([A-Za-z-]*)(\d+)(/.*)$', prefix)
-        if m:
-            name_part, _orig_num, tail = m.group(1), m.group(2), m.group(3)
-            for member in range(1, stack_members + 1):
-                expanded.append({
-                    "prefix": f"{name_part}{member}{tail}",
-                    "start": pg["start"],
-                    "end": pg["end"],
-                })
-        else:
-            # Can't parse switch number - just include as-is
-            expanded.append(pg)
-    return expanded
-
-
-def expand_range_iface(iface_str):
-    """Expand 'range PrefixN-M' into individual port strings.
-
-    Returns a list of individual interface strings.  If the input is not
-    a range specification, the original string is returned in a one-element
-    list so callers can always iterate the result.
-    """
-    s = iface_str.strip()
-    if not s.lower().startswith("range "):
-        return [s]
-    rest = s[6:]                       # strip leading "range "
-    m = re.match(r'^(.+?)(\d+)-(\d+)$', rest)
-    if not m:
-        return [s]
-    prefix, start_s, end_s = m.group(1), m.group(2), m.group(3)
-    return [f"{prefix}{i}" for i in range(int(start_s), int(end_s) + 1)]
 
 
 def _assigned_port_names(port_assignments, roles=None, requires_ip_only=False):
@@ -1002,27 +746,6 @@ def _toggle_hidden_batch(tab, category, singular):
     else:
         _dialog("Hidden" if action_hide else "Visible",
                 f"{len(names)} {singular}s are now {verb}.")
-
-
-def _apply_filename_template(template, *, hostname="", model="", profile="",
-                             work_order=""):
-    """Expand {{ var }} placeholders in a filename template.
-
-    Supported variables: hostname, model, profile, date (YYYY-MM-DD),
-    work_order.
-    Returns a sanitized string safe for use as a file name.
-    """
-    today = date.today().strftime("%Y-%m-%d")
-    subs = {"hostname": hostname, "model": model,
-            "profile": profile, "date": today,
-            "work_order": work_order}
-    result = template
-    for key, val in subs.items():
-        result = result.replace("{{ " + key + " }}", val)
-        result = result.replace("{{" + key + "}}", val)
-    # remove characters invalid in file names on Windows and Unix
-    result = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", result).strip()
-    return result or "config"
 
 
 def _dialog(title, msg, kind="info"):
@@ -2105,13 +1828,6 @@ _L3_ROUTED_MGMT_DEFAULTS = {
 _L3_MGMT_SVI_DEFAULTS = {
     "vlan": "", "ip": "", "mask": "", "description": "Switch MGMT",
 }
-
-
-def _canon_iface(s):
-    s = (s or "").strip()
-    if s[:6].lower() == "range ":
-        s = "range " + s[6:].strip()
-    return s
 
 
 def _expand_assigned_ifaces(iface_str):

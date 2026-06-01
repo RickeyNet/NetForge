@@ -8,8 +8,8 @@ call venv\Scripts\activate.bat
 :: Install build dependencies if needed
 pip install pyinstaller jinja2 --quiet
 
-:: Extract version from NetForge.py
-for /f "tokens=2 delims==" %%v in ('findstr /R "^VERSION" NetForge.py') do (
+:: Extract version from netforge package
+for /f "tokens=2 delims==" %%v in ('findstr /R "^VERSION" netforge\__init__.py') do (
     set "VER=%%~v"
 )
 set "VER=%VER: =%"
