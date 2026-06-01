@@ -18,6 +18,14 @@ class TestImports(unittest.TestCase):
         from netforge.ui.filename_template import apply_filename_template
         self.assertTrue(callable(apply_filename_template))
 
+    def test_ui_theme_modules(self):
+        from netforge.ui import theme, win_theme, widgets, helpers
+        self.assertIn("default", theme.THEMES)
+        self.assertTrue(callable(theme.apply_theme))
+        self.assertTrue(callable(win_theme._style_window))
+        self.assertTrue(callable(widgets.PanedWindow))
+        self.assertTrue(callable(helpers._dialog))
+
     def test_netforge_py_imports(self):
         import NetForge
         self.assertTrue(hasattr(NetForge, "main"))
