@@ -28,5 +28,20 @@
       "Line Config": "b77a3adc934cd0c552980fa6573cd6a68c5f8aac8a84bfbddb946248527f3b2b",
       "Banner / End": "3afba4b155fbbb6980236dce96e82b9620937b94b1d0fb75de1d66ab2313f63f"
     }
+  },
+  "l3_bgp_ospf_vlanremap": {
+    "sha256": "41f2f1c4deb72002c0122f3ed5cc8255715fb8071daea828da04f45d5e0ad567",
+    "length": 2233,
+    "sections": {
+      "Global / Base": "8bf82c0757f7590008028306e885f7193d8496cdf7ccd8615a6dfc5e59797c88",
+      "VLANs": "90b8e0af592972b8046485125a8f803671c63ef49b6183f29dce360d9d59d20a",
+      "L3 Interfaces": "c3e85a220c7ee09b865417aaef9d47edc5395ea16f5ae4baa4babbde0d1048f0",
+      "Interfaces": "fe89f7f1788c73fd28b39f27f13a76f261e36efc56e722c09c89822798754cd7",
+      "Management": "3d3c9dbf7789fc764b9b20aa473021095d2afc421ad5e3ea5f409c26bee962a6",
+      "Post-Interface": "",
+      "Routing": "4938e5531b57d72c6e2bed296747ec15e8abd8e37428b6222ff4d944dfc8d506",
+      "Line Config": "b77a3adc934cd0c552980fa6573cd6a68c5f8aac8a84bfbddb946248527f3b2b",
+      "Banner / End": "3afba4b155fbbb6980236dce96e82b9620937b94b1d0fb75de1d66ab2313f63f"
+    }
   }
 }

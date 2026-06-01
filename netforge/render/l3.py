@@ -3,13 +3,7 @@
 import re
 
 from netforge.data.iface import _canon_iface, expand_range_iface
-from netforge.render.normalize import (
-    _L3_LOOPBACK_DEFAULTS,
-    _L3_MGMT_SVI_DEFAULTS,
-    _L3_ROUTED_MGMT_DEFAULTS,
-    _enrich_l3_sections,
-    _normalize_l3_sections,
-)
+from netforge.render.normalize import _normalize_l3_sections
 
 def _assigned_port_names(port_assignments, roles=None, requires_ip_only=False):
     """Expand Step 2 / profile port assignments into individual interfaces.

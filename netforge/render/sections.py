@@ -2,27 +2,16 @@
 
 import re
 
-from netforge.data.iface import _canon_iface, expand_range_iface
+from netforge.data.iface import _canon_iface
 from netforge.render.l3 import (
-    _expand_assigned_ifaces,
-    _find_routed_mgmt_entry,
     _find_sw_routed_mgmt,
-    _first_loopback_ip,
     _inject_ospf_router_id,
-    _lookup_routed_iface_ips,
     _ospf_config_for_edit,
     _routed_mgmt_covered_by_role,
     _sw_loopbacks_map,
     _sw_mgmt_svis_map,
     _sw_routed_mgmt_map,
     _vlan_id_remap,
-)
-from netforge.render.normalize import (
-    _L3_LOOPBACK_COMMANDS_DEFAULT,
-    _L3_LOOPBACK_DEFAULTS,
-    _L3_MGMT_SVI_DEFAULTS,
-    _L3_ROUTED_MGMT_DEFAULTS,
-    _normalize_l3_sections,
 )
 
 def _render_ntp_block(ntp):
@@ -343,10 +332,6 @@ def _render_bgp(profile, sw):
         blocks.append("\n".join(lines))
 
     return "\n\n".join(blocks)
-
-
-_IFACE_VLAN_HEAD_RE = re.compile(
-    r'^\s*interface\s+(?:Vlan|vlan)\s*(\d+)\s*$', re.I | re.M)
 
 
 def _render_svi_block(svi, svi_ips):

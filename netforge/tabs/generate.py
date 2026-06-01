@@ -10,7 +10,7 @@ from netforge.data.iface import expand_port_groups_for_stack, expand_range_iface
 from netforge.render import _normalize_l3_sections, _vlan_id_remap, render_config_sections
 from netforge.render.l3 import _find_routed_mgmt_entry, _profile_has_ospf
 from netforge.serial_push import _SerialPushDialog
-from netforge.ui.filename_template import apply_filename_template as _apply_filename_template
+from netforge.ui.filename_template import apply_filename_template
 from netforge.ui.helpers import (
     _attach_context_menu,
     _autosize_textarea,
@@ -1388,7 +1388,7 @@ class GenerateTab(ttk.Frame):
         template = base_for_template.get(
             "filename_template",
             "{{ hostname }}_{{ model }}_{{ profile }}")
-        initial = _apply_filename_template(
+        initial = apply_filename_template(
             template,
             hostname=hostname,
             model=self.model_cb.get(),
