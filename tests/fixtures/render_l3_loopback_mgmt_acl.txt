@@ -1,0 +1,108 @@
+!
+! l3-sw01 - Generated Configuration
+!
+
+configure terminal
+
+no service pad
+service timestamps debug datetime msec localtime
+service timestamps log datetime msec localtime
+service password-encryption
+no platform punt-keepalive disable-kernel-core
+
+hostname l3-sw01
+
+vrf definition Mgmt-vrf
+address-family ipv4
+exit-address-family
+
+no logging console
+
+enable secret enc
+
+username admin privilege 15 secret pw
+
+aaa new-model
+aaa authentication login default local
+aaa authentication enable default enable
+aaa authorization exec default local
+
+switch 1 provision c9300-24s
+
+ip domain name example.com
+
+crypto key generate rsa modulus 4096
+ip ssh version 2
+ip ssh time-out 60
+
+no ip source-route
+no service call-home
+
+vtp mode transparent
+spanning-tree mode rapid-pvst
+spanning-tree extend system-id
+memory free low-watermark processor 134344
+redundancy
+transceiver type all
+monitoring
+exit
+vlan dot1q tag native
+
+ntp server 10.0.0.10
+
+vlan 2
+ name mgmt
+exit
+
+ip routing
+
+interface Loopback0
+description //RID
+ip address 1.1.1.1 255.255.255.255
+no shutdown
+exit
+
+interface range GigabitEthernet1/0/1-2
+description //Disabled Port
+switchport access vlan 
+switchport mode access
+shutdown
+exit
+
+interface vlan1
+no ip address
+shutdown
+exit
+
+interface vlan2
+description Site MGMT
+ip address 10.0.0.2 255.255.255.248
+exit
+
+ip default-gateway 10.0.0.254
+
+ip access-list extended TEST_ACL
+ permit ip any any log
+exit
+
+ip route 0.0.0.0 0.0.0.0 10.0.0.254
+
+line con 0
+exec-timeout 9 0
+line vty 0 4
+exec-timeout 9 0
+transport input ssh
+line vty 5 15
+exec-timeout 0 0
+transport input none
+exit
+
+banner login ^
+********************* Warning!!! **********************************
+
+Don't log into my network devices!
+
+*******************************************************************
+^
+
+end

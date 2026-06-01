@@ -26,6 +26,11 @@ class TestImports(unittest.TestCase):
         self.assertTrue(callable(widgets.PanedWindow))
         self.assertTrue(callable(helpers._dialog))
 
+    def test_render_modules(self):
+        from netforge.render import render_config, render_config_sections
+        self.assertTrue(callable(render_config))
+        self.assertTrue(callable(render_config_sections))
+
     def test_netforge_py_imports(self):
         import NetForge
         self.assertTrue(hasattr(NetForge, "main"))

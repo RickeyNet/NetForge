@@ -1,0 +1,32 @@
+{
+  "l2_basic": {
+    "sha256": "6610e138168681e692fdc5157d16a0bb8dcc93c28ee0fc006219eea993016968",
+    "length": 1703,
+    "sections": {
+      "Global / Base": "b393105605c37d70e98f491d89a20cda8ba5552f32e2a746c09ecb52110fd610",
+      "VLANs": "e30dde802cff70532f6a63eeddd368aecb00473248979832fe63cdc54fb44ed2",
+      "L3 Interfaces": "",
+      "Interfaces": "6056be580efb65b0969aa300ca0055af7a81d45f1c910efa940aa56ea3c54297",
+      "Management": "b1a709a79c4ee042ff487e794c24f4fa4e44a82fdca889b7ee2d84bddd7a54d4",
+      "Post-Interface": "",
+      "Routing": "",
+      "Line Config": "b77a3adc934cd0c552980fa6573cd6a68c5f8aac8a84bfbddb946248527f3b2b",
+      "Banner / End": "3afba4b155fbbb6980236dce96e82b9620937b94b1d0fb75de1d66ab2313f63f"
+    }
+  },
+  "l3_loopback_mgmt_acl": {
+    "sha256": "48459471444ef3feec87f6efe10c21c356641cf3dd4afe6502b3227450055cc9",
+    "length": 1774,
+    "sections": {
+      "Global / Base": "64d45c4f2b86498f8f09b94b6a4332586e6e81123218da15c665360d64a2b2e4",
+      "VLANs": "0ef63f8c49128e88356d0196811a19732f4c13bc91c21165234c840356581e18",
+      "L3 Interfaces": "a67c8208f0b040ebf5d313ffbaa9cf338221de9f5e6579370ae464e32bfd0969",
+      "Interfaces": "fe89f7f1788c73fd28b39f27f13a76f261e36efc56e722c09c89822798754cd7",
+      "Management": "a7379f350a011473820727909fde8449efefb0fc4e96090bfb5c4c12d0b0a059",
+      "Post-Interface": "309da14d068b41b006bc65f6fbd51923835b90a2ea6b06a3e32934c669ca51c5",
+      "Routing": "20e590e727a3f19d33d6bbf35fdbe4559595cbbafe6955b9e23efa6038a7c292",
+      "Line Config": "b77a3adc934cd0c552980fa6573cd6a68c5f8aac8a84bfbddb946248527f3b2b",
+      "Banner / End": "3afba4b155fbbb6980236dce96e82b9620937b94b1d0fb75de1d66ab2313f63f"
+    }
+  }
+}

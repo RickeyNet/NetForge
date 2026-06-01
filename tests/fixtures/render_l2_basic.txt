@@ -1,0 +1,102 @@
+!
+! sw-test01 - Generated Configuration
+! Work Order: WO123
+!
+
+configure terminal
+
+no service pad
+service timestamps debug datetime msec localtime
+service timestamps log datetime msec localtime
+service password-encryption
+no platform punt-keepalive disable-kernel-core
+
+hostname sw-test01
+
+vrf definition Mgmt-vrf
+address-family ipv4
+exit-address-family
+
+no logging console
+
+enable secret enc
+
+username admin privilege 15 secret pw
+
+aaa new-model
+aaa authentication login default local
+aaa authentication enable default enable
+aaa authorization exec default local
+
+ip domain name example.com
+
+crypto key generate rsa modulus 4096
+ip ssh version 2
+ip ssh time-out 60
+
+no ip source-route
+no service call-home
+
+vtp mode transparent
+spanning-tree mode rapid-pvst
+spanning-tree extend system-id
+memory free low-watermark processor 134344
+redundancy
+transceiver type all
+monitoring
+exit
+vlan dot1q tag native
+
+vlan 10
+ name mgmt
+exit
+
+interface range GigabitEthernet1/0/2-4
+description //Disabled Port
+switchport access vlan 
+switchport mode access
+shutdown
+exit
+
+interface vlan1
+no ip address
+shutdown
+exit
+
+interface GigabitEthernet0/0
+no ip address
+negotiation auto
+exit
+
+interface GigabitEthernet1/0/1
+description User1
+switchport access vlan 20
+no shut
+exit
+
+interface vlan10
+description //Switch MGMT
+ip address 10.0.0.1 255.255.255.0
+exit
+
+ip default-gateway 10.0.0.254
+
+line con 0
+exec-timeout 9 0
+line vty 0 4
+exec-timeout 9 0
+transport input ssh
+line vty 5 15
+exec-timeout 0 0
+transport input none
+exit
+
+banner login ^
+********************* Warning!!! **********************************
+
+Don't log into my network devices!
+
+*******************************************************************
+^
+
+end
