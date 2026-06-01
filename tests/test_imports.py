@@ -31,6 +31,12 @@ class TestImports(unittest.TestCase):
         self.assertTrue(callable(render_config))
         self.assertTrue(callable(render_config_sections))
 
+    def test_dialog_modules(self):
+        from netforge.serial_push import _SerialPushDialog
+        from netforge.ui.theme_editor import _ThemeEditorDialog
+        self.assertTrue(callable(_SerialPushDialog))
+        self.assertTrue(callable(_ThemeEditorDialog))
+
     def test_netforge_py_imports(self):
         import NetForge
         self.assertTrue(hasattr(NetForge, "main"))
