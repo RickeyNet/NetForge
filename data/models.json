@@ -1,24 +1,4 @@
 {
-  "C9200CX-12T-2X2G": {
-    "provision": "",
-    "port_groups": [
-      {
-        "prefix": "GigabitEthernet1/0/",
-        "start": 1,
-        "end": 12
-      },
-      {
-        "prefix": "GigabitEthernet1/1/",
-        "start": 1,
-        "end": 2
-      },
-      {
-        "prefix": "TenGigabitEthernet1/1/",
-        "start": 3,
-        "end": 4
-      }
-    ]
-  },
   "C9200L-24T-4G-A": {
     "provision": "",
     "port_groups": [
@@ -389,6 +369,53 @@
         "prefix": "AppGigabitEthernet4/0/",
         "start": 1,
         "end": 1
+      }
+    ]
+  },
+  "C9200CX-12P-2X2G": {
+    "provision": "",
+    "stack_members": 1,
+    "port_groups": [
+      {
+        "prefix": "GigabitEthernet1/0/",
+        "start": 1,
+        "end": 12
+      },
+      {
+        "prefix": "GigabitEthernet1/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "TenGigabitEthernet1/1/",
+        "start": 3,
+        "end": 4
+      }
+    ]
+  },
+  "C9200CX-12T-2X2G": {
+    "provision": "",
+    "stack_members": 1,
+    "port_groups": [
+      {
+        "prefix": "GigabitEthernet1/0/",
+        "start": 1,
+        "end": 12
+      },
+      {
+        "prefix": "GigabitEthernet1/1/",
+        "start": 1,
+        "end": 2
+      },
+      {
+        "prefix": "TenGigabitEthernet1/1/",
+        "start": 3,
+        "end": 4
+      },
+      {
+        "prefix": "GigabitEthernet1/1/",
+        "start": 5,
+        "end": 5
       }
     ]
   }

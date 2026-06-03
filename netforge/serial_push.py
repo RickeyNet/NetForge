@@ -2,7 +2,7 @@
 
 import re
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 
 from netforge.ui.theme import C
 from netforge.ui.win_theme import _apply_icon
@@ -31,10 +31,16 @@ class _SerialPushDialog:
     # Password prompt for `enable`
     _PASS_RE   = re.compile(rb"[Pp]assword:\s*$")
 
-    def __init__(self, parent, config_text, hostname=""):
+    # Show commands captured after a successful push, in order.
+    _CAPTURE_CMDS = ("show version",
+                     "show interfaces status",
+                     "show running-config")
+
+    def __init__(self, parent, config_text, hostname="", save_path=None):
         self.parent      = parent
         self.config_text = config_text
         self.hostname    = hostname
+        self.save_path   = save_path
         self._ser        = None
         self._worker     = None
         self._stop_flag  = False
@@ -115,6 +121,16 @@ class _SerialPushDialog:
                         variable=self.save_var).grid(
             row=4, column=1, sticky="w", padx=4, pady=(4, 2))
 
+        self.capture_var = tk.IntVar(value=1)
+        ttk.Checkbutton(
+            cf,
+            text="Capture show version / interfaces status / running-config",
+            variable=self.capture_var).grid(
+            row=5, column=1, sticky="w", padx=4, pady=(0, 2))
+        ttk.Label(cf, text="(saved to the config's file)",
+                  style="Hint.TLabel").grid(
+            row=5, column=2, sticky="w", padx=4)
+
         cf.columnconfigure(1, weight=1)
 
         # ---- transcript ----
@@ -147,7 +163,7 @@ class _SerialPushDialog:
                    command=self._on_close).pack(side="right")
 
         dlg.protocol("WM_DELETE_WINDOW", self._on_close)
-        dlg.geometry("640x560")
+        dlg.geometry("640x600")
         self._refresh_ports()
 
         # centre over parent
@@ -218,7 +234,8 @@ class _SerialPushDialog:
         self._worker = threading.Thread(
             target=self._run,
             args=(port, baud, self.enable_pw.get(), line_delay,
-                  bool(self.save_var.get())),
+                  bool(self.save_var.get()),
+                  bool(self.capture_var.get())),
             daemon=True)
         self._worker.start()
 
@@ -244,7 +261,8 @@ class _SerialPushDialog:
         self.dlg.destroy()
 
     # --------------------------------------------------- worker
-    def _run(self, port, baud, enable_pw, line_delay, do_save):
+    def _run(self, port, baud, enable_pw, line_delay, do_save,
+             do_capture=False):
         import serial
         # Remember the enable password so _log can scrub it from any raw
         # device buffer we echo into the transcript (a non-standard console
@@ -316,6 +334,9 @@ class _SerialPushDialog:
                 # write memory can take several seconds
                 self._drain(8.0)
 
+            if do_capture and not self._stop_flag:
+                self._capture_show_outputs()
+
             self._set_status("Done")
             self._log("\n--- Push complete ---\n")
         except Exception as exc:
@@ -385,6 +406,104 @@ class _SerialPushDialog:
             # stall forever on a slow or quiet console.
             time.sleep(fallback_delay)
         return bytes(buf)
+
+    # --------------------------------------------------- show capture
+    def _capture(self, cmd, timeout=30.0):
+        """Run a show command and return its full decoded output.
+
+        Assumes pagination is already off (`terminal length 0`), so the
+        only prompt we see is the one that follows the complete output.
+        Reads until that prompt reappears and the line goes quiet.
+        """
+        import time
+        # Clear any stray bytes still in the buffer from the prior command.
+        self._drain(0.2)
+        self._log(f"\n--- Capturing: {cmd} ---\n")
+        self._ser.write(cmd.encode("ascii", errors="replace") + b"\r\n")
+        deadline    = time.monotonic() + timeout
+        buf         = bytearray()
+        quiet_until = None
+        while time.monotonic() < deadline:
+            chunk = self._ser.read(4096)
+            if chunk:
+                buf.extend(chunk)
+                # Once the trailing prompt shows up, wait a short grace
+                # period for any final bytes, then stop.
+                if self._PROMPT_RE.search(buf[-200:]):
+                    quiet_until = time.monotonic() + 0.4
+            elif quiet_until is not None and time.monotonic() >= quiet_until:
+                break
+            if self._stop_flag:
+                break
+        text = buf.decode("utf-8", errors="replace")
+        self._log(text)
+        return self._clean_capture(cmd, text)
+
+    @staticmethod
+    def _clean_capture(cmd, text):
+        """Strip the echoed command and the trailing device prompt."""
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        # Drop a leading line that is just the echoed command.
+        if lines and cmd in lines[0]:
+            lines = lines[1:]
+        # Drop a trailing line that is just a device prompt (e.g. "Switch#").
+        while lines and re.match(r"^[\w.\-]+(\([^)]+\))?[>#]\s*$", lines[-1]):
+            lines.pop()
+        return "\n".join(lines).strip("\n")
+
+    def _capture_show_outputs(self):
+        """Run each show command and persist the outputs to the config file."""
+        self._set_status("Capturing show output...")
+        captures = []
+        for cmd in self._CAPTURE_CMDS:
+            if self._stop_flag:
+                break
+            captures.append((cmd, self._capture(cmd)))
+        if not captures:
+            return
+
+        from datetime import datetime
+        stamp  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        host   = self.hostname or "switch"
+        blocks = [
+            f"\n!{'=' * 66}\n"
+            f"! {cmd}  ({host}  {stamp})\n"
+            f"!{'=' * 66}\n"
+            f"{out}\n"
+            for cmd, out in captures
+        ]
+        blob = "".join(blocks)
+
+        if self.save_path:
+            try:
+                with open(self.save_path, "a", encoding="utf-8") as f:
+                    f.write("\n" + blob)
+                self._log(f"\n--- Captures appended to {self.save_path} ---\n")
+                return
+            except Exception as exc:
+                self._log(f"\nERROR writing captures: {exc}\n")
+        # No associated file (config not saved yet) or the append failed -
+        # ask the user where to drop the captured output instead.
+        self.dlg.after(0, self._prompt_save_captures, blob)
+
+    def _prompt_save_captures(self, blob):
+        path = filedialog.asksaveasfilename(
+            parent=self.dlg, defaultextension=".txt",
+            initialfile=f"{self.hostname or 'switch'}_capture.txt",
+            filetypes=[("Text", "*.txt"), ("All", "*.*")],
+            title="Save captured show output")
+        if not path:
+            self._log("\n--- Capture not saved (no file chosen) ---\n")
+            return
+        try:
+            # The config was never saved to a file, so write a complete
+            # reference file here: the generated config followed by the
+            # captured show output.
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.config_text.rstrip("\n") + "\n" + blob)
+            self._log(f"\n--- Config + captures saved to {path} ---\n")
+        except Exception as exc:
+            self._log(f"\nERROR writing captures: {exc}\n")
 
     def _ensure_enable(self, enable_pw):
         """Get the switch into privileged-exec mode."""

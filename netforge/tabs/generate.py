@@ -39,6 +39,7 @@ class GenerateTab(ttk.Frame):
         self.current_step = 0
         self.pa_rows = []          # port-assignment rows in step 2
         self._sections = {}        # populated after each generate
+        self._save_path = None     # file the current config was last saved to
         self.l3_ip_rows = []       # routed-interface IP rows in step 3
         self.l3_gen_grids = {}
         self.l3_static_rows = []   # static-route rows in step 3
@@ -1372,6 +1373,8 @@ class GenerateTab(ttk.Frame):
         self.preview.delete("1.0", "end")
         self.preview.insert("1.0", cfg)
         self.preview.configure(state="disabled")
+        # A freshly rendered config no longer matches any prior save file.
+        self._save_path = None
         for name, btn in self._qc_buttons.items():
             state = "normal" if self._sections.get(name, "").strip() else "disabled"
             btn.configure(state=state)
@@ -1401,6 +1404,7 @@ class GenerateTab(ttk.Frame):
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(txt)
+            self._save_path = path
             _dialog("Saved", f"Saved to:\n{path}")
             self.app._push_recent("configs", path)
 
@@ -1419,7 +1423,8 @@ class GenerateTab(ttk.Frame):
             _dialog("Empty", "Generate a config first.")
             return
         _SerialPushDialog(self.winfo_toplevel(), txt,
-                          hostname=self.hostname.get().strip())
+                          hostname=self.hostname.get().strip(),
+                          save_path=self._save_path)
 
     def _copy_section(self, name):
         text = self._sections.get(name, "").strip()
