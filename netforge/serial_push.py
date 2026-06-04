@@ -110,9 +110,10 @@ class _SerialPushDialog:
         ttk.Label(cf, text="Line Delay (ms)", width=18, anchor="w").grid(
             row=3, column=0, sticky="w", padx=4, pady=2)
         self.delay_e = ttk.Entry(cf, width=10)
-        self.delay_e.insert(0, "50")
+        self.delay_e.insert(0, "0")
         self.delay_e.grid(row=3, column=1, sticky="w", padx=4, pady=2)
-        ttk.Label(cf, text="(inter-line pause when not prompt-pacing)",
+        ttk.Label(cf, text="(extra pause per line; 0 = as fast as the "
+                           "switch echoes)",
                   style="Hint.TLabel").grid(
             row=3, column=2, sticky="w", padx=4)
 
@@ -274,7 +275,7 @@ class _SerialPushDialog:
             self._ser = serial.Serial(
                 port=port, baudrate=baud,
                 bytesize=8, parity="N", stopbits=1,
-                timeout=0.5, write_timeout=2.0)
+                timeout=0.2, write_timeout=2.0)
         except Exception as exc:
             self._log(f"ERROR: {exc}\n")
             self._set_status("Failed to open port")
@@ -320,7 +321,7 @@ class _SerialPushDialog:
                 # Lines starting with '!' are comments - safe to send,
                 # IOS just echoes them back.
                 self._send_line(line, expect_prompt=True,
-                                fallback_delay=line_delay)
+                                line_delay=line_delay)
                 if i % 25 == 0 or i == total:
                     self._set_status(f"Pushing config... ({i}/{total})")
 
@@ -365,14 +366,15 @@ class _SerialPushDialog:
         buf = bytearray()
         deadline = time.monotonic() + settle_seconds
         while time.monotonic() < deadline:
-            chunk = self._ser.read(4096)
+            # Read only what's already buffered so we don't block for the
+            # full serial timeout on every idle poll; read(1) blocks just
+            # long enough to notice the next byte arrive.
+            chunk = self._ser.read(self._ser.in_waiting or 1)
             if chunk:
                 buf.extend(chunk)
                 deadline = time.monotonic() + settle_seconds
-            else:
-                # short break - check stop flag
-                if self._stop_flag:
-                    break
+            elif self._stop_flag:
+                break
         if buf:
             try:
                 self._log(buf.decode("utf-8", errors="replace"))
@@ -380,31 +382,44 @@ class _SerialPushDialog:
                 pass
         return bytes(buf)
 
-    def _send_line(self, text, expect_prompt=False, fallback_delay=0.05,
+    def _send_line(self, text, expect_prompt=False, line_delay=0.0,
                    timeout=4.0):
-        """Write one line and (optionally) wait for the prompt to return."""
+        """Write one line and (optionally) wait for the prompt to return.
+
+        With prompt-pacing on we return the instant the switch's prompt
+        comes back rather than blocking for a fixed serial timeout, so the
+        push runs as fast as the console will echo. ``line_delay`` is an
+        optional extra pause after each line for finicky consoles.
+        """
         import time
         self._ser.write(text.encode("ascii", errors="replace") + b"\r\n")
         if not expect_prompt:
-            time.sleep(fallback_delay)
+            if line_delay:
+                time.sleep(line_delay)
             self._drain(0.05)
             return b""
-        deadline = time.monotonic() + timeout
-        buf = bytearray()
+        deadline   = time.monotonic() + timeout
+        buf        = bytearray()
+        got_prompt = False
         while time.monotonic() < deadline:
-            chunk = self._ser.read(512)
+            # Drain only the bytes already waiting; read(1) blocks just long
+            # enough to catch the next byte instead of the full timeout.
+            chunk = self._ser.read(self._ser.in_waiting or 1)
             if chunk:
                 buf.extend(chunk)
                 if self._PROMPT_RE.search(buf[-200:]):
+                    got_prompt = True
                     break
             if self._stop_flag:
                 break
         if buf:
             self._log(buf.decode("utf-8", errors="replace"))
-        else:
-            # No echo at all - fall back to the simple delay so we don't
-            # stall forever on a slow or quiet console.
-            time.sleep(fallback_delay)
+        if not got_prompt:
+            # No prompt echoed back (slow/quiet console) - pause so we don't
+            # overrun the next line.
+            time.sleep(max(line_delay, 0.05))
+        elif line_delay:
+            time.sleep(line_delay)
         return bytes(buf)
 
     # --------------------------------------------------- show capture
@@ -424,7 +439,7 @@ class _SerialPushDialog:
         buf         = bytearray()
         quiet_until = None
         while time.monotonic() < deadline:
-            chunk = self._ser.read(4096)
+            chunk = self._ser.read(self._ser.in_waiting or 1)
             if chunk:
                 buf.extend(chunk)
                 # Once the trailing prompt shows up, wait a short grace
