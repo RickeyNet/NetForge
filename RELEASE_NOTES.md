@@ -1,3 +1,26 @@
+# NetForge v1.4.1 - Release Notes
+
+Point release on top of v1.4.0, focused on the console push workflow.
+
+## Capture Show Output to the Config File After a Push
+
+After a successful console push, the **Push Config to Switch (Console)** dialog can now run `show version`, `show interfaces status`, and `show running-config` and save each command's output to the same file the generated config was saved to. The result is a single as-built reference file holding the pushed config plus the device's post-push state for later verification.
+
+- **New checkbox** - "Capture show version / interfaces status / running-config" (on by default). When off, the push behaves exactly as before.
+- **Appends to the config's file** - If the config was saved to a file before pushing, the captured output is appended to that file under delimited per-command headers (command + hostname + timestamp).
+- **Fallback when not yet saved** - If the config was never saved, the dialog prompts for a location and writes a complete file (generated config followed by the captured output) so you still get one coherent reference artifact.
+- Each capture also appears in the live transcript pane regardless of the file destination.
+
+## Faster Console Push
+
+The push now runs as fast as the switch console echoes, instead of pausing for a fixed serial timeout on every line.
+
+- **Root cause** - Each config line blocked for the full serial read timeout because the reader waited for a 512-byte block that a short prompt echo never filled, so every line cost roughly half a second regardless of the **Line Delay** setting.
+- **Fix** - The reader now consumes only the bytes already waiting and returns the instant the switch's prompt comes back, and the serial read timeout was lowered. On the same baud rate this makes a typical push several times faster.
+- **Line Delay now works** - The **Line Delay (ms)** field is now a real per-line pause and defaults to **0** (as fast as the switch echoes). Raise it only if a finicky console drops characters.
+
+---
+
 # NetForge v1.4.0 - Release Notes
 
 First public release after v1.3.0. Everything documented below is included in v1.4.0.

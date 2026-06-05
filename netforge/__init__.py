@@ -1,3 +1,3 @@
 """NetForge — Cisco switch initial configuration generator."""
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
