@@ -90,7 +90,7 @@ class App:
         tools_mb = tk.Menubutton(self.menubar_frame, text="Tools", **menu_kw)
         tools_mb.pack(side="left")
         tools_menu = tk.Menu(tools_mb, **drop_kw)
-        tools_menu.add_command(label="FTD 1010 Setup (Console + FDM)...",
+        tools_menu.add_command(label="FTD Setup (Pre-Stage / Pre-Ship)...",
                                command=self._open_ftd_setup)
         tools_mb.configure(menu=tools_menu)
 

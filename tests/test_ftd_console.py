@@ -5,8 +5,11 @@ import unittest
 
 from netforge.ftd.console import (
     ExpectSession,
+    capture_command,
+    capture_login_rules,
     erase_config_rules,
     initial_setup_rules,
+    preship_rules,
 )
 
 
@@ -205,6 +208,163 @@ class TestEraseConfig(unittest.TestCase):
         result = session.run()
         self.assertFalse(result.ok)
         self.assertNotIn("rebooting", result.fired)
+
+
+PRESHIP_ANSWERS = {
+    "username":         "admin",
+    "current_password": "S3cret!pw",
+    "new_password":     "S3cret!pw",
+    "fmc_ip":           "198.51.100.10",
+    "reg_key":          "cisco123",
+    "use_data_mgmt":    True,
+    "data_iface":       "Ethernet1/1",
+    "iface_name":       "outside",
+    "ip":               "203.0.113.2",
+    "netmask":          "255.255.255.252",
+    "gateway":          "203.0.113.1",
+    "dns":              "0.0.0.0",
+    "ddns":             "none",
+    "disable_mgmt":     True,
+    "dedicated_mgmt":   False,
+    "mgmt_ip":          "",
+    "mgmt_netmask":     "",
+    "mgmt_gateway":     "",
+}
+
+
+class TestPreship(unittest.TestCase):
+    def test_full_preship_flow(self):
+        steps = [
+            (b"\r\nfirepower login: ",  b"admin"),
+            (b"\r\nPassword: ",         b"S3cret!pw"),
+            (b"\r\nfirepower# ",        b"connect ftd"),
+            (b"\r\n> ",
+             b"configure manager add 198.51.100.10 cisco123"),
+            (b"\r\nIf you proceed the manager will be set."
+             b"\r\nPlease enter 'YES' or 'NO': ",                 b"YES"),
+            (b"\r\nManager successfully configured.\r\n> ",
+             b"configure network management-data-interface"),
+            (b"\r\nData interface to use for management: ",
+             b"Ethernet1/1"),
+            (b"\r\nSpecify a name for the interface [outside]: ",
+             b"outside"),
+            (b"\r\nIP address (manual / dhcp) [dhcp]: ",          b"manual"),
+            (b"\r\nIPv4/IPv6 address: ",                          b"203.0.113.2"),
+            (b"\r\nNetmask/IPv6 prefix: ",
+             b"255.255.255.252"),
+            (b"\r\nDefault Gateway: ",                            b"203.0.113.1"),
+            (b"\r\nComma-separated list of DNS servers [none]: ",
+             b"0.0.0.0"),
+            (b"\r\nDDNS server update URL [none]: ",              b"none"),
+            (b"\r\nDo you wish to clear all the device "
+             b"configuration before applying ? (y/n) [n]: ",      b"n"),
+            (b"\r\nConfiguration done with option to allow "
+             b"manager access from any network\r\n> ",
+             b"configure network management-interface disable "
+             b"management0"),
+            (b"\r\nConfiguration updated successfully\r\n> ",     None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, preship_rules(PRESHIP_ANSWERS),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.reason, "preship-complete")
+        self.assertEqual(result.fired, [
+            "login", "password", "connect-ftd", "mgr-add",
+            "mgr-confirm", "mdi-start", "data-iface", "iface-name",
+            "dhcp-manual", "mdi-ip", "mdi-netmask", "mdi-gateway",
+            "mdi-dns", "mdi-ddns", "mdi-clear", "disable-mgmt0",
+            "preship-complete",
+        ])
+
+    def test_dedicated_mgmt_only(self):
+        # HA-style run: no management-data-interface, configure
+        # management0 statically instead (2100/3100 procedure).
+        a = dict(PRESHIP_ANSWERS,
+                 use_data_mgmt=False, disable_mgmt=False,
+                 dedicated_mgmt=True,
+                 mgmt_ip="10.9.8.7", mgmt_netmask="255.255.255.0",
+                 mgmt_gateway="10.9.8.1")
+        steps = [
+            (b"\r\nfirepower login: ",  b"admin"),
+            (b"\r\nPassword: ",         b"S3cret!pw"),
+            (b"\r\nfirepower# ",        b"connect ftd"),
+            (b"\r\n> ",
+             b"configure manager add 198.51.100.10 cisco123"),
+            (b"\r\nManager successfully configured.\r\n> ",
+             b"configure network ipv4 manual 10.9.8.7 255.255.255.0 "
+             b"10.9.8.1 management0"),
+            (b"\r\nConfiguration updated successfully\r\n> ",     None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, preship_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.reason, "preship-complete")
+        self.assertIn("mgmt0-ipv4", result.fired)
+        self.assertNotIn("mdi-start", result.fired)
+
+    def test_renamed_fxos_prompt_still_connects(self):
+        # Pre-stage may have set a hostname; the supervisor prompt is
+        # no longer the factory "firepower#".
+        steps = [
+            (b"\r\nNYC-FW01 login: ",   b"admin"),
+            (b"\r\nPassword: ",         b"S3cret!pw"),
+            (b"\r\nNYC-FW01# ",         b"connect ftd"),
+            (b"\r\n> ",                 None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, capture_login_rules(PRESHIP_ANSWERS),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.reason, "ftd-cli")
+
+    def test_session_already_at_ftd_cli(self):
+        # A console left sitting in the FTD CLI answers the nudge with
+        # the '>' prompt; login is skipped entirely.
+        steps = [
+            (b"\r\n> ",
+             b"configure manager add 198.51.100.10 cisco123"),
+            (b"\r\nManager successfully configured.\r\n> ",
+             b"configure network management-interface disable "
+             b"management0"),
+            (b"\r\nConfiguration updated successfully\r\n> ",     None),
+        ]
+        a = dict(PRESHIP_ANSWERS, use_data_mgmt=False)
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, preship_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.fired, [
+            "mgr-add", "disable-mgmt0", "preship-complete"])
+
+
+class TestCaptureCommand(unittest.TestCase):
+    def test_strips_echo_and_prompt(self):
+        ser = FakeSerial([
+            (b"", b"show managers"),
+            (b"show managers\r\n"
+             b"Host                      : 198.51.100.10\r\n"
+             b"Registration              : pending\r\n"
+             b"> ",                                               None),
+        ])
+        out = capture_command(ser, "show managers", timeout=5, quiet=0.05)
+        self.assertEqual(out,
+                         "Host                      : 198.51.100.10\n"
+                         "Registration              : pending")
+
+    def test_pages_through_more(self):
+        ser = FakeSerial([
+            (b"", b"show version"),
+            (b"show version\r\nline one\r\n--More--",             b" "),
+            (b"\r\nline two\r\n> ",                               None),
+        ])
+        out = capture_command(ser, "show version", timeout=5, quiet=0.05)
+        self.assertEqual(out, "line one\n\nline two")
 
 
 if __name__ == "__main__":

@@ -1,11 +1,14 @@
-"""FTD 1010 day-0 console automation.
+"""FTD console automation: pre-stage day-0 wizard and pre-ship config.
 
-Drives the interactive first-boot wizard that Cisco Firepower 1000-series
-appliances present on the console port (FXOS login, forced password change,
-``connect ftd``, EULA, management network, "manage locally") with a small
-expect-style rule engine over a serial port. The engine is UI-free and only
-needs a pyserial-like object (read / write / in_waiting), so it can be
-unit-tested with a fake port.
+Drives the interactive prompts that Cisco Firepower appliances present on
+the console port with a small expect-style rule engine over a serial port.
+Pre-stage covers the first-boot wizard (FXOS login, forced password change,
+``connect ftd``, EULA, management network, "manage locally"); pre-ship
+covers the steps run once customer site info is known (FMC manager
+registration, management-data-interface wizard, management0 tweaks) plus a
+show-command capture. The engine is UI-free and only needs a pyserial-like
+object (read / write / in_waiting), so it can be unit-tested with a fake
+port.
 """
 
 import re
@@ -18,6 +21,19 @@ import time
 SETUP_TIMEOUT      = 1800.0
 SETUP_IDLE_TIMEOUT = 1200.0
 ERASE_TIMEOUT      = 600.0
+# Pre-ship is mostly quick prompt/answer, but applying the
+# management-data-interface config can keep the console quiet for a
+# couple of minutes while the data plane reconfigures.
+PRESHIP_TIMEOUT      = 1200.0
+PRESHIP_IDLE_TIMEOUT = 300.0
+
+# Show commands captured for the pre-ship config record, in order.
+PRESHIP_CAPTURE_CMDS = (
+    "show managers",
+    "show network",
+    "show startup-config | include rout",
+    "show version",
+)
 
 
 class Rule:
@@ -256,6 +272,161 @@ def initial_setup_rules(answers):
         Rule("already-configured", rb"[\r\n]>\s*$",
              None, terminal=True, requires="connect-ftd"),
     ]
+
+
+def _ftd_shell_rules(a):
+    """Login + drop into the FTD CLI; shared by the pre-ship flows.
+
+    Unlike the day-0 flow the FXOS hostname may no longer be the factory
+    ``firepower``, so the supervisor prompt accepts any hostname.
+    """
+    return [
+        *_fxos_login_rules(a),
+        Rule("connect-ftd", rb"[\r\n][\w.\-]+#\s*$", "connect ftd",
+             max_fires=1),
+    ]
+
+
+def preship_rules(answers):
+    """Rules for the pre-ship flow, run once customer site info is known.
+
+    ``answers`` keys: username, current_password, new_password (the
+    login password again - no password change is expected here), fmc_ip,
+    reg_key, and for the management-data-interface wizard (when
+    ``use_data_mgmt``): data_iface, iface_name, ip, netmask, gateway,
+    dns, ddns. ``disable_mgmt`` adds the management0 disable step (do
+    not use for HA); ``dedicated_mgmt`` adds the static management0
+    config used on 2100/3100 series (mgmt_ip / mgmt_netmask /
+    mgmt_gateway).
+
+    Commands are dispatched in sequence off the ``>`` prompt: each
+    ``>``-pattern rule fires once and gates the next via ``requires``.
+    """
+    a = answers
+    rules = [
+        *_ftd_shell_rules(a),
+        # First '>' prompt -> register the FMC manager. No requires:
+        # a console session left sitting in the FTD CLI skips login.
+        Rule("mgr-add", rb"[\r\n]>\s*$",
+             f"configure manager add {a['fmc_ip']} {a['reg_key']}",
+             max_fires=1),
+        Rule("mgr-confirm",
+             rb"(?:'YES' or 'NO'|\(yes/no\))[^\r\n]*:?\s*$", "YES",
+             max_fires=2, requires="mgr-add"),
+        # Some versions warn before reconfiguring the management path.
+        Rule("continue-y", rb"do you wish to continue[^\r\n]*:\s*$", "y",
+             max_fires=3, requires="mgr-add"),
+    ]
+    prev = "mgr-add"
+    if a.get("use_data_mgmt", True):
+        rules += [
+            Rule("mdi-start", rb"[\r\n]>\s*$",
+                 "configure network management-data-interface",
+                 max_fires=1, requires=prev),
+            Rule("data-iface",
+                 rb"data interface to use for management[^\r\n]*:\s*$",
+                 a["data_iface"], requires="mdi-start"),
+            Rule("iface-name", rb"name for the interface[^\r\n]*:\s*$",
+                 a["iface_name"], requires="mdi-start"),
+            # Must outrank mdi-ip: the method prompt also says "address".
+            Rule("dhcp-manual",
+                 rb"\((?:dhcp ?/ ?manual|manual ?/ ?dhcp)\)[^\r\n]*:\s*$",
+                 "manual", requires="mdi-start"),
+            Rule("mdi-ip", rb"address[^\r\n]*:\s*$", a["ip"],
+                 requires="mdi-start"),
+            Rule("mdi-netmask", rb"netmask[^\r\n]*:\s*$", a["netmask"],
+                 requires="mdi-start"),
+            Rule("mdi-gateway", rb"gateway[^\r\n]*:\s*$", a["gateway"],
+                 requires="mdi-start"),
+            # DDNS before DNS: "DDNS server update URL" contains the
+            # substring "DNS server" and would satisfy the DNS rule.
+            Rule("mdi-ddns", rb"DDNS[^\r\n]*:\s*$",
+                 a.get("ddns") or "none", requires="mdi-start"),
+            Rule("mdi-dns", rb"DNS server[^\r\n]*:\s*$",
+                 a.get("dns") or "0.0.0.0", requires="mdi-start"),
+            Rule("mdi-clear",
+                 rb"clear all the device configuration[^\r\n]*:\s*$",
+                 "n", requires="mdi-start"),
+        ]
+        prev = "mdi-start"
+    if a.get("disable_mgmt"):
+        rules.append(
+            Rule("disable-mgmt0", rb"[\r\n]>\s*$",
+                 "configure network management-interface disable "
+                 "management0",
+                 max_fires=1, requires=prev))
+        prev = "disable-mgmt0"
+    if a.get("dedicated_mgmt"):
+        rules.append(
+            Rule("mgmt0-ipv4", rb"[\r\n]>\s*$",
+                 f"configure network ipv4 manual {a['mgmt_ip']} "
+                 f"{a['mgmt_netmask']} {a['mgmt_gateway']} management0",
+                 max_fires=1, requires=prev))
+        prev = "mgmt0-ipv4"
+    rules.append(Rule("preship-complete", rb"[\r\n]>\s*$", None,
+                      terminal=True, requires=prev))
+    return rules
+
+
+def capture_login_rules(answers):
+    """Just get to the FTD ``>`` prompt (capture-only pre-ship runs)."""
+    return [
+        *_ftd_shell_rules(answers),
+        Rule("ftd-cli", rb"[\r\n]>\s*$", None, terminal=True),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Show-command capture (runs after an ExpectSession left us at '>')
+# ---------------------------------------------------------------------------
+_FTD_PROMPT_RE = re.compile(rb"[\r\n]>\s*$")
+_MORE_RE       = re.compile(rb"--More--\s*$")
+
+
+def capture_command(ser, cmd, log=None, stop=None, timeout=60.0,
+                    quiet=0.4):
+    """Run one CLISH command at the FTD ``>`` prompt, return its output.
+
+    Pages through ``--More--`` prompts, then waits for the trailing
+    ``>`` plus a short quiet grace period before returning. The echoed
+    command, pager artifacts, and the trailing prompt are stripped so
+    the result is just the command's output.
+    """
+    log  = log or (lambda _msg: None)
+    stop = stop or (lambda: False)
+    ser.write(cmd.encode("ascii", errors="replace") + b"\r\n")
+    buf         = bytearray()
+    deadline    = time.monotonic() + timeout
+    quiet_until = None
+    while time.monotonic() < deadline and not stop():
+        chunk = ser.read(getattr(ser, "in_waiting", 0) or 1)
+        if chunk:
+            buf.extend(chunk)
+            log(chunk.decode("utf-8", errors="replace"))
+            tail = bytes(buf[-200:])
+            if _MORE_RE.search(tail):
+                ser.write(b" ")
+                quiet_until = None
+            elif _FTD_PROMPT_RE.search(tail):
+                quiet_until = time.monotonic() + quiet
+            else:
+                quiet_until = None
+        else:
+            if quiet_until is not None and time.monotonic() >= quiet_until:
+                break
+            time.sleep(0.01)
+    return _clean_capture(cmd, buf.decode("utf-8", errors="replace"))
+
+
+def _clean_capture(cmd, text):
+    """Strip the echoed command, pager noise, and the trailing prompt."""
+    text  = text.replace("--More--", "")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if lines and cmd in lines[0]:
+        lines = lines[1:]
+    while lines and lines[-1].strip() in ("", ">"):
+        lines.pop()
+    return "\n".join(lines).strip("\n")
 
 
 def erase_config_rules(answers):
