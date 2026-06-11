@@ -1,3 +1,53 @@
+# NetForge v1.5.0 - Release Notes
+
+First release to automate a firewall: end-to-end staging of the Cisco FTD 1010 from a new **Tools** menu.
+
+## New Feature: FTD 1010 Setup (Console + FDM)
+
+**Tools -> FTD 1010 Setup (Console + FDM)...** automates both halves of FTD 1010 day-0 staging that were previously done by hand against the console and the FDM web GUI.
+
+### Step 1 - Console Setup (serial)
+
+Drives the interactive first-boot wizard over a USB-to-serial cable using an expect-style rule engine that watches the console and answers each prompt:
+
+- FXOS login (factory default `admin` / `Admin123`) and the forced password change
+- `connect ftd`, EULA display and paging (`--More--`), and the YES agreement
+- Management network: IPv4 yes / IPv6 no / manual, your management IP, netmask, and gateway
+- Hostname, DNS servers, and search domain (blank fields accept the device defaults)
+- "Manage the device locally?" -> yes
+- Detects a device that is already configured and reports it instead of hanging
+
+Timeouts are sized for real first boots: the appliance can sit silent at "System initialization in progress" for 10-15 minutes before the EULA appears, and the engine waits through it.
+
+A second button, **Erase Configuration...**, runs the recovery flow for the login-loop / "FTD service not installed" failure modes: `connect local-mgmt` -> `erase configuration` -> confirm (paperclip-reset the unit first, then run it). The flow handles the case where the erase has to run twice.
+
+### Step 2 - FDM Setup (network)
+
+Replaces the FDM web GUI steps with REST API calls over the management port - no browser needed. Step 1 pre-fills the device IP and password.
+
+| GUI step | What the dialog does |
+|----------|----------------------|
+| Skip Device Setup + EULA | `POST devices/default/action/provision` (acceptEULA) |
+| Start 90-day evaluation | `POST license/smartagentconnections` (skipped if already licensed) |
+| Deploy Now | `POST operational/deploy`, polls until deployed |
+| Browse + upload firmware | Streamed multipart upload with MB progress (a ~1 GB image never loads into memory) |
+| Run Upgrade | `POST action/upgrade` - the device installs and reboots itself (~45 min) |
+
+The FDM client is stdlib-only, so NetForge gains no new dependencies. FDM's self-signed certificate is accepted (this is for staging a directly attached appliance).
+
+### Safety and polish
+
+- Live transcript with passwords scrubbed, even when a device echoes one back split across serial reads
+- **Stop** cancels any operation, including mid-upload and mid-deploy
+- Non-ASCII console input (e.g. an accented password) is rejected up front instead of being silently mangled on the wire
+- COM ports are listed automatically when the dialog opens
+
+## Shared Serial Plumbing
+
+The COM-port enumeration, serial open parameters, and dialog-centering code used by both the IOS **Push to Switch** dialog and the new FTD dialog now live in one place (`netforge/serial_common.py` and a shared UI helper), so console fixes land in both tools at once. No behavior change to the IOS push.
+
+---
+
 # NetForge v1.4.1 - Release Notes
 
 Point release on top of v1.4.0, focused on the console push workflow.

@@ -26,23 +26,23 @@ class GuideTab(ttk.Frame):
         terms = [t for t in q.split() if t]
         visible = 0
         first_visible = None
+        # Unpack everything and re-pack the matches in definition order.
+        # Re-packing only the previously hidden frames would append them
+        # to the END of the packing order, scrambling the guide's section
+        # order every time a search is cleared or broadened.
+        for sec in self._guide_sections:
+            sec["frame"].pack_forget()
         for sec in self._guide_sections:
             haystacks = [t.lower() for _, t in sec["texts"]]
-            if not terms:
-                match = True
-            else:
-                match = all(
-                    any(term in text for text in haystacks)
-                    for term in terms
-                )
+            match = not terms or all(
+                any(term in text for text in haystacks)
+                for term in terms
+            )
             if match:
-                if not sec["frame"].winfo_ismapped():
-                    sec["frame"].pack(fill="x")
+                sec["frame"].pack(fill="x")
                 visible += 1
                 if first_visible is None:
                     first_visible = sec["frame"]
-            else:
-                sec["frame"].pack_forget()
         if terms:
             word = "section" if visible == 1 else "sections"
             self._guide_match_lbl.configure(text=f"{visible} {word}")

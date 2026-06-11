@@ -164,7 +164,7 @@ class FtdSetupDialog:
         self.mask_e    = self._grid_field(tab, 6, "Netmask",
                                           "255.255.255.0")
         self.gw_e      = self._grid_field(tab, 7, "Gateway",
-                                          hint="(500e interface IP)")
+                                          hint="(Gateway IP)")
         self.host_e    = self._grid_field(tab, 8, "Hostname",
                                           hint="(blank = keep default)")
         self.dns_e     = self._grid_field(tab, 9, "DNS Servers",
@@ -222,7 +222,7 @@ class FtdSetupDialog:
             command=lambda: self._start_fdm("deploy"))
         self.deploy_btn.pack(side="left", padx=8)
         self.upgrade_btn = ttk.Button(
-            bf, text="Upload Firmware && Upgrade",
+            bf, text="Upload Firmware & Upgrade",
             command=lambda: self._start_fdm("upgrade"))
         self.upgrade_btn.pack(side="left")
 
