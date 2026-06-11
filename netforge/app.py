@@ -87,6 +87,13 @@ class App:
         file_mb.configure(menu=file_menu)
         self._rebuild_recent_menus()
 
+        tools_mb = tk.Menubutton(self.menubar_frame, text="Tools", **menu_kw)
+        tools_mb.pack(side="left")
+        tools_menu = tk.Menu(tools_mb, **drop_kw)
+        tools_menu.add_command(label="FTD 1010 Setup (Console + FDM)...",
+                               command=self._open_ftd_setup)
+        tools_mb.configure(menu=tools_menu)
+
         self._theme_var = tk.StringVar(value=self._current_theme_id())
         self._theme_mb = tk.Menubutton(self.menubar_frame, text="Theme",
                                        **menu_kw)
@@ -591,6 +598,12 @@ class App:
 
     def _open_theme_editor(self):
         _ThemeEditorDialog(self, on_close=self._build_theme_menu)
+
+    def _open_ftd_setup(self):
+        # Imported lazily so the FTD module (and its pyserial probe)
+        # costs nothing until the tool is actually opened.
+        from netforge.ftd.dialog import FtdSetupDialog
+        FtdSetupDialog(self.root)
 
     def _refresh_menubar_colors(self):
         """Re-apply current C colours to every widget in the menu bar."""

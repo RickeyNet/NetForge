@@ -223,6 +223,19 @@ def _toggle_hidden_batch(tab, category, singular):
                 f"{len(names)} {singular}s are now {verb}.")
 
 
+def _center_over(dlg, parent):
+    """Centre a Toplevel over *parent*, clamped to on-screen."""
+    dlg.update_idletasks()
+    try:
+        rx = parent.winfo_x() + (parent.winfo_width()
+                                 - dlg.winfo_width()) // 2
+        ry = parent.winfo_y() + (parent.winfo_height()
+                                 - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{max(0, rx)}+{max(0, ry)}")
+    except Exception:
+        pass
+
+
 def _dialog(title, msg, kind="info"):
     """Themed modal info / warning / error dialog."""
     accent = C["red"] if kind == "error" else C["accent"]

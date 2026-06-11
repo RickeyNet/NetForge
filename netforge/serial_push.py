@@ -4,11 +4,17 @@ import re
 import tkinter as tk
 from tkinter import ttk, filedialog
 
+from netforge.serial_common import (
+    BAUD_RATES,
+    open_console_port,
+    refresh_com_ports,
+)
 from netforge.ui.theme import C
 from netforge.ui.win_theme import _apply_icon
 from netforge.ui.helpers import (
     _ask,
     _attach_context_menu,
+    _center_over,
     _dialog,
     _scrolled_text,
 )
@@ -93,8 +99,7 @@ class _SerialPushDialog:
         ttk.Label(cf, text="Baud", width=18, anchor="w").grid(
             row=1, column=0, sticky="w", padx=4, pady=2)
         self.baud_cb = ttk.Combobox(
-            cf, width=28, state="readonly",
-            values=["9600", "19200", "38400", "57600", "115200"])
+            cf, width=28, state="readonly", values=list(BAUD_RATES))
         self.baud_cb.set("9600")
         self.baud_cb.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
 
@@ -167,26 +172,10 @@ class _SerialPushDialog:
         dlg.geometry("640x600")
         self._refresh_ports()
 
-        # centre over parent
-        dlg.update_idletasks()
-        try:
-            rx = self.parent.winfo_x() + (
-                self.parent.winfo_width()  - dlg.winfo_width())  // 2
-            ry = self.parent.winfo_y() + (
-                self.parent.winfo_height() - dlg.winfo_height()) // 2
-            dlg.geometry(f"+{max(0, rx)}+{max(0, ry)}")
-        except Exception:
-            pass
+        _center_over(dlg, self.parent)
 
     def _refresh_ports(self):
-        try:
-            from serial.tools import list_ports
-        except ImportError:
-            return
-        ports = [f"{p.device} - {p.description}" for p in list_ports.comports()]
-        self.port_cb["values"] = ports
-        if ports and not self.port_cb.get():
-            self.port_cb.set(ports[0])
+        refresh_com_ports(self.port_cb)
 
     # --------------------------------------------------- logging
     def _log(self, msg, tag=None):
@@ -264,7 +253,6 @@ class _SerialPushDialog:
     # --------------------------------------------------- worker
     def _run(self, port, baud, enable_pw, line_delay, do_save,
              do_capture=False):
-        import serial
         # Remember the enable password so _log can scrub it from any raw
         # device buffer we echo into the transcript (a non-standard console
         # or terminal server may echo the password back).
@@ -272,10 +260,7 @@ class _SerialPushDialog:
         try:
             self._set_status(f"Opening {port} @ {baud}...")
             self._log(f"--- Opening {port} at {baud} baud ---\n")
-            self._ser = serial.Serial(
-                port=port, baudrate=baud,
-                bytesize=8, parity="N", stopbits=1,
-                timeout=0.2, write_timeout=2.0)
+            self._ser = open_console_port(port, baud)
         except Exception as exc:
             self._log(f"ERROR: {exc}\n")
             self._set_status("Failed to open port")

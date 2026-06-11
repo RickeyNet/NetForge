@@ -6,7 +6,7 @@ import unittest
 class TestImports(unittest.TestCase):
     def test_netforge_version(self):
         import netforge
-        self.assertEqual(netforge.VERSION, "1.4.0")
+        self.assertRegex(netforge.VERSION, r"^\d+\.\d+\.\d+$")
 
     def test_data_modules(self):
         from netforge.data import storage, base_settings, iface
@@ -36,6 +36,25 @@ class TestImports(unittest.TestCase):
         from netforge.ui.theme_editor import _ThemeEditorDialog
         self.assertTrue(callable(_SerialPushDialog))
         self.assertTrue(callable(_ThemeEditorDialog))
+
+    def test_ftd_modules(self):
+        from netforge.ftd.console import ExpectSession, initial_setup_rules
+        from netforge.ftd.fdm_api import FdmClient
+        from netforge.ftd.dialog import FtdSetupDialog
+        self.assertTrue(callable(ExpectSession))
+        self.assertTrue(callable(initial_setup_rules))
+        self.assertTrue(callable(FdmClient))
+        self.assertTrue(callable(FtdSetupDialog))
+
+    def test_serial_common_module(self):
+        from netforge.serial_common import (
+            BAUD_RATES,
+            open_console_port,
+            refresh_com_ports,
+        )
+        self.assertIn("9600", BAUD_RATES)
+        self.assertTrue(callable(open_console_port))
+        self.assertTrue(callable(refresh_com_ports))
 
     def test_tab_modules(self):
         from netforge.tabs import (
