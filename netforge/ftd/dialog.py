@@ -6,6 +6,7 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import ttk, filedialog
 
+from netforge.data.storage import load_json, save_json
 from netforge.serial_common import (
     BAUD_RATES,
     open_console_port,
@@ -62,6 +63,8 @@ class FtdSetupDialog:
         self._busy      = False
         self._closing   = False
         self._ser       = None
+        # Saved field profiles (IPs, masks, passwords, ...) keyed by name.
+        self._profiles  = load_json("ftd_profiles.json", {})
         # Transcript scrubbing state (set per operation in _begin).
         self._active_secrets = []
         self._holdback       = 0
@@ -129,6 +132,9 @@ class FtdSetupDialog:
         self._build_console_tab(nb)
         self._build_fdm_tab(nb)
         self._build_preship_tab(nb)
+        # Built after the tabs (their fields must exist), but shown with
+        # the connection settings since a profile spans every tab.
+        self._build_profile_bar(inner, before=nb)
         self._action_btns = (self.setup_btn, self.erase_btn,
                              self.eula_btn, self.deploy_btn,
                              self.upgrade_btn, self.preship_btn,
@@ -347,6 +353,135 @@ class FtdSetupDialog:
                   style="Hint.TLabel", wraplength=560,
                   justify="left").grid(
             row=17, column=0, columnspan=3, sticky="w", padx=4)
+
+    # --------------------------------------------------------- profiles
+    def _build_profile_bar(self, parent, before=None):
+        # pack(before=None) is an error, so only pass it when anchored.
+        anchor = {"before": before} if before is not None else {}
+        pf = ttk.Frame(parent)
+        pf.pack(fill="x", pady=(0, 6), **anchor)
+        ttk.Label(pf, text="Profile", width=22, anchor="w").grid(
+            row=0, column=0, sticky="w", padx=4, pady=2)
+        self.profile_cb = ttk.Combobox(pf, width=28)
+        self.profile_cb.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
+        self.profile_cb.bind("<<ComboboxSelected>>", self._load_profile)
+        _attach_context_menu(self.profile_cb)
+        ttk.Button(pf, text="Save", command=self._save_profile).grid(
+            row=0, column=2, padx=4, pady=2, sticky="w")
+        ttk.Button(pf, text="Delete", style="Del.TButton",
+                   command=self._delete_profile).grid(
+            row=0, column=3, padx=4, pady=2, sticky="w")
+        pf.columnconfigure(1, weight=1)
+        ttk.Label(parent,
+                  text="Save the fields above (IPs, masks, passwords, "
+                       "interfaces) under a name to reuse them. Type a "
+                       "name and click Save; pick one to load it.",
+                  style="Hint.TLabel", wraplength=560,
+                  justify="left").pack(anchor="w", pady=(0, 4), **anchor)
+        self._refresh_profiles()
+
+    def _profile_fields(self):
+        """Form fields persisted in a profile, keyed by stable names.
+
+        Returns (text-entry widgets, checkbox IntVars). The site name and
+        S rack number are per-device labels for the capture file, not
+        reusable settings, so they are deliberately left out.
+        """
+        entries = {
+            "username":          self.user_e,
+            "current_password":  self.cur_pw_e,
+            "new_password":      self.new_pw_e,
+            "ip":                self.ip_e,
+            "netmask":           self.mask_e,
+            "gateway":           self.gw_e,
+            "hostname":          self.host_e,
+            "dns":               self.dns_e,
+            "search_domain":     self.domain_e,
+            "fdm_ip":            self.fdm_ip_e,
+            "fdm_username":      self.fdm_user_e,
+            "fdm_password":      self.fdm_pw_e,
+            "firmware":          self.fw_e,
+            "ps_admin_password": self.ps_pw_e,
+            "ps_fmc_ip":         self.ps_fmc_e,
+            "ps_reg_key":        self.ps_key_e,
+            "ps_data_iface":     self.ps_iface_e,
+            "ps_iface_name":     self.ps_name_e,
+            "ps_ip":             self.ps_ip_e,
+            "ps_netmask":        self.ps_mask_e,
+            "ps_gateway":        self.ps_gw_e,
+            "ps_dns":            self.ps_dns_e,
+            "ps_ddns":           self.ps_ddns_e,
+            "ps_mgmt":           self.ps_mgmt_e,
+        }
+        checks = {
+            "ps_use_data_mgmt":  self.ps_data_var,
+            "ps_disable_mgmt":   self.ps_disable_var,
+            "ps_dedicated_mgmt": self.ps_dedic_var,
+            "ps_capture":        self.ps_capture_var,
+        }
+        return entries, checks
+
+    def _collect_profile(self):
+        entries, checks = self._profile_fields()
+        data = {k: w.get() for k, w in entries.items()}
+        data.update({k: int(v.get()) for k, v in checks.items()})
+        return data
+
+    def _apply_profile(self, data):
+        entries, checks = self._profile_fields()
+        for key, widget in entries.items():
+            if key in data:
+                widget.delete(0, "end")
+                widget.insert(0, str(data[key] or ""))
+        for key, var in checks.items():
+            if key in data:
+                try:
+                    var.set(int(data[key]))
+                except (TypeError, ValueError):
+                    pass
+
+    def _refresh_profiles(self, select=None):
+        self.profile_cb["values"] = sorted(self._profiles)
+        if select is not None:
+            self.profile_cb.set(select)
+
+    def _load_profile(self, _evt=None):
+        name = self.profile_cb.get().strip()
+        data = self._profiles.get(name)
+        if not data:
+            return
+        self._apply_profile(data)
+        self._set_status(f"Loaded profile '{name}'")
+
+    def _save_profile(self):
+        name = self.profile_cb.get().strip()
+        if not name:
+            _dialog("Name Required",
+                    "Type a profile name in the box, then click Save.",
+                    "warning")
+            return
+        if name in self._profiles and not _ask(
+                "Overwrite Profile",
+                f"A profile named '{name}' already exists. "
+                "Overwrite it?"):
+            return
+        self._profiles[name] = self._collect_profile()
+        save_json("ftd_profiles.json", self._profiles)
+        self._refresh_profiles(select=name)
+        self._set_status(f"Saved profile '{name}'")
+
+    def _delete_profile(self):
+        name = self.profile_cb.get().strip()
+        if name not in self._profiles:
+            _dialog("No Such Profile",
+                    "Select a saved profile to delete.", "warning")
+            return
+        if not _ask("Delete Profile", f"Delete the profile '{name}'?"):
+            return
+        self._profiles.pop(name, None)
+        save_json("ftd_profiles.json", self._profiles)
+        self._refresh_profiles(select="")
+        self._set_status(f"Deleted profile '{name}'")
 
     def _refresh_ports(self):
         refresh_com_ports(self.port_cb)
