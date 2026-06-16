@@ -1,3 +1,19 @@
+# NetForge v1.5.1 - Release Notes
+
+Point release on top of v1.5.0, focused on the FTD setup workflow.
+
+## Saved Profiles for FTD Setup
+
+The **FTD 1010 Setup** dialog can now save and reload its field values as named profiles, the same way the rest of NetForge persists reusable settings. A new **Profile** bar sits with the COM port and baud settings at the top of the dialog.
+
+- **Save** - type a name and click Save to store every field across all three tabs: management IP, netmask, gateway, hostname, DNS, search domain, passwords, the FDM device IP / username / password / firmware path, and the full pre-ship set (FMC IP, registration key, data interface, IPs, masks, gateway, DNS, DDNS, mgmt0, and the checkboxes). Reusing an existing name asks before overwriting.
+- **Load** - pick a profile from the dropdown to populate every field at once.
+- **Delete** - removes the selected profile (with a confirmation prompt).
+
+Profiles are stored in `data/ftd_profiles.json` and persist across sessions. The per-device Site Name and S Rack # (used only for the capture filename) are deliberately left out, so loading a profile never clobbers them.
+
+---
+
 # NetForge v1.5.0 - Release Notes
 
 First release to automate a firewall: end-to-end staging of the Cisco FTD 1010 from a new **Tools** menu.
