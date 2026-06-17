@@ -334,12 +334,22 @@ class _SerialPushDialog:
             self._finish()
 
     def _finish(self):
+        # Only one program can own a COM port at a time. Release it the
+        # instant the operation ends and say so, so the user doesn't try
+        # to open the console in PuTTY while NetForge still holds the
+        # cable (which looks like a dead, black, never-echoing screen) -
+        # in particular during the show-output capture, which keeps the
+        # port busy after the visible config has finished streaming.
+        released = self._ser is not None
         if self._ser is not None:
             try:
                 self._ser.close()
             except Exception:
                 pass
             self._ser = None
+        if released:
+            self._log("\n--- COM port released - safe to open the switch "
+                      "console (e.g. PuTTY) now ---\n")
         self.dlg.after(0, self._reset_buttons)
 
     def _reset_buttons(self):
