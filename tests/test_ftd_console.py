@@ -10,6 +10,7 @@ from netforge.ftd.console import (
     erase_config_rules,
     initial_setup_rules,
     preship_rules,
+    regenerate_cert_rules,
 )
 
 
@@ -341,6 +342,75 @@ class TestPreship(unittest.TestCase):
         self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
         self.assertEqual(result.fired, [
             "mgr-add", "disable-mgmt0", "preship-complete"])
+
+
+class TestRegenerateCert(unittest.TestCase):
+    LOGIN = {"username": "admin", "current_password": "S3cret!pw",
+             "new_password": "S3cret!pw"}
+
+    def test_fdm_keyring_with_confirm(self):
+        a = dict(self.LOGIN, keyrings=["fdm"])
+        steps = [
+            (b"\r\nfirepower login: ", b"admin"),
+            (b"\r\nPassword: ",        b"S3cret!pw"),
+            (b"\r\nfirepower# ",       b"connect ftd"),
+            (b"\r\n> ",
+             b"system support regenerate-security-keyring fdm"),
+            (b"\r\nThis regenerates the fdm keyring certificate."
+             b"\r\nDo you want to continue? (yes/no): ",          b"yes"),
+            (b"\r\nKeyring certificate regenerated.\r\n> ",       None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, regenerate_cert_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.reason, "regen-complete")
+        self.assertEqual(result.fired, [
+            "login", "password", "connect-ftd",
+            "regen-0", "regen-confirm", "regen-complete"])
+
+    def test_silent_regen_no_confirm(self):
+        # Builds that regenerate without a confirmation prompt still
+        # complete (the confirm rule simply never fires).
+        a = dict(self.LOGIN, keyrings=["fdm"])
+        steps = [
+            (b"\r\nfirepower login: ", b"admin"),
+            (b"\r\nPassword: ",        b"S3cret!pw"),
+            (b"\r\nfirepower# ",       b"connect ftd"),
+            (b"\r\n> ",
+             b"system support regenerate-security-keyring fdm"),
+            (b"\r\nKeyring certificate regenerated.\r\n> ",       None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, regenerate_cert_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.fired, [
+            "login", "password", "connect-ftd",
+            "regen-0", "regen-complete"])
+
+    def test_both_keyrings_in_order(self):
+        a = dict(self.LOGIN, keyrings=["default", "fdm"])
+        steps = [
+            (b"\r\nfirepower login: ", b"admin"),
+            (b"\r\nPassword: ",        b"S3cret!pw"),
+            (b"\r\nfirepower# ",       b"connect ftd"),
+            (b"\r\n> ",
+             b"system support regenerate-security-keyring default"),
+            (b"\r\nDefault keyring regenerated.\r\n> ",
+             b"system support regenerate-security-keyring fdm"),
+            (b"\r\nFDM keyring regenerated.\r\n> ",               None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, regenerate_cert_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.fired, [
+            "login", "password", "connect-ftd",
+            "regen-0", "regen-1", "regen-complete"])
 
 
 class TestCaptureCommand(unittest.TestCase):

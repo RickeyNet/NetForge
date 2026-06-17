@@ -36,6 +36,8 @@ class _SerialPushDialog:
     _SETUP_RE  = re.compile(rb"initial configuration dialog\? \[yes/no\]:")
     # Password prompt for `enable`
     _PASS_RE   = re.compile(rb"[Pp]assword:\s*$")
+    # IOS pager prompt - capture has to page past it if pagination is on.
+    _MORE_RE   = re.compile(rb"--More--")
 
     # Show commands captured after a successful push, in order.
     _CAPTURE_CMDS = ("show version",
@@ -408,29 +410,41 @@ class _SerialPushDialog:
         return bytes(buf)
 
     # --------------------------------------------------- show capture
-    def _capture(self, cmd, timeout=30.0):
+    def _capture(self, cmd, idle_timeout=30.0):
         """Run a show command and return its full decoded output.
 
-        Assumes pagination is already off (`terminal length 0`), so the
-        only prompt we see is the one that follows the complete output.
-        Reads until that prompt reappears and the line goes quiet.
+        Pages through ``--More--`` prompts (in case ``terminal length 0``
+        did not stick - otherwise a paginated ``show running-config``
+        stalls until the timeout and looks like it captured nothing),
+        then stops once the trailing device prompt reappears and the line
+        goes quiet. ``idle_timeout`` is reset on every byte received, so
+        it bounds silence rather than total runtime - a long config that
+        keeps streaming is never truncated.
         """
         import time
         # Clear any stray bytes still in the buffer from the prior command.
         self._drain(0.2)
         self._log(f"\n--- Capturing: {cmd} ---\n")
         self._ser.write(cmd.encode("ascii", errors="replace") + b"\r\n")
-        deadline    = time.monotonic() + timeout
+        deadline    = time.monotonic() + idle_timeout
         buf         = bytearray()
         quiet_until = None
         while time.monotonic() < deadline:
             chunk = self._ser.read(self._ser.in_waiting or 1)
             if chunk:
                 buf.extend(chunk)
-                # Once the trailing prompt shows up, wait a short grace
-                # period for any final bytes, then stop.
-                if self._PROMPT_RE.search(buf[-200:]):
+                deadline = time.monotonic() + idle_timeout
+                tail = bytes(buf[-200:])
+                if self._MORE_RE.search(tail):
+                    # Pagination is on - keep the output flowing.
+                    self._ser.write(b" ")
+                    quiet_until = None
+                elif self._PROMPT_RE.search(tail):
+                    # Trailing prompt: wait a short grace period for any
+                    # final bytes, then stop.
                     quiet_until = time.monotonic() + 0.4
+                else:
+                    quiet_until = None
             elif quiet_until is not None and time.monotonic() >= quiet_until:
                 break
             if self._stop_flag:
@@ -441,7 +455,9 @@ class _SerialPushDialog:
 
     @staticmethod
     def _clean_capture(cmd, text):
-        """Strip the echoed command and the trailing device prompt."""
+        """Strip the echoed command, pager artifacts, and trailing prompt."""
+        # Remove the pager prompt and the backspaces IOS uses to erase it.
+        text = text.replace("--More--", "").replace("\x08", "")
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         # Drop a leading line that is just the echoed command.
         if lines and cmd in lines[0]:
@@ -454,6 +470,10 @@ class _SerialPushDialog:
     def _capture_show_outputs(self):
         """Run each show command and persist the outputs to the config file."""
         self._set_status("Capturing show output...")
+        # Re-assert no-pagination right before capturing: the push may have
+        # been long, and a captured 'show running-config' that paginates
+        # would otherwise stall at the first '--More--'.
+        self._send_line("terminal length 0", expect_prompt=True)
         captures = []
         for cmd in self._CAPTURE_CMDS:
             if self._stop_flag:

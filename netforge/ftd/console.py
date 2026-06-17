@@ -376,6 +376,49 @@ def capture_login_rules(answers):
     ]
 
 
+def regenerate_cert_rules(answers):
+    """Rules to regenerate expired internal keyring certificate(s).
+
+    Fixes the FDM-managed upgrade failure (Cisco bug CSCwd11825): when
+    the device's internal HTTPS / web-server certificate has expired the
+    software upgrade aborts with "The chosen certificate has already
+    expired. Please apply an unexpired certificate." Regenerating the
+    keyring from the FTD CLI takes effect immediately and needs no
+    deployment - unlike replacing the certificate in FDM, whose
+    deployment is itself blocked by the expired cert (the deploy loop).
+
+    ``answers`` keys: username, current_password, new_password (login
+    only - no password change is expected here), and ``keyrings``, a
+    list of keyring names to regenerate in order, each "fdm" (the FDM
+    web-server cert) or "default" (the FXOS management cert).
+
+    Each command is dispatched off the ``>`` prompt and gated to the
+    previous one via ``requires``; a tolerant confirm rule answers the
+    "are you sure / continue" prompt that some builds show and others
+    skip.
+    """
+    a = answers
+    keyrings = a.get("keyrings") or ["fdm"]
+    rules = [
+        *_ftd_shell_rules(a),
+        # Some builds prompt to confirm; others regenerate silently.
+        Rule("regen-confirm",
+             rb"(?:\(yes/no\)|continue\??)[^\r\n]*:?\s*$", "yes",
+             max_fires=len(keyrings) * 2, requires="regen-0"),
+    ]
+    prev = None  # first command fires on the first '>' (requires=None)
+    for i, keyring in enumerate(keyrings):
+        name = f"regen-{i}"
+        rules.append(
+            Rule(name, rb"[\r\n]>\s*$",
+                 f"system support regenerate-security-keyring {keyring}",
+                 max_fires=1, requires=prev))
+        prev = name
+    rules.append(Rule("regen-complete", rb"[\r\n]>\s*$", None,
+                      terminal=True, requires=prev))
+    return rules
+
+
 # ---------------------------------------------------------------------------
 # Show-command capture (runs after an ExpectSession left us at '>')
 # ---------------------------------------------------------------------------

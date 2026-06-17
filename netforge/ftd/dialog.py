@@ -34,6 +34,7 @@ from netforge.ftd.console import (
     erase_config_rules,
     initial_setup_rules,
     preship_rules,
+    regenerate_cert_rules,
 )
 from netforge.ftd.fdm_api import FdmClient, FdmError, FdmStopped
 
@@ -136,6 +137,7 @@ class FtdSetupDialog:
         # the connection settings since a profile spans every tab.
         self._build_profile_bar(inner, before=nb)
         self._action_btns = (self.setup_btn, self.erase_btn,
+                             self.regen_btn,
                              self.eula_btn, self.deploy_btn,
                              self.upgrade_btn, self.preship_btn,
                              self.capture_btn)
@@ -220,6 +222,34 @@ class FtdSetupDialog:
                   style="Hint.TLabel", wraplength=560,
                   justify="left").grid(
             row=10, column=0, columnspan=3, sticky="w", padx=4)
+
+        # Recovery for the expired-certificate upgrade failure.
+        ttk.Label(tab, text="Certificate keyring", width=22,
+                  anchor="w").grid(row=11, column=0, sticky="w",
+                                   padx=4, pady=(10, 2))
+        self.cert_keyring_cb = ttk.Combobox(
+            tab, width=28, state="readonly",
+            values=["FDM web server (fdm)",
+                    "Default / FXOS (default)",
+                    "Both"])
+        self.cert_keyring_cb.set("FDM web server (fdm)")
+        self.cert_keyring_cb.grid(row=11, column=1, sticky="ew",
+                                  padx=4, pady=(10, 2))
+        self.regen_btn = ttk.Button(tab, text="Regenerate Certificate...",
+                                    command=self._start_regen_cert)
+        self.regen_btn.grid(row=11, column=2, sticky="w", padx=4,
+                            pady=(10, 2))
+        ttk.Label(tab,
+                  text="Fix for an FDM software upgrade that fails with "
+                       "an expired-certificate error (Cisco CSCwd11825). "
+                       "Regenerates the internal keyring over the console "
+                       "using the password above; it takes effect "
+                       "immediately - no deployment - and avoids the "
+                       "cert-deploy loop. The FDM web UI restarts "
+                       "briefly; device config is untouched.",
+                  style="Hint.TLabel", wraplength=560,
+                  justify="left").grid(
+            row=12, column=0, columnspan=3, sticky="w", padx=4)
 
     def _build_fdm_tab(self, nb):
         tab = ttk.Frame(nb, padding=(10, 8))
@@ -699,6 +729,52 @@ class FtdSetupDialog:
         self._begin(self._run_console,
                     (port, self._baud(), rules, "Erase configuration",
                      ERASE_TIMEOUT, 300.0))
+
+    def _keyrings(self):
+        sel = self.cert_keyring_cb.get()
+        if sel.startswith("Both"):
+            return ["default", "fdm"]
+        if sel.startswith("Default"):
+            return ["default"]
+        return ["fdm"]
+
+    def _start_regen_cert(self):
+        port = self._selected_port()
+        if port is None:
+            return
+        pw = self.cur_pw_e.get() or self.new_pw_e.get()
+        if not pw:
+            _dialog("Missing Password",
+                    "Enter the device admin password (in Current or New "
+                    "Password) so NetForge can log in over the console.",
+                    "warning")
+            return
+        keyrings = self._keyrings()
+        if not _ask("Regenerate Certificate",
+                    "Regenerate the " + " and ".join(keyrings)
+                    + " keyring certificate over the console?\n\nThe FDM "
+                      "web server restarts briefly; the device config is "
+                      "left untouched."):
+            return
+        a = {
+            "username":         self.user_e.get().strip() or "admin",
+            "current_password": pw,
+            # No forced password change is expected on a configured
+            # device; reuse the same password if one is requested anyway.
+            "new_password":     pw,
+            "keyrings":         keyrings,
+        }
+        bad = self._non_ascii_fields(a)
+        if bad:
+            _dialog("Non-ASCII Characters",
+                    "The console only accepts ASCII. Fix: " + ", ".join(
+                        b.replace("_", " ") for b in bad),
+                    "warning")
+            return
+        rules = regenerate_cert_rules(a)
+        self._begin(self._run_console,
+                    (port, self._baud(), rules, "Regenerate certificate",
+                     ERASE_TIMEOUT, 120.0))
 
     def _run_console(self, port, baud, rules, label, timeout,
                      idle_timeout):
