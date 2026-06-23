@@ -36,11 +36,11 @@ Feature ideas based on the current app structure and product scope.
 - [ ] Add a config diff view
   Compare the newly generated config against a previously saved config or the current preview so engineers can see exactly what changed.
 
-- [ ] Default "write memory" to unchecked on console push
+- [x] Default "write memory" to unchecked on console push
   Leave the "Run 'write memory' when finished" box off by default so the running-config can be verified before it is deliberately saved to startup-config.
 
-- [ ] Add a push error summary for switch and FTD pushes
-  Track config lines/commands the device rejected or that failed to apply during the console push (switch) and the FTD console/FDM push, then show a consolidated error summary at the end instead of leaving failures buried in the transcript.
+- [x] Add a push error summary for switch and FTD pushes
+  Track config lines/commands the device rejected or that failed to apply during the console push (switch) and the FTD console push, then show a consolidated error summary at the end instead of leaving failures buried in the transcript. (Switch attributes each '%' error to its line number; FTD console scans for ERROR:/Invalid markers. FDM API push already surfaces errors as exceptions.)
 
 - [x] Add output naming templates
   Support file naming patterns like `{{ hostname }}_{{ profile }}` when saving generated configs or batch output.
@@ -62,8 +62,8 @@ Feature ideas based on the current app structure and product scope.
 - [ ] Add profile inheritance
   Allow a site profile to extend a base profile and override only a few VLANs, variables, or port assignments.
 
-- [ ] Add multiple BGP advertising options
-  Support more ways to advertise routes in the BGP config (network statements, redistribution, aggregate-address / summarization, and per-address-family advertisements) instead of the current limited set.
+- [x] Add multiple BGP advertising options
+  Support more ways to advertise routes in the BGP config: per-instance network statements, redistribution, and aggregate-address / summarization (summary-only). Entered in the profile BGP block and rendered into the `router bgp` stanza. (Per-address-family advertisements not yet covered.)
 
 
 ## Quality Of Life

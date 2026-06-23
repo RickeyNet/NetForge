@@ -4,6 +4,7 @@ import re
 import tkinter as tk
 from tkinter import ttk, filedialog
 
+from netforge.push_errors import PushErrorLog
 from netforge.serial_common import (
     BAUD_RATES,
     open_console_port,
@@ -124,7 +125,9 @@ class _SerialPushDialog:
                   style="Hint.TLabel").grid(
             row=3, column=2, sticky="w", padx=4)
 
-        self.save_var = tk.IntVar(value=1)
+        # Off by default: let the engineer verify the running-config
+        # before deliberately saving it to startup-config.
+        self.save_var = tk.IntVar(value=0)
         ttk.Checkbutton(cf, text="Run 'write memory' when finished",
                         variable=self.save_var).grid(
             row=4, column=1, sticky="w", padx=4, pady=(4, 2))
@@ -294,6 +297,7 @@ class _SerialPushDialog:
 
             # Push the config
             self._set_status("Pushing config...")
+            errors = PushErrorLog()
             lines = [ln.rstrip() for ln in self.config_text.splitlines()]
             total = len(lines)
             for i, line in enumerate(lines, 1):
@@ -307,8 +311,12 @@ class _SerialPushDialog:
                     continue
                 # Lines starting with '!' are comments - safe to send,
                 # IOS just echoes them back.
-                self._send_line(line, expect_prompt=True,
-                                line_delay=line_delay)
+                resp = self._send_line(line, expect_prompt=True,
+                                       line_delay=line_delay)
+                # Scan the device's reply for '% ...' errors and attribute
+                # them to this exact line for the end-of-push summary.
+                errors.add_ios(i, line,
+                               resp.decode("utf-8", errors="replace"))
                 if i % 25 == 0 or i == total:
                     self._set_status(f"Pushing config... ({i}/{total})")
 
@@ -325,7 +333,12 @@ class _SerialPushDialog:
             if do_capture and not self._stop_flag:
                 self._capture_show_outputs()
 
-            self._set_status("Done")
+            if errors:
+                self._log("\n" + errors.summary() + "\n")
+                self._set_status(
+                    f"Done - {len(errors)} line(s) flagged, see summary")
+            else:
+                self._set_status("Done - no errors reported")
             self._log("\n--- Push complete ---\n")
         except Exception as exc:
             self._log(f"\nERROR: {exc}\n")

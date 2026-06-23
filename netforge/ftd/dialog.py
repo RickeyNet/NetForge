@@ -37,6 +37,7 @@ from netforge.ftd.console import (
     regenerate_cert_rules,
 )
 from netforge.ftd.fdm_api import FdmClient, FdmError, FdmStopped
+from netforge.push_errors import LineErrorScanner
 
 
 class FtdSetupDialog:
@@ -776,6 +777,18 @@ class FtdSetupDialog:
                     (port, self._baud(), rules, "Regenerate certificate",
                      ERASE_TIMEOUT, 120.0))
 
+    def _scanning_log(self, scanner):
+        """A log callback that feeds the error scanner, then logs as usual."""
+        def _log(msg):
+            scanner.feed(msg)
+            self._log(msg)
+        return _log
+
+    def _report_console_errors(self, scanner):
+        """Append a consolidated error summary if the console flagged any."""
+        if scanner.errors:
+            self._log("\n" + scanner.summary() + "\n")
+
     def _run_console(self, port, baud, rules, label, timeout,
                      idle_timeout):
         try:
@@ -783,12 +796,14 @@ class FtdSetupDialog:
             self._log(f"--- {label}: opening {port} at {baud} baud ---\n")
             self._ser = open_console_port(port, baud)
             self._set_status(f"{label} running... watch the transcript")
+            scanner = LineErrorScanner()
             session = ExpectSession(
-                self._ser, rules, log=self._log,
+                self._ser, rules, log=self._scanning_log(scanner),
                 stop=lambda: self._stop_flag,
                 overall_timeout=timeout,
                 idle_timeout=idle_timeout)
             result = session.run()
+            scanner.flush()
             if result.ok:
                 self._log(f"\n--- {label} finished ({result.reason}) ---\n")
                 self._set_status(f"{label} complete")
@@ -798,6 +813,7 @@ class FtdSetupDialog:
                           f"Steps completed: "
                           f"{', '.join(result.fired) or '(none)'}\n")
                 self._set_status(f"{label} stopped: {result.reason}")
+            self._report_console_errors(scanner)
         except Exception as exc:
             self._log(f"\nERROR: {exc}\n")
             self._set_status("Error - see transcript")
@@ -895,20 +911,24 @@ class FtdSetupDialog:
             self._log(f"--- {label}: opening {port} at {baud} baud ---\n")
             self._ser = open_console_port(port, baud)
             self._set_status(f"{label} running... watch the transcript")
+            scanner = LineErrorScanner()
             session = ExpectSession(
-                self._ser, rules, log=self._log,
+                self._ser, rules, log=self._scanning_log(scanner),
                 stop=lambda: self._stop_flag,
                 overall_timeout=PRESHIP_TIMEOUT,
                 idle_timeout=PRESHIP_IDLE_TIMEOUT)
             result = session.run()
+            scanner.flush()
             if not result.ok:
                 self._log(f"\n--- {label} did not finish: "
                           f"{result.reason} ---\n"
                           f"Steps completed: "
                           f"{', '.join(result.fired) or '(none)'}\n")
                 self._set_status(f"{label} stopped: {result.reason}")
+                self._report_console_errors(scanner)
                 return
             self._log(f"\n--- {label} finished ({result.reason}) ---\n")
+            self._report_console_errors(scanner)
             if do_capture and not self._stop_flag:
                 self._set_status("Capturing device config...")
                 captures = []

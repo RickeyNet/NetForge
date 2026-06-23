@@ -311,6 +311,27 @@ def _render_bgp(profile, sw):
                  " bgp log-neighbor-changes"]
         if user_network and user_mask:
             lines.append(f" network {user_network} mask {user_mask}")
+        # Profile-level advertising options (all optional).
+        for net in inst.get("networks") or []:
+            n = str(net.get("network") or "").strip()
+            m = str(net.get("mask") or "").strip()
+            if not n:
+                continue
+            lines.append(f" network {n} mask {m}" if m
+                         else f" network {n}")
+        for red in inst.get("redistribute") or []:
+            red = str(red or "").strip()
+            if red:
+                lines.append(f" redistribute {red}")
+        for agg in inst.get("aggregates") or []:
+            p = str(agg.get("prefix") or "").strip()
+            m = str(agg.get("mask") or "").strip()
+            if not p:
+                continue
+            line = f" aggregate-address {p} {m}".rstrip()
+            if agg.get("summary_only"):
+                line += " summary-only"
+            lines.append(line)
         for i, slot in enumerate(slots):
             slot_asn = str(slot.get("peer_asn") or "").strip() \
                 or default_peer_asn

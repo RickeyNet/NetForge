@@ -26,6 +26,56 @@ from netforge.ui.l3_grid import L3EntryGrid, _L3_UI_ALIAS
 from netforge.ui.theme import C
 from netforge.ui.widgets import PanedWindow, ScrollFrame, _CheckList
 
+
+# --- BGP advertising-option parsing (text fields <-> structured lists) ---
+def _parse_bgp_networks(text):
+    """'NETWORK [MASK]' per line -> [{'network':..., 'mask':...}]."""
+    out = []
+    for ln in (text or "").splitlines():
+        toks = ln.split()
+        if not toks:
+            continue
+        out.append({"network": toks[0],
+                    "mask": toks[1] if len(toks) > 1 else ""})
+    return out
+
+
+def _parse_bgp_redistribute(text):
+    """One redistribute source per line -> ['connected', 'ospf 1', ...]."""
+    return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+
+
+def _parse_bgp_aggregates(text):
+    """'PREFIX [MASK] [summary-only]' per line -> list of dicts."""
+    out = []
+    for ln in (text or "").splitlines():
+        toks = ln.split()
+        if not toks:
+            continue
+        summary = any(t.lower() == "summary-only" for t in toks[1:])
+        rest = [t for t in toks[1:] if t.lower() != "summary-only"]
+        out.append({"prefix": toks[0],
+                    "mask": rest[0] if rest else "",
+                    "summary_only": summary})
+    return out
+
+
+def _bgp_networks_to_text(nets):
+    return "\n".join(
+        f"{n.get('network', '')} {n.get('mask', '')}".strip()
+        for n in (nets or []))
+
+
+def _bgp_aggregates_to_text(aggs):
+    lines = []
+    for a in (aggs or []):
+        parts = [a.get("prefix", ""), a.get("mask", "")]
+        if a.get("summary_only"):
+            parts.append("summary-only")
+        lines.append(" ".join(p for p in parts if p))
+    return "\n".join(lines)
+
+
 class ProfilesTab(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -870,6 +920,34 @@ class ProfilesTab(ttk.Frame):
 
         slot_frame.pack(fill="x")
 
+        # Advertising options (optional, site-wide for this instance).
+        adv_lf = ttk.LabelFrame(blk_frame, text="Advertising", padding=5)
+        adv_lf.pack(fill="x", padx=2, pady=(4, 0))
+
+        def _adv_text(label, hint):
+            ttk.Label(adv_lf, text=label, anchor="w").pack(anchor="w")
+            ttk.Label(adv_lf, style="Hint.TLabel", text=hint).pack(
+                anchor="w", padx=2)
+            t = tk.Text(adv_lf, height=2, font=("Consolas", 9),
+                        bg=C["bg_input"], fg=C["fg"],
+                        insertbackground=C["fg"],
+                        selectbackground=C["sel_bg"], relief="flat",
+                        bd=2, wrap="none")
+            t.pack(fill="x", padx=2, pady=(0, 4))
+            _attach_context_menu(t)
+            _autosize_textarea(t, min_h=2, max_h=12)
+            return t
+
+        block["networks_text"] = _adv_text(
+            "Networks",
+            "  One per line: NETWORK MASK  (e.g. 10.0.0.0 255.0.0.0)")
+        block["redistribute_text"] = _adv_text(
+            "Redistribute",
+            "  One per line  (e.g. connected / static / ospf 1)")
+        block["aggregates_text"] = _adv_text(
+            "Aggregate addresses",
+            "  One per line: PREFIX MASK [summary-only]")
+
         self.bgp_blocks.append(block)
         self._update_bgp_collapsed()
 
@@ -885,6 +963,13 @@ class ProfilesTab(ttk.Frame):
                          for p in (data.get("peers") or [])]
             for slot in slots:
                 self._add_bgp_slot(block, slot)
+            block["networks_text"].insert(
+                "1.0", _bgp_networks_to_text(data.get("networks")))
+            block["redistribute_text"].insert(
+                "1.0", "\n".join(str(r) for r in
+                                 (data.get("redistribute") or [])))
+            block["aggregates_text"].insert(
+                "1.0", _bgp_aggregates_to_text(data.get("aggregates")))
         else:
             local_e.insert(0, "65000")
             peer_asn_e.insert(0, "65001")
@@ -934,11 +1019,26 @@ class ProfilesTab(ttk.Frame):
                     "peer_asn":    r["asn"].get().strip(),
                     "description": r["desc"].get().strip(),
                 })
-            out.append({
+            inst = {
                 "local_asn": local_asn,
                 "peer_asn":  blk["peer_asn"].get().strip(),
                 "slots":     slots,
-            })
+            }
+            # Only persist advertising lists when the user entered some,
+            # so existing profiles stay unchanged.
+            nets = _parse_bgp_networks(
+                blk["networks_text"].get("1.0", "end"))
+            reds = _parse_bgp_redistribute(
+                blk["redistribute_text"].get("1.0", "end"))
+            aggs = _parse_bgp_aggregates(
+                blk["aggregates_text"].get("1.0", "end"))
+            if nets:
+                inst["networks"] = nets
+            if reds:
+                inst["redistribute"] = reds
+            if aggs:
+                inst["aggregates"] = aggs
+            out.append(inst)
         return out
 
     def _collect_acls(self):
