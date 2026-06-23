@@ -36,7 +36,7 @@ class FdmStopped(FdmError):
 
 
 class FdmClient:
-    def __init__(self, host, username="admin", password="", log=None,
+    def __init__(self, host, username="admin", password="", log=None,  # nosec B107 - empty default; the real password is supplied by the caller
                  timeout=30):
         self.host     = host.strip()
         self.username = username
@@ -66,7 +66,7 @@ class FdmClient:
         req = urllib.request.Request(self._url(path), data=body,
                                      headers=headers, method=method)
         try:
-            with urllib.request.urlopen(
+            with urllib.request.urlopen(  # nosec B310 - FDM REST client; URL is always built with a fixed https:// scheme
                     req, context=self._ctx,
                     timeout=timeout or self.timeout) as resp:
                 raw = resp.read()

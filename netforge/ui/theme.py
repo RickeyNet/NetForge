@@ -1,6 +1,5 @@
 """Theme presets, palette, and ttk styling."""
 
-import tkinter as tk
 from tkinter import ttk
 
 from netforge.data.storage import load_json, save_json

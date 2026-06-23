@@ -5,3 +5,13 @@ target-version = "py39"
 [tool.ruff.lint]
 # NetForge uses semicolon-separated tkinter one-liners throughout.
 ignore = ["E702"]
+
+[tool.bandit]
+# Tests aren't shipped and use subprocess/asserts by design.
+exclude_dirs = ["tests"]
+# B104 fires on IP-address string literals (e.g. the "0.0.0.0" default-route
+# and DNS checks) - this is a network-config tool, not a socket server.
+# B110 fires on the intentional best-effort try/except/pass cleanup in the
+# GUI/serial teardown paths. Both are project-wide noise; everything else
+# (including the low-severity hardcoded-secret checks) still gates CI.
+skips = ["B104", "B110"]

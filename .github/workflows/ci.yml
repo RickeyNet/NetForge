@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install linters
+        run: pip install ruff "bandit[toml]"
+      - name: Lint (ruff)
+        run: ruff check .
+      # Gate at low severity so Bandit's low-rated hardcoded-secret checks
+      # (B105-B107) actually block; intentional findings are triaged via
+      # [tool.bandit] skips and inline # nosec in the source.
+      - name: Security scan (bandit)
+        run: bandit -r netforge -c pyproject.toml
+
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: '3.9'
+          - os: ubuntu-latest
+            python-version: '3.12'
+          - os: windows-latest
+            python-version: '3.12'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      # The full-App smoke test needs a display; Linux gets a virtual one
+      # via xvfb so it runs for real. On Windows it runs against the
+      # runner's session (or skips cleanly if Tk can't initialize).
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          xvfb-run -a python -m pytest -q
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest -q

@@ -6,7 +6,6 @@ import sys
 import weakref
 from ctypes import wintypes
 
-import tkinter as tk
 
 from netforge.data.storage import ICON_PATH
 from netforge.ui.theme import C
