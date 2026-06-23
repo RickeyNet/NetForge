@@ -89,5 +89,90 @@ class TestValidateSwitchConfig(unittest.TestCase):
                             for e in errors))
 
 
+class TestRoleVariableWarnings(unittest.TestCase):
+    ROLES = {
+        "Access": {"commands": "switchport access vlan {{ user_vlan }}\n"
+                                "description {{ description }}"},
+        "Uplink": {"commands": "ip address {{ ip }} {{ mask }}",
+                   "requires_ip": True},
+    }
+
+    def test_undefined_variable_warns(self):
+        profile = {"role_variables": {},
+                   "port_assignments": [{"interfaces": "Gi1/0/1",
+                                         "role": "Access"}]}
+        _, warnings = validate_switch_config({}, profile, self.ROLES, {}, {})
+        self.assertTrue(any("user_vlan" in w for w in warnings))
+        # description is a built-in, so it must NOT be flagged.
+        self.assertFalse(any("description" in w for w in warnings))
+
+    def test_defined_variable_and_builtins_dont_warn(self):
+        profile = {"role_variables": {"user_vlan": "10"},
+                   "port_assignments": [
+                       {"interfaces": "Gi1/0/1", "role": "Access"},
+                       {"interfaces": "Gi1/0/24", "role": "Uplink"}]}
+        _, warnings = validate_switch_config({}, profile, self.ROLES, {}, {})
+        self.assertEqual(warnings, [])
+
+
+class TestUnusedRoleVariableWarnings(unittest.TestCase):
+    ROLES = {"Access": {"commands": "switchport access vlan "
+                                    "{{ access_vlan }}"}}
+
+    def test_unused_variable_warns(self):
+        profile = {"role_variables": {"access_vlan": "10",
+                                      "acccess_vlan": "10"},  # typo
+                   "port_assignments": [{"interfaces": "Gi1/0/1",
+                                         "role": "Access"}]}
+        _, warnings = validate_switch_config({}, profile, self.ROLES, {}, {})
+        self.assertTrue(any("acccess_vlan" in w and "not used" in w
+                            for w in warnings))
+        # The correctly-spelled one is referenced, so no warning for it.
+        self.assertFalse(any("'access_vlan'" in w for w in warnings))
+
+    def test_variable_used_only_in_base_is_not_unused(self):
+        profile = {"role_variables": {"ntp_server_1": "1.1.1.1"},
+                   "port_assignments": []}
+        base = {"ntp": "ntp server {{ ntp_server_1 }}"}
+        _, warnings = validate_switch_config({}, profile, {}, base, {})
+        self.assertEqual(warnings, [])
+
+
+class TestUnknownInterfaceWarnings(unittest.TestCase):
+    MODEL = {"port_groups": [
+        {"prefix": "GigabitEthernet1/0/", "start": 1, "end": 24}]}
+
+    def _warn(self, interfaces, model=None):
+        profile = {"port_assignments": [{"interfaces": interfaces,
+                                         "role": "x"}]}
+        _, warnings = validate_switch_config(model or self.MODEL,
+                                             profile, {}, {}, {})
+        return warnings
+
+    def test_port_out_of_range_warns(self):
+        self.assertTrue(any("Gi1/0/48" in w
+                            for w in self._warn("Gi1/0/48")))
+
+    def test_abbreviation_in_range_is_ok(self):
+        # Gi1/0/10 == GigabitEthernet1/0/10, which exists -> no warning.
+        self.assertEqual(self._warn("Gi1/0/10"), [])
+
+    def test_other_family_not_flagged(self):
+        # Port-channel isn't a family the model defines -> not flagged.
+        self.assertEqual(self._warn("Port-channel1"), [])
+
+    def test_stack_member_beyond_size_warns(self):
+        # Single-unit model: a member-2 port should be flagged.
+        self.assertTrue(any("Gi2/0/1" in w
+                            for w in self._warn("Gi2/0/1")))
+
+    def test_range_expansion_flags_only_the_bad_ports(self):
+        warnings = self._warn("range GigabitEthernet1/0/20-26")
+        # 20-24 exist; 25 and 26 do not.
+        self.assertTrue(any("1/0/25" in w for w in warnings))
+        self.assertTrue(any("1/0/26" in w for w in warnings))
+        self.assertFalse(any("1/0/24" in w for w in warnings))
+
+
 if __name__ == "__main__":
     unittest.main()

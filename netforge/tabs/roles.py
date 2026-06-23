@@ -1,6 +1,7 @@
 """Interface Roles tab."""
 
 import json
+import re
 
 import tkinter as tk
 from tkinter import ttk
@@ -17,6 +18,7 @@ from netforge.ui.helpers import (
 )
 from netforge.ui.theme import C
 from netforge.ui.widgets import PanedWindow, ScrollFrame, _CheckList
+from netforge.validate import _VAR_RE
 
 class RolesTab(ttk.Frame):
     def __init__(self, parent, app):
@@ -84,9 +86,48 @@ class RolesTab(ttk.Frame):
         self.cmds.pack(fill="both", expand=True, padx=5, pady=4)
         _attach_context_menu(self.cmds)
 
-        ttk.Button(form, text="Save Role",
-                   command=self._save).pack(padx=5, pady=10, anchor="w")
+        btns = ttk.Frame(form); btns.pack(fill="x", padx=5, pady=(10, 4))
+        ttk.Button(btns, text="Save Role",
+                   command=self._save).pack(side="left")
+        ttk.Button(btns, text="Preview",
+                   command=self._preview).pack(side="left", padx=6)
+
+        _section(form, "Preview (sample values)")
+        ttk.Label(form, style="Hint.TLabel",
+                  text="  Renders the template above with sample values: "
+                       "{{ description }}, plus {{ ip }}/{{ mask }} when\n"
+                       "  'Requires per-switch IP' is on. Any other variable "
+                       "shows as a <name> placeholder so you can\n"
+                       "  see where the Site Profile values land."
+                  ).pack(anchor="w", padx=5, pady=(2, 2))
+        self.preview = tk.Text(form, height=8, font=("Consolas", 10),
+                               bg=C["bg_input"], fg=C["fg"],
+                               insertbackground=C["fg"],
+                               selectbackground=C["sel_bg"],
+                               relief="flat", bd=2, wrap="word")
+        self.preview.pack(fill="both", expand=True, padx=5, pady=(0, 8))
+        self.preview.configure(state="disabled")
+        _attach_context_menu(self.preview)
         self._refresh()
+
+    def _preview(self):
+        """Render the current template with sample/placeholder values."""
+        from jinja2.sandbox import SandboxedEnvironment
+        text = self.cmds.get("1.0", "end").rstrip("\n")
+        ctx = {"description": "Example description"}
+        if self.requires_ip.get():
+            ctx["ip"] = "10.0.0.1"
+            ctx["mask"] = "255.255.255.0"
+        for var in set(_VAR_RE.findall(text)):
+            ctx.setdefault(var, f"<{var}>")
+        try:
+            rendered = SandboxedEnvironment().from_string(text).render(**ctx)
+        except Exception as exc:
+            rendered = f"! render error: {exc}"
+        self.preview.configure(state="normal")
+        self.preview.delete("1.0", "end")
+        self.preview.insert("1.0", rendered)
+        self.preview.configure(state="disabled")
 
     def _refresh(self):
         if self.show_hidden.get():
@@ -109,12 +150,14 @@ class RolesTab(ttk.Frame):
         self.cmds.delete("1.0", "end")
         self.cmds.insert("1.0", role.get("commands", ""))
         self.requires_ip.set(bool(role.get("requires_ip", False)))
+        self._preview()
 
     def _new(self):
         self.lb.clear_selection()
         self.name_e.delete(0, "end")
         self.cmds.delete("1.0", "end")
         self.requires_ip.set(False)
+        self._preview()
 
     def _duplicate(self):
         name = self.lb.get_selected()

@@ -4,15 +4,17 @@ Feature ideas based on the current app structure and product scope.
 
 ## High Priority
 
-- [~] Add configuration validation before render
+- [x] Add configuration validation before render
   Validate IP addresses, subnet masks, VLAN IDs, empty required fields, duplicate interface assignments, overlapping ranges, and roles that reference undefined variables.
-  Done: shared `netforge/validate.py` checks IPv4 addresses, contiguous subnet masks, VLAN ID range, and duplicate/overlapping interface assignments (range-expanded) before render; errors block, warnings are advisory. The FTD setup dialog reuses the same validators on its run actions and (soft) on profile save. Remaining: roles that reference undefined variables (overlaps with the Jinja-variable-checking item below).
+  Done in shared `netforge/validate.py`: IPv4 addresses, contiguous subnet masks, VLAN ID range, and duplicate/overlapping interface assignments block generation (errors); roles that reference an undefined `{{ variable }}` and physical ports that don't exist on the selected model/stack are advisory (warnings). The FTD setup dialog reuses the same validators on its run actions and (soft) on profile save.
 
-- [ ] Add Jinja variable checking and preview helpers
+- [~] Add Jinja variable checking and preview helpers
   Show missing variables, unused variables, and a small rendered preview for role templates and custom base sections before the user generates a full config.
+  Done: missing-variable and unused-variable detection in `validate.py` (surfaced as Generate-time warnings); the Roles tab has a live "Preview" pane that renders the template with sample/placeholder values. Remaining: the same rendered preview for custom base sections in the Base tab.
 
-- [ ] Add model/profile compatibility checks
+- [x] Add model/profile compatibility checks
   Warn when a site profile assigns interfaces that do not exist on the selected model or stack size.
+  Done in `validate.py` (`_unknown_interface_warnings`): range-expands each assignment, matches loosely so abbreviations are fine (Gi == GigabitEthernet), and flags only ports in a family the model has whose number is out of range or beyond the stack size.
 
 - [ ] Add batch generation from CSV
   Let users import a CSV of hostnames, management IPs, gateways, passwords, and profile selections to generate many switch configs in one pass.
@@ -100,8 +102,8 @@ Feature ideas based on the current app structure and product scope.
 
 ## Suggested First Slice
 
-- [~] Build validation and compatibility warnings first
-  This is the highest-leverage improvement because it reduces bad configs without changing the basic workflow. (Format + duplicate-interface validation landed via `netforge/validate.py`; model/profile compatibility checks still pending.)
+- [x] Build validation and compatibility warnings first
+  This is the highest-leverage improvement because it reduces bad configs without changing the basic workflow. (Done: format + duplicate-interface errors and undefined-variable + model/stack interface-compatibility warnings, all in `netforge/validate.py`.)
 
 - [ ] Add duplicate actions next
   This is a small implementation with immediate day-to-day value.

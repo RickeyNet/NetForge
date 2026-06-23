@@ -6,8 +6,18 @@ desk instead of on the wire.
 """
 
 import ipaddress
+import re
 
-from netforge.data.iface import expand_range_iface
+from netforge.data.iface import (
+    expand_port_groups_for_stack,
+    expand_range_iface,
+)
+
+# Variables the renderer always injects into a role template, so a role
+# referencing them is never "undefined". See render/render.py (port
+# assignment context) and render/l3.py (_role_variables_for_switch).
+_BUILTIN_ROLE_VARS = {"description", "ip", "mask", "ospf_pid"}
+_VAR_RE = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 
 
 def is_ipv4(value):
@@ -78,6 +88,122 @@ def _duplicate_interfaces(profile):
     return sorted(set(dups))
 
 
+def _role_variable_warnings(profile, roles):
+    """Roles used by the profile that reference an unset {{ variable }}.
+
+    Jinja renders an undefined variable as an empty string, so this is a
+    likely-mistake warning rather than a hard error.
+    """
+    available = set(_BUILTIN_ROLE_VARS)
+    available |= set((profile.get("role_variables") or {}).keys())
+    warnings, seen = [], set()
+    for pa in profile.get("port_assignments") or []:
+        rname = pa.get("role") or ""
+        if not rname or rname == "unassigned":
+            continue
+        cmds = ((roles or {}).get(rname) or {}).get("commands", "") or ""
+        for var in _VAR_RE.findall(cmds):
+            if var in available or (rname, var) in seen:
+                continue
+            seen.add((rname, var))
+            warnings.append(
+                f"Role '{rname}' uses {{{{ {var} }}}} which is not set in "
+                f"the profile's role variables")
+    return warnings
+
+
+def _iter_strings(obj):
+    """Yield every string nested anywhere in a dict/list structure."""
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _iter_strings(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _iter_strings(v)
+
+
+def _unused_role_variable_warnings(profile, roles, base):
+    """Profile role_variables that no role or base section references.
+
+    Catches typos: defining `acccess_vlan` while the role uses
+    `{{ access_vlan }}` flags both (the role's reference as undefined and
+    this definition as unused). Checks the whole roles library and base
+    so a variable used anywhere is considered used (keeps noise low).
+    """
+    defined = list((profile.get("role_variables") or {}).keys())
+    if not defined:
+        return []
+    referenced = set()
+    for role in (roles or {}).values():
+        referenced.update(_VAR_RE.findall((role or {}).get("commands") or ""))
+    for text in _iter_strings(base or {}):
+        referenced.update(_VAR_RE.findall(text))
+    for key in ("vlan_definitions", "ospf_config"):
+        referenced.update(_VAR_RE.findall(profile.get(key) or ""))
+    return [f"Profile variable '{name}' is defined but not used by any "
+            "role or base section"
+            for name in defined if name not in referenced]
+
+
+def _norm_iface(name):
+    """Normalize an interface name for loose matching.
+
+    Returns (family, numeric-tail) where family is the first two letters
+    of the type, lowercased, so abbreviations match full names
+    (Gi1/0/1 == GigabitEthernet1/0/1).
+    """
+    s = (name or "").strip().lower()
+    m = re.match(r"^([a-z][a-z\-]*)\s*(.*)$", s)
+    if not m:
+        return ("", s)
+    return (m.group(1)[:2], m.group(2).replace(" ", ""))
+
+
+def _model_interfaces(model):
+    """(set of normalized interface names, set of families) for a model."""
+    stack = model.get("stack_members", 1) or 1
+    pgs = expand_port_groups_for_stack(
+        model.get("port_groups", []) or [], stack)
+    valid = set()
+    for pg in pgs:
+        prefix = pg.get("prefix", "")
+        try:
+            start, end = int(pg.get("start")), int(pg.get("end"))
+        except (TypeError, ValueError):
+            continue
+        for i in range(start, end + 1):
+            valid.add(_norm_iface(f"{prefix}{i}"))
+    return valid, {fam for fam, _ in valid}
+
+
+def _unknown_interface_warnings(profile, model):
+    """Assigned physical ports that don't exist on the model/stack.
+
+    Only flags ports in a family the model actually has (so Port-channel,
+    Vlan, or Loopback assignments aren't false-flagged) whose specific
+    number falls outside the model's range or stack size.
+    """
+    if not model or not model.get("port_groups"):
+        return []
+    valid, families = _model_interfaces(model)
+    warnings, seen = [], set()
+    for pa in profile.get("port_assignments") or []:
+        for iface in expand_range_iface(pa.get("interfaces", "") or ""):
+            iface = iface.strip()
+            if not iface:
+                continue
+            norm = _norm_iface(iface)
+            if (norm[0] in families and norm not in valid
+                    and iface.lower() not in seen):
+                seen.add(iface.lower())
+                warnings.append(
+                    f"Interface {iface} is not on the selected model "
+                    "(check the port number or stack size)")
+    return warnings
+
+
 def validate_switch_config(model, profile, roles, base, sw):
     """Pre-render checks. Returns ``(errors, warnings)`` lists of strings.
 
@@ -121,5 +247,9 @@ def validate_switch_config(model, profile, roles, base, sw):
     for iface in _duplicate_interfaces(profile):
         errors.append(
             f"Interface {iface} is assigned to more than one role")
+
+    warnings.extend(_role_variable_warnings(profile, roles))
+    warnings.extend(_unused_role_variable_warnings(profile, roles, base))
+    warnings.extend(_unknown_interface_warnings(profile, model or {}))
 
     return errors, warnings
