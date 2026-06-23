@@ -1,3 +1,48 @@
+# NetForge v1.5.2 - Release Notes
+
+A reliability and safety release: catch bad input before it reaches a device, see what the device rejected, recover from a known FTD upgrade failure, and more ways to advertise BGP routes. Plus a test/CI foundation under the hood.
+
+## Validate Before You Generate
+
+Generate Config now checks the switch details before rendering, so a typo is caught at the desk instead of on the wire:
+
+- **Errors block generation** - malformed IPv4 addresses, non-contiguous subnet masks, out-of-range VLAN IDs (across management, OOB, SVIs, routed interfaces, static routes, and BGP), and an interface assigned to more than one role.
+- **Warnings let you proceed** - a role that references a `{{ variable }}` the profile never sets, a profile variable defined but never used (catches typos from both sides), and an assigned port that doesn't exist on the selected model or stack size (abbreviations like `Gi` are matched correctly).
+
+The **FTD Setup** dialog reuses the same checks: management/FMC/interface addresses are validated before a run, and a soft check on Save Profile flags bad-looking addresses while still letting you save a partial profile.
+
+## Push Error Summary
+
+After a console push, NetForge now surfaces what the device complained about instead of leaving it buried in the transcript:
+
+- **Switch push** - scans each line's reply for `% ...` errors and lists them by line number and command at the end, with the count in the status bar.
+- **FTD console** - watches for `ERROR:` / `Invalid input` markers during setup and pre-ship and summarizes them when finished.
+
+## FTD: Regenerate an Expired Certificate
+
+A new **Regenerate Certificate** action on the FTD console tab fixes the Cisco upgrade failure (bug CSCwd11825) where an expired internal HTTPS/web-server certificate aborts the FDM software upgrade. It regenerates the keyring (`fdm`, `default`, or both) over the console - which takes effect immediately, needs no deployment, and sidesteps the cert-deploy loop that the FDM web GUI gets stuck in.
+
+## More BGP Advertising Options
+
+Each BGP instance in a Site Profile now has an **Advertising** section: multiple `network` statements, `redistribute` sources (connected / static / ospf 1 / ...), and `aggregate-address` summarization (with `summary-only`). Existing profiles are untouched - the new fields only render when filled.
+
+## Template Previews
+
+The **Interface Roles** tab and each **Base Settings** custom config section now have a live **Preview** pane that renders the template through the real engine, filling `{{ description }}` (and `{{ ip }}`/`{{ mask }}` when applicable) with sample values and showing other variables as `<name>` placeholders - so you can see where Site Profile values land before generating.
+
+## Console Push Polish
+
+- **"Run 'write memory'" is now off by default** so the running-config can be reviewed before it's saved to startup-config.
+- **Show-output capture is more reliable** - it pages through `--More--`, re-asserts `terminal length 0`, and uses an idle timeout so a long `show running-config` is never truncated.
+- **The dialog now says when the COM port is released** ("safe to open the switch console now"), since opening PuTTY while NetForge still holds the cable looks like a dead, black screen.
+
+## Under the Hood
+
+- Added a test suite for the FDM REST client and a full-App smoke test, and began splitting the large Profiles tab into sub-editors (BGP first).
+- Added Continuous Integration (GitHub Actions): ruff linting, Bandit security scanning, and the pytest suite across Python 3.9 / 3.12 on Linux and Windows.
+
+---
+
 # NetForge v1.5.1 - Release Notes
 
 Point release on top of v1.5.0, focused on the FTD setup workflow.
