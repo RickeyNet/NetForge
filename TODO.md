@@ -186,5 +186,6 @@ netforge/
 ### Follow-ups (after the file split lands)
 
 - [ ] Decompose `GenerateTab` into per-step submodules (Step 1 / Step 2 / Step 3 / Preview).
-- [ ] Decompose `ProfilesTab` into sub-editors (VLANs, SVIs, OSPF, Custom Sections, Role Variables).
+- [~] Decompose `ProfilesTab` into sub-editors (VLANs, SVIs, OSPF, Custom Sections, Role Variables).
+  Started: the BGP sub-editor moved to `netforge/tabs/profiles_bgp.py` as `BgpEditorMixin` (profiles.py ~1,300 -> ~1,110 lines). `tests/test_app_smoke.py` builds the whole App and round-trips every bundled profile through the editors, so further extractions (ACL, SVI, OSPF, Role Variables) have a regression net. Each should be its own mixin/commit.
 - [ ] Add a config-object layer between the JSON files and the renderer so per-field validation can live with the data model instead of the UI.
