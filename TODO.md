@@ -8,9 +8,9 @@ Feature ideas based on the current app structure and product scope.
   Validate IP addresses, subnet masks, VLAN IDs, empty required fields, duplicate interface assignments, overlapping ranges, and roles that reference undefined variables.
   Done in shared `netforge/validate.py`: IPv4 addresses, contiguous subnet masks, VLAN ID range, and duplicate/overlapping interface assignments block generation (errors); roles that reference an undefined `{{ variable }}` and physical ports that don't exist on the selected model/stack are advisory (warnings). The FTD setup dialog reuses the same validators on its run actions and (soft) on profile save.
 
-- [~] Add Jinja variable checking and preview helpers
+- [x] Add Jinja variable checking and preview helpers
   Show missing variables, unused variables, and a small rendered preview for role templates and custom base sections before the user generates a full config.
-  Done: missing-variable and unused-variable detection in `validate.py` (surfaced as Generate-time warnings); the Roles tab has a live "Preview" pane that renders the template with sample/placeholder values. Remaining: the same rendered preview for custom base sections in the Base tab.
+  Done: missing-variable and unused-variable detection in `validate.py` (surfaced as Generate-time warnings); the Roles tab and each Base-tab custom config section have a "Preview" pane that renders the template through the real SandboxedEnvironment with sample/`<name>` placeholder values.
 
 - [x] Add model/profile compatibility checks
   Warn when a site profile assigns interfaces that do not exist on the selected model or stack size.

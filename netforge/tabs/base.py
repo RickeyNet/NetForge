@@ -19,6 +19,7 @@ from netforge.ui.helpers import (
 )
 from netforge.ui.theme import C
 from netforge.ui.widgets import PanedWindow, ScrollFrame, _CheckList
+from netforge.validate import _VAR_RE
 
 class BaseTab(ttk.Frame):
     """Side-by-side editor for one or more named base-settings entries.
@@ -461,6 +462,26 @@ class BaseTab(ttk.Frame):
         _attach_context_menu(cmds)
         _autosize_textarea(cmds, min_h=2, max_h=20)
 
+        row = {"frame": frame, "name": name_e,
+               "position": pos_cb, "commands": cmds}
+
+        prev_bar = ttk.Frame(frame); prev_bar.pack(fill="x", pady=(4, 0))
+        ttk.Button(prev_bar, text="Preview",
+                   command=lambda r=row: self._preview_cs(r)).pack(side="left")
+        ttk.Label(prev_bar,
+                  text="  Rendered with <name> placeholders for the Site "
+                       "Profile's role variables.",
+                  style="Hint.TLabel").pack(side="left", padx=6)
+        prev = tk.Text(frame, height=2, font=("Consolas", 9),
+                       bg=C["bg_input"], fg=C["fg"],
+                       insertbackground=C["fg"],
+                       selectbackground=C["sel_bg"],
+                       relief="flat", bd=2, wrap="word")
+        prev.pack(fill="x", pady=(2, 0))
+        prev.configure(state="disabled")
+        _attach_context_menu(prev)
+        row["preview"] = prev
+
         if isinstance(data, dict):
             name_e.insert(0, data.get("name", ""))
             pos = data.get("position", "post-interface")
@@ -469,10 +490,25 @@ class BaseTab(ttk.Frame):
             cmds.insert("1.0", data.get("commands", ""))
             if hasattr(cmds, "_autosize"):
                 cmds._autosize()
+            self._preview_cs(row)
 
-        self.cs_rows.append({"frame": frame, "name": name_e,
-                             "position": pos_cb, "commands": cmds})
+        self.cs_rows.append(row)
         self.after_idle(self._scroll.sync_scrollregion)
+
+    def _preview_cs(self, row):
+        """Render a custom section with <name> placeholders for variables."""
+        from jinja2.sandbox import SandboxedEnvironment
+        text = row["commands"].get("1.0", "end").rstrip("\n")
+        ctx = {var: f"<{var}>" for var in set(_VAR_RE.findall(text))}
+        try:
+            rendered = SandboxedEnvironment().from_string(text).render(**ctx)
+        except Exception as exc:
+            rendered = f"! render error: {exc}"
+        w = row["preview"]
+        w.configure(state="normal")
+        w.delete("1.0", "end")
+        w.insert("1.0", rendered)
+        w.configure(state="disabled")
 
     def _del_cs(self, frame):
         self.cs_rows = [r for r in self.cs_rows if r["frame"] is not frame]
