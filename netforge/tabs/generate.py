@@ -12,6 +12,7 @@ from netforge.render.l3 import _find_routed_mgmt_entry, _profile_has_ospf
 from netforge.serial_push import _SerialPushDialog
 from netforge.ui.filename_template import apply_filename_template
 from netforge.ui.helpers import (
+    _ask,
     _attach_context_menu,
     _autosize_textarea,
     _combo,
@@ -29,6 +30,7 @@ from netforge.ui.l3_grid import (
 )
 from netforge.ui.theme import C
 from netforge.ui.widgets import PanedWindow, ScrollFrame
+from netforge.validate import validate_switch_config
 
 class GenerateTab(ttk.Frame):
     """Three-step wizard: Model & Site -> Port Assignments -> Switch Details."""
@@ -1358,6 +1360,21 @@ class GenerateTab(ttk.Frame):
         # build a profile copy with the wizard's port assignments
         profile = dict(self.app.profiles[pn])
         profile["port_assignments"] = self._get_pa_list()
+
+        # Catch malformed IPs/masks/VLANs and duplicate interface
+        # assignments before they reach the device. Errors block; warnings
+        # are advisory and can be overridden.
+        errors, warnings = validate_switch_config(
+            self.app.models[mn], profile, self.app.roles,
+            self.app.resolved_base(profile), sw)
+        if errors:
+            _dialog("Fix These Before Generating",
+                    "- " + "\n- ".join(errors), "error")
+            return
+        if warnings and not _ask(
+                "Configuration Warnings",
+                "- " + "\n- ".join(warnings) + "\n\nGenerate anyway?"):
+            return
 
         try:
             self._sections = render_config_sections(

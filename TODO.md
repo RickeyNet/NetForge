@@ -4,8 +4,9 @@ Feature ideas based on the current app structure and product scope.
 
 ## High Priority
 
-- [ ] Add configuration validation before render
+- [~] Add configuration validation before render
   Validate IP addresses, subnet masks, VLAN IDs, empty required fields, duplicate interface assignments, overlapping ranges, and roles that reference undefined variables.
+  Done: shared `netforge/validate.py` checks IPv4 addresses, contiguous subnet masks, VLAN ID range, and duplicate/overlapping interface assignments (range-expanded) before render; errors block, warnings are advisory. The FTD setup dialog reuses the same validators on its run actions and (soft) on profile save. Remaining: roles that reference undefined variables (overlaps with the Jinja-variable-checking item below).
 
 - [ ] Add Jinja variable checking and preview helpers
   Show missing variables, unused variables, and a small rendered preview for role templates and custom base sections before the user generates a full config.
@@ -99,8 +100,8 @@ Feature ideas based on the current app structure and product scope.
 
 ## Suggested First Slice
 
-- [ ] Build validation and compatibility warnings first
-  This is the highest-leverage improvement because it reduces bad configs without changing the basic workflow.
+- [~] Build validation and compatibility warnings first
+  This is the highest-leverage improvement because it reduces bad configs without changing the basic workflow. (Format + duplicate-interface validation landed via `netforge/validate.py`; model/profile compatibility checks still pending.)
 
 - [ ] Add duplicate actions next
   This is a small implementation with immediate day-to-day value.

@@ -38,6 +38,7 @@ from netforge.ftd.console import (
 )
 from netforge.ftd.fdm_api import FdmClient, FdmError, FdmStopped
 from netforge.push_errors import LineErrorScanner
+from netforge.validate import field_errors
 
 
 class FtdSetupDialog:
@@ -496,7 +497,26 @@ class FtdSetupDialog:
                 f"A profile named '{name}' already exists. "
                 "Overwrite it?"):
             return
-        self._profiles[name] = self._collect_profile()
+        data = self._collect_profile()
+        # Soft format check - a profile may be saved partially filled, so
+        # flag bad-looking addresses but let the user save anyway.
+        fmt = field_errors([
+            ("Management IP",  data.get("ip"),         "ip"),
+            ("Netmask",        data.get("netmask"),    "mask"),
+            ("Gateway",        data.get("gateway"),    "ip"),
+            ("FDM device IP",  data.get("fdm_ip"),     "ip"),
+            ("DNS Servers",    data.get("dns"),        "ip_csv"),
+            ("FMC IP",         data.get("ps_fmc_ip"),  "ip"),
+            ("Pre-ship IP",    data.get("ps_ip"),      "ip"),
+            ("Pre-ship mask",  data.get("ps_netmask"), "mask"),
+            ("Pre-ship gateway", data.get("ps_gateway"), "ip"),
+            ("Pre-ship DNS",   data.get("ps_dns"),     "ip_csv"),
+        ])
+        if fmt and not _ask(
+                "Invalid Values",
+                "- " + "\n- ".join(fmt) + "\n\nSave the profile anyway?"):
+            return
+        self._profiles[name] = data
         save_json("ftd_profiles.json", self._profiles)
         self._refresh_profiles(select=name)
         self._set_status(f"Saved profile '{name}'")
@@ -697,6 +717,15 @@ class FtdSetupDialog:
                         b.replace("_", " ") for b in bad),
                     "warning")
             return
+        fmt = field_errors([
+            ("Management IP", a["ip"],      "ip"),
+            ("Netmask",       a["netmask"], "mask"),
+            ("Gateway",       a["gateway"], "ip"),
+            ("DNS Servers",   a["dns"],     "ip_csv"),
+        ])
+        if fmt:
+            _dialog("Invalid Values", "- " + "\n- ".join(fmt), "warning")
+            return
         rules = initial_setup_rules(a)
         # Pre-fill the FDM tab so step 2 is one click away.
         self.fdm_ip_e.delete(0, "end")
@@ -896,6 +925,25 @@ class FtdSetupDialog:
                         b.replace("_", " ") for b in bad),
                     "warning")
             return
+        if not capture_only:
+            specs = [
+                ("FMC IP",            a["fmc_ip"],  "ip"),
+                ("Data interface IP", a["ip"],      "ip"),
+                ("Netmask",           a["netmask"], "mask"),
+                ("Gateway",           a["gateway"], "ip"),
+                ("DNS Servers",       a["dns"],     "ip_csv"),
+            ]
+            if a["dedicated_mgmt"]:
+                specs += [
+                    ("Mgmt0 IP",      a["mgmt_ip"],      "ip"),
+                    ("Mgmt0 mask",    a["mgmt_netmask"], "mask"),
+                    ("Mgmt0 gateway", a["mgmt_gateway"], "ip"),
+                ]
+            fmt = field_errors(specs)
+            if fmt:
+                _dialog("Invalid Values", "- " + "\n- ".join(fmt),
+                        "warning")
+                return
         if capture_only:
             rules, label = capture_login_rules(a), "Pre-ship capture"
         else:
