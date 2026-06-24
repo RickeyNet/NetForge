@@ -1,4 +1,4 @@
-"""FTD setup dialog: pre-stage (day-0 wizard + FDM API) and pre-ship."""
+"""FTD setup tab: pre-stage (day-0 wizard + FDM API) and pre-ship."""
 
 import re
 import threading
@@ -13,11 +13,9 @@ from netforge.serial_common import (
     refresh_com_ports,
 )
 from netforge.ui.theme import C
-from netforge.ui.win_theme import _apply_icon
 from netforge.ui.helpers import (
     _ask,
     _attach_context_menu,
-    _center_over,
     _dialog,
     _scrolled_text,
 )
@@ -41,26 +39,32 @@ from netforge.push_errors import LineErrorScanner
 from netforge.validate import field_errors
 
 
-class FtdSetupDialog:
+class FtdTab(ttk.Frame):
     """Automate FTD staging, split into pre-stage and pre-ship.
 
     Pre-stage (before customer site info):
-      Tab 1 drives the console first-boot wizard over a serial cable
+      Sub-tab 1 drives the console first-boot wizard over a serial cable
       (login, password change, connect ftd, EULA, management network).
-      Tab 2 talks to the FDM REST API over the management port to do
+      Sub-tab 2 talks to the FDM REST API over the management port to do
       the steps the config guide does in the web GUI: accept the EULA /
       skip device setup, start the 90-day evaluation, deploy, and
       upload + run a firmware upgrade.
 
     Pre-ship (after customer site info is obtained):
-      Tab 3 goes back over the console to register the FMC manager,
+      Sub-tab 3 goes back over the console to register the FMC manager,
       run the management-data-interface wizard, optionally disable or
       statically configure management0, then captures show output to a
       text file named with the date, site name, and S rack number.
     """
 
-    def __init__(self, parent):
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app        = app
         self.parent     = parent
+        # Callbacks marshal UI updates via self.dlg.after(...) and pass
+        # self.dlg as the filedialog parent; the tab frame itself now
+        # plays the role the Toplevel dialog used to.
+        self.dlg        = self
         self._worker    = None
         self._stop_flag = False
         self._busy      = False
@@ -77,25 +81,22 @@ class FtdSetupDialog:
             import serial            # noqa: F401  (probe only)
             import serial.tools.list_ports  # noqa: F401
         except ImportError:
-            _dialog("Missing pyserial",
-                    "The 'pyserial' package is required for console "
-                    "automation.\n\nInstall it with:  pip install pyserial",
-                    "error")
+            ttk.Label(
+                self,
+                text="The 'pyserial' package is required for FTD console "
+                     "automation.\n\nInstall it with:  pip install pyserial",
+                style="Hint.TLabel", justify="left",
+                wraplength=560).pack(anchor="w", padx=16, pady=16)
             return
 
         self._build_ui()
+        self.bind("<Destroy>", self._on_destroy)
 
     # --------------------------------------------------------------- UI
     def _build_ui(self):
-        dlg = tk.Toplevel(self.parent)
-        self.dlg = dlg
-        dlg.title("FTD Setup")
-        dlg.configure(bg=C["bg"])
-        dlg.transient(self.parent)
-        _apply_icon(dlg)
-        tk.Frame(dlg, bg=C["accent"], height=3).pack(fill="x")
+        tk.Frame(self, bg=C["accent"], height=3).pack(fill="x")
 
-        inner = ttk.Frame(dlg, padding=(16, 12, 16, 14))
+        inner = ttk.Frame(self, padding=(16, 12, 16, 14))
         inner.pack(fill="both", expand=True)
 
         ttk.Label(inner, text="FTD Setup",
@@ -112,8 +113,16 @@ class FtdSetupDialog:
                   style="Hint.TLabel", wraplength=560,
                   justify="left").pack(anchor="w", pady=(2, 8))
 
+        # Split the body: controls on the left, transcript on the right.
+        body = ttk.Frame(inner)
+        body.pack(fill="both", expand=True)
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="y")
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="both", expand=True, padx=(14, 0))
+
         # Console connection, shared by the serial tabs (1 and 3).
-        conn = ttk.Frame(inner)
+        conn = ttk.Frame(left)
         conn.pack(fill="x", pady=(0, 4))
         ttk.Label(conn, text="COM Port", width=22, anchor="w").grid(
             row=0, column=0, sticky="w", padx=4, pady=2)
@@ -130,48 +139,43 @@ class FtdSetupDialog:
         self.baud_cb.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
         conn.columnconfigure(1, weight=1)
 
-        nb = ttk.Notebook(inner)
+        nb = ttk.Notebook(left)
         nb.pack(fill="x")
         self._build_console_tab(nb)
         self._build_fdm_tab(nb)
         self._build_preship_tab(nb)
         # Built after the tabs (their fields must exist), but shown with
         # the connection settings since a profile spans every tab.
-        self._build_profile_bar(inner, before=nb)
+        self._build_profile_bar(left, before=nb)
         self._action_btns = (self.setup_btn, self.erase_btn,
                              self.regen_btn,
                              self.eula_btn, self.deploy_btn,
                              self.upgrade_btn, self.preship_btn,
                              self.capture_btn)
 
-        # ---- transcript ----
-        ttk.Label(inner, text="Transcript",
-                  style="Sec.TLabel").pack(anchor="w", pady=(8, 2))
-        self.log = _scrolled_text(
-            inner, height=10, width=90, wrap="word",
-            font=("Consolas", 9),
-            bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
-            selectbackground=C["sel_bg"], relief="flat", bd=2)
-        self.log.pack(fill="both", expand=True, pady=(0, 8))
-        self.log.configure(state="disabled")
-        _attach_context_menu(self.log)
-
         self.status_var = tk.StringVar(value="Idle")
-        ttk.Label(inner, textvariable=self.status_var,
-                  style="Hint.TLabel").pack(anchor="w")
+        ttk.Label(left, textvariable=self.status_var,
+                  style="Hint.TLabel").pack(anchor="w", pady=(8, 0))
 
-        bf = ttk.Frame(inner)
+        bf = ttk.Frame(left)
         bf.pack(fill="x", pady=(6, 0))
         self.stop_btn = ttk.Button(bf, text="Stop", command=self._stop,
                                    state="disabled")
         self.stop_btn.pack(side="left")
-        ttk.Button(bf, text="Close",
-                   command=self._on_close).pack(side="right")
 
-        dlg.protocol("WM_DELETE_WINDOW", self._on_close)
-        dlg.geometry("780x900")
+        # ---- transcript (right column) ----
+        ttk.Label(right, text="Transcript",
+                  style="Sec.TLabel").pack(anchor="w", pady=(0, 2))
+        self.log = _scrolled_text(
+            right, height=10, width=60, wrap="word",
+            font=("Consolas", 9),
+            bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
+            selectbackground=C["sel_bg"], relief="flat", bd=2)
+        self.log.pack(fill="both", expand=True)
+        self.log.configure(state="disabled")
+        _attach_context_menu(self.log)
+
         self._refresh_ports()
-        _center_over(dlg, self.parent)
 
     def _grid_field(self, parent, row, label, default="", show=None,
                     hint=""):
@@ -639,24 +643,23 @@ class FtdSetupDialog:
         self._stop_flag = True
         self._set_status("Stopping...")
 
-    def _on_close(self):
-        if self._worker and self._worker.is_alive():
-            if not _ask("Operation in Progress",
-                        "An operation is still running. Stop and close?"):
-                return
-            self._stop_flag = True
-            # Closing the port unblocks a worker stuck in a serial
-            # read/write; the _closing flag silences its callbacks. No
-            # blocking join here - it would freeze the whole UI while
-            # buying nothing (the worker is a daemon thread).
-            ser = self._ser
-            if ser is not None:
-                try:
-                    ser.close()
-                except Exception:
-                    pass
-        self._closing = True
-        self.dlg.destroy()
+    def _on_destroy(self, event):
+        # <Destroy> bubbles up from child widgets; act only on the tab
+        # itself (fires when the notebook is rebuilt on import/theme
+        # change, or on app exit).
+        if event.widget is not self:
+            return
+        self._closing  = True
+        self._stop_flag = True
+        # Closing the port unblocks a worker stuck in a serial read/write;
+        # the _closing flag silences its callbacks. No blocking join - the
+        # worker is a daemon thread, so it dies with the process.
+        ser = self._ser
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
 
     # ----------------------------------------------------- console flow
     def _console_answers(self):

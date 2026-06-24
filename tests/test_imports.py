@@ -40,11 +40,11 @@ class TestImports(unittest.TestCase):
     def test_ftd_modules(self):
         from netforge.ftd.console import ExpectSession, initial_setup_rules
         from netforge.ftd.fdm_api import FdmClient
-        from netforge.ftd.dialog import FtdSetupDialog
+        from netforge.ftd.dialog import FtdTab
         self.assertTrue(callable(ExpectSession))
         self.assertTrue(callable(initial_setup_rules))
         self.assertTrue(callable(FdmClient))
-        self.assertTrue(callable(FtdSetupDialog))
+        self.assertTrue(callable(FtdTab))
 
     def test_serial_common_module(self):
         from netforge.serial_common import (
@@ -59,13 +59,15 @@ class TestImports(unittest.TestCase):
     def test_tab_modules(self):
         from netforge.tabs import (
             BaseTab,
+            FtdTab,
             GenerateTab,
             GuideTab,
             ModelsTab,
             ProfilesTab,
             RolesTab,
         )
-        for cls in (BaseTab, GenerateTab, GuideTab, ModelsTab, ProfilesTab, RolesTab):
+        for cls in (BaseTab, FtdTab, GenerateTab, GuideTab, ModelsTab,
+                    ProfilesTab, RolesTab):
             self.assertTrue(issubclass(cls, __import__("tkinter").ttk.Frame))
 
     def test_l3_grid_module(self):

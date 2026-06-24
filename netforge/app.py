@@ -17,6 +17,7 @@ from netforge.data.storage import (
 )
 from netforge.tabs import (
     BaseTab,
+    FtdTab,
     GenerateTab,
     GuideTab,
     ModelsTab,
@@ -87,13 +88,6 @@ class App:
         file_mb.configure(menu=file_menu)
         self._rebuild_recent_menus()
 
-        tools_mb = tk.Menubutton(self.menubar_frame, text="Tools", **menu_kw)
-        tools_mb.pack(side="left")
-        tools_menu = tk.Menu(tools_mb, **drop_kw)
-        tools_menu.add_command(label="FTD Setup (Pre-Stage / Pre-Ship)...",
-                               command=self._open_ftd_setup)
-        tools_mb.configure(menu=tools_menu)
-
         self._theme_var = tk.StringVar(value=self._current_theme_id())
         self._theme_mb = tk.Menubutton(self.menubar_frame, text="Theme",
                                        **menu_kw)
@@ -136,24 +130,27 @@ class App:
         self.roles_tab    = RolesTab(self.nb, self)
         self.profiles_tab = ProfilesTab(self.nb, self)
         self.base_tab     = BaseTab(self.nb, self)
+        self.ftd_tab      = FtdTab(self.nb, self)
         self.nb.add(self.models_tab,   text="  Switch Models  ")
         self.nb.add(self.roles_tab,    text="  Interface Roles  ")
         self.nb.add(self.profiles_tab, text="  Site Profiles  ")
         self.nb.add(self.base_tab,     text="  Base Settings  ")
+        self.nb.add(self.ftd_tab,      text="  FTD Setup  ")
         self.nb.add(GuideTab(self.nb, self), text="  How-To Guide  ")
 
         self._install_shortcuts()
 
     # ---- keyboard shortcuts ------------------------------------------
     # Tab order matches self.nb: 0=Generate, 1=Models, 2=Roles,
-    # 3=Profiles, 4=Base, 5=Guide.
+    # 3=Profiles, 4=Base, 5=FTD, 6=Guide.
     _SHORTCUTS = [
         ("Ctrl+1",       "Jump to Generate Config tab"),
         ("Ctrl+2",       "Jump to Switch Models tab"),
         ("Ctrl+3",       "Jump to Interface Roles tab"),
         ("Ctrl+4",       "Jump to Site Profiles tab"),
         ("Ctrl+5",       "Jump to Base Settings tab"),
-        ("Ctrl+6",       "Jump to How-To Guide tab"),
+        ("Ctrl+6",       "Jump to FTD Setup tab"),
+        ("Ctrl+7",       "Jump to How-To Guide tab"),
         ("Ctrl+S",       "Save the active editor "
                          "(Model / Role / Profile / Base / Config)"),
         ("Ctrl+G",       "Generate config (switches to Generate tab first)"),
@@ -165,7 +162,7 @@ class App:
 
     def _install_shortcuts(self):
         r = self.root
-        for i in range(6):
+        for i in range(7):
             r.bind_all(f"<Control-Key-{i+1}>",
                        lambda _e, idx=i: self._sc_select_tab(idx))
         r.bind_all("<Control-s>",      lambda _e: self._sc_save())
@@ -556,12 +553,14 @@ class App:
         self.roles_tab    = RolesTab(self.nb, self)
         self.profiles_tab = ProfilesTab(self.nb, self)
         self.base_tab     = BaseTab(self.nb, self)
+        self.ftd_tab      = FtdTab(self.nb, self)
 
         self.nb.add(self.gen_tab,      text="  Generate Config  ")
         self.nb.add(self.models_tab,   text="  Switch Models  ")
         self.nb.add(self.roles_tab,    text="  Interface Roles  ")
         self.nb.add(self.profiles_tab, text="  Site Profiles  ")
         self.nb.add(self.base_tab,     text="  Base Settings  ")
+        self.nb.add(self.ftd_tab,      text="  FTD Setup  ")
         self.nb.add(GuideTab(self.nb, self), text="  How-To Guide  ")
         self.nb.select(0)
 
@@ -598,12 +597,6 @@ class App:
 
     def _open_theme_editor(self):
         _ThemeEditorDialog(self, on_close=self._build_theme_menu)
-
-    def _open_ftd_setup(self):
-        # Imported lazily so the FTD module (and its pyserial probe)
-        # costs nothing until the tool is actually opened.
-        from netforge.ftd.dialog import FtdSetupDialog
-        FtdSetupDialog(self.root)
 
     def _refresh_menubar_colors(self):
         """Re-apply current C colours to every widget in the menu bar."""
