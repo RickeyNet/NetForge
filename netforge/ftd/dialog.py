@@ -13,6 +13,7 @@ from netforge.serial_common import (
     refresh_com_ports,
 )
 from netforge.ui.theme import C
+from netforge.ui.widgets import ScrollFrame
 from netforge.ui.helpers import (
     _ask,
     _attach_context_menu,
@@ -114,10 +115,14 @@ class FtdTab(ttk.Frame):
                   justify="left").pack(anchor="w", pady=(2, 8))
 
         # Split the body: controls on the left, transcript on the right.
+        # The left column is scrollable so its fields and action buttons
+        # stay reachable when the window is short; the transcript keeps
+        # its own scrollbar on the right.
         body = ttk.Frame(inner)
         body.pack(fill="both", expand=True)
-        left = ttk.Frame(body)
-        left.pack(side="left", fill="y")
+        left_sf = ScrollFrame(body)
+        left_sf.pack(side="left", fill="y")
+        left = left_sf.inner
         right = ttk.Frame(body)
         right.pack(side="left", fill="both", expand=True, padx=(14, 0))
 
@@ -176,6 +181,12 @@ class FtdTab(ttk.Frame):
         _attach_context_menu(self.log)
 
         self._refresh_ports()
+        # Fix the scrollable left column to its natural content width so
+        # the controls aren't clipped sideways; the transcript fills the
+        # remaining width, and vertical overflow scrolls.
+        self.after_idle(
+            lambda: left_sf.canvas.configure(
+                width=left_sf.inner.winfo_reqwidth()))
 
     def _grid_field(self, parent, row, label, default="", show=None,
                     hint=""):
