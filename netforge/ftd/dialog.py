@@ -58,6 +58,15 @@ class FtdTab(ttk.Frame):
       text file named with the date, site name, and S rack number.
     """
 
+    # Status light: (colour, word) by lifecycle state. Fixed traffic-light
+    # colours rather than theme keys, so the meaning reads the same on
+    # every theme (some themes even swap their red/green).
+    _STATE_INFO = {
+        "idle":     ("#c0392b", "Idle"),       # red    - nothing running
+        "starting": ("#e1a90a", "Starting…"),  # amber  - opening / connecting
+        "running":  ("#27ae60", "Running"),     # green  - operation active
+    }
+
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app        = app
@@ -158,15 +167,33 @@ class FtdTab(ttk.Frame):
                              self.upgrade_btn, self.preship_btn,
                              self.capture_btn)
 
-        self.status_var = tk.StringVar(value="Idle")
-        ttk.Label(left, textvariable=self.status_var,
-                  style="Hint.TLabel").pack(anchor="w", pady=(8, 0))
+        # Status line: a coloured light shows state at a glance - red =
+        # idle, amber = starting/connecting, green = running - beside the
+        # state word and the detailed message.
+        idle_color, idle_word = self._STATE_INFO["idle"]
+        status_row = ttk.Frame(left)
+        status_row.pack(fill="x", pady=(10, 0))
+        self.status_light = tk.Canvas(status_row, width=14, height=14,
+                                      highlightthickness=0, bd=0,
+                                      bg=C["bg"])
+        self._light_dot = self.status_light.create_oval(
+            2, 2, 12, 12, outline="", fill=idle_color)
+        self.status_light.pack(side="left", padx=(0, 6))
+        self.state_var = tk.StringVar(value=idle_word)
+        self.state_lbl = ttk.Label(status_row, textvariable=self.state_var)
+        self.state_lbl.configure(foreground=idle_color)
+        self.state_lbl.pack(side="left", padx=(0, 8))
+        self.status_var = tk.StringVar(value="")
+        ttk.Label(status_row, textvariable=self.status_var,
+                  style="Hint.TLabel").pack(side="left")
 
         bf = ttk.Frame(left)
         bf.pack(fill="x", pady=(6, 0))
-        self.stop_btn = ttk.Button(bf, text="Stop", command=self._stop,
-                                   state="disabled")
+        self.stop_btn = ttk.Button(bf, text="Stop Operation",
+                                   command=self._stop, state="disabled")
         self.stop_btn.pack(side="left")
+        ttk.Label(bf, text="(active only while an operation is running)",
+                  style="Hint.TLabel").pack(side="left", padx=(8, 0))
 
         # ---- transcript (right column) ----
         ttk.Label(right, text="Transcript",
@@ -610,6 +637,29 @@ class FtdTab(ttk.Frame):
         except Exception:
             pass
 
+    def _set_state(self, state):
+        """Set the traffic-light indicator (idle / starting / running).
+
+        Safe to call from a worker thread - the actual widget update is
+        marshalled onto the UI thread.
+        """
+        info = self._STATE_INFO.get(state, self._STATE_INFO["idle"])
+        try:
+            self.dlg.after(0, self._apply_state, info)
+        except Exception:
+            pass
+
+    def _apply_state(self, info):
+        if self._closing:
+            return
+        color, word = info
+        try:
+            self.status_light.itemconfigure(self._light_dot, fill=color)
+            self.state_lbl.configure(foreground=color)
+            self.state_var.set(word)
+        except tk.TclError:
+            pass
+
     # ---------------------------------------------------------- control
     def _begin(self, target, args):
         if self._busy:
@@ -625,6 +675,7 @@ class FtdTab(ttk.Frame):
         self._holdback = max(
             (len(pw) for pw in self._active_secrets), default=1) - 1
         self._carry = ""
+        self._set_state("starting")
         self.stop_btn.configure(state="normal")
         for b in self._action_btns:
             b.configure(state="disabled")
@@ -635,6 +686,7 @@ class FtdTab(ttk.Frame):
     def _finish(self):
         self._log("", final=True)   # flush the scrub carry
         self._busy = False
+        self._set_state("idle")
         try:
             self.dlg.after(0, self._reset_buttons)
         except Exception:
@@ -838,6 +890,7 @@ class FtdTab(ttk.Frame):
             self._set_status(f"Opening {port} @ {baud}...")
             self._log(f"--- {label}: opening {port} at {baud} baud ---\n")
             self._ser = open_console_port(port, baud)
+            self._set_state("running")
             self._set_status(f"{label} running... watch the transcript")
             scanner = LineErrorScanner()
             session = ExpectSession(
@@ -972,6 +1025,7 @@ class FtdTab(ttk.Frame):
             self._set_status(f"Opening {port} @ {baud}...")
             self._log(f"--- {label}: opening {port} at {baud} baud ---\n")
             self._ser = open_console_port(port, baud)
+            self._set_state("running")
             self._set_status(f"{label} running... watch the transcript")
             scanner = LineErrorScanner()
             session = ExpectSession(
@@ -1073,6 +1127,7 @@ class FtdTab(ttk.Frame):
         try:
             self._set_status(f"Connecting to https://{host} ...")
             client.login()
+            self._set_state("running")
             if action == "eula":
                 self._set_status("Accepting EULA / initial provisioning...")
                 client.accept_eula()
