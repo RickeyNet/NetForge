@@ -29,6 +29,14 @@ from netforge.render.sections import (
     _render_svi_block,
 )
 
+
+def _strip_no_logging_console(text):
+    """Drop a 'no logging console' line; it's emitted up front instead."""
+    return "\n".join(
+        ln for ln in (text or "").splitlines()
+        if ln.strip().lower() != "no logging console")
+
+
 def render_config_sections(model, profile, roles, base, sw):
     """Return an ordered dict of named config sections.
 
@@ -87,6 +95,10 @@ def render_config_sections(model, profile, roles, base, sw):
     header += "\n!"
     gb.append(header)
     gb.append("configure terminal")
+    # Silence console logging first so a serial console push isn't flooded
+    # by the device's own log messages while the rest of the config runs.
+    # (Stripped from the Logging base section below to avoid a duplicate.)
+    gb.append("no logging console")
     gb.append(base.get("basic_config", ""))
     gb.append(base.get("services_functions", ""))
     gb.append(f"hostname {sw['hostname']}")
@@ -94,7 +106,7 @@ def render_config_sections(model, profile, roles, base, sw):
     gb.append(base.get("snooping", ""))
     gb.append(base.get("http_server", ""))
     gb.append(base.get("mgmt_vrf", ""))
-    gb.append(base.get("logging", ""))
+    gb.append(_strip_no_logging_console(base.get("logging", "")))
     gb.append(f"enable secret {sw['enable_secret']}")
     users = list(sw.get("users") or [])
     if not users:

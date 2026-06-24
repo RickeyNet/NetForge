@@ -4,6 +4,8 @@
 
 configure terminal
 
+no logging console
+
 no service pad
 service timestamps debug datetime msec localtime
 service timestamps log datetime msec localtime
@@ -15,8 +17,6 @@ hostname l3-sw01
 vrf definition Mgmt-vrf
 address-family ipv4
 exit-address-family
-
-no logging console
 
 enable secret enc
 

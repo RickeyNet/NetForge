@@ -32,6 +32,7 @@ The **Interface Roles** tab and each **Base Settings** custom config section now
 
 ## Console Push Polish
 
+- **`no logging console` is emitted up front** - the generated config now silences console logging right after `configure terminal`, before the rest of the config runs, so a serial console push isn't flooded by the device's own log messages. (It's de-duplicated from the base Logging section.)
 - **"Run 'write memory'" is now off by default** so the running-config can be reviewed before it's saved to startup-config.
 - **Show-output capture is more reliable** - it pages through `--More--`, re-asserts `terminal length 0`, and uses an idle timeout so a long `show running-config` is never truncated.
 - **The dialog now says when the COM port is released** ("safe to open the switch console now"), since opening PuTTY while NetForge still holds the cable looks like a dead, black screen.
