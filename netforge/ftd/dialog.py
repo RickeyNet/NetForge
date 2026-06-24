@@ -13,7 +13,7 @@ from netforge.serial_common import (
     refresh_com_ports,
 )
 from netforge.ui.theme import C
-from netforge.ui.widgets import ScrollFrame
+from netforge.ui.widgets import PanedWindow, ScrollFrame
 from netforge.ui.helpers import (
     _ask,
     _attach_context_menu,
@@ -123,17 +123,18 @@ class FtdTab(ttk.Frame):
                   style="Hint.TLabel", wraplength=560,
                   justify="left").pack(anchor="w", pady=(2, 8))
 
-        # Split the body: controls on the left, transcript on the right.
-        # The left column is scrollable so its fields and action buttons
-        # stay reachable when the window is short; the transcript keeps
-        # its own scrollbar on the right.
-        body = ttk.Frame(inner)
+        # Split the body with a movable divider: controls on the left,
+        # transcript on the right. The left column is scrollable so its
+        # fields and action buttons stay reachable when the window is
+        # short; the transcript keeps its own scrollbar on the right.
+        body = PanedWindow(inner, orient="horizontal")
         body.pack(fill="both", expand=True)
-        left_sf = ScrollFrame(body)
-        left_sf.pack(side="left", fill="y")
+        self._paned = body
+        self._left_sf = left_sf = ScrollFrame(body)
+        body.add(left_sf, weight=3)
         left = left_sf.inner
         right = ttk.Frame(body)
-        right.pack(side="left", fill="both", expand=True, padx=(14, 0))
+        body.add(right, weight=2)
 
         # Console connection, shared by the serial tabs (1 and 3).
         conn = ttk.Frame(left)
@@ -197,23 +198,44 @@ class FtdTab(ttk.Frame):
 
         # ---- transcript (right column) ----
         ttk.Label(right, text="Transcript",
-                  style="Sec.TLabel").pack(anchor="w", pady=(0, 2))
+                  style="Sec.TLabel").pack(anchor="w", padx=(8, 0),
+                                           pady=(0, 2))
         self.log = _scrolled_text(
             right, height=10, width=60, wrap="word",
             font=("Consolas", 9),
             bg=C["bg_input"], fg=C["fg"], insertbackground=C["fg"],
             selectbackground=C["sel_bg"], relief="flat", bd=2)
-        self.log.pack(fill="both", expand=True)
+        self.log.pack(fill="both", expand=True, padx=(8, 0))
         self.log.configure(state="disabled")
         _attach_context_menu(self.log)
 
         self._refresh_ports()
-        # Fix the scrollable left column to its natural content width so
-        # the controls aren't clipped sideways; the transcript fills the
-        # remaining width, and vertical overflow scrolls.
-        self.after_idle(
-            lambda: left_sf.canvas.configure(
-                width=left_sf.inner.winfo_reqwidth()))
+        # Snap the divider once on first layout so the controls column
+        # starts at its natural width and the transcript takes the rest;
+        # after that the user owns the sash.
+        self._sash_set = False
+        body.bind("<Configure>", self._size_sash)
+
+    def _size_sash(self, _event):
+        if self._sash_set:
+            return
+        self.after_idle(self._apply_sash)
+
+    def _apply_sash(self):
+        if self._sash_set:
+            return
+        try:
+            total = self._paned.winfo_width()
+            if total <= 100:
+                return
+            # Controls' natural width plus the scrollbar; clamp so the
+            # transcript always keeps at least ~240px.
+            want = self._left_sf.inner.winfo_reqwidth() + 20
+            pos = max(160, min(want, total - 240))
+            self._paned.sashpos(0, pos)
+            self._sash_set = True
+        except Exception:
+            pass
 
     def _grid_field(self, parent, row, label, default="", show=None,
                     hint=""):
