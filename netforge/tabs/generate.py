@@ -4,6 +4,7 @@ import re
 
 import tkinter as tk
 from tkinter import filedialog, ttk
+from typing import TYPE_CHECKING, cast
 
 from netforge.data.base_settings import resolve_base
 from netforge.data.iface import expand_port_groups_for_stack, expand_range_iface
@@ -20,6 +21,7 @@ from netforge.ui.helpers import (
     _field,
     _scrolled_text,
     _section,
+    _trigger_autosize,
 )
 from netforge.ui.l3_grid import (
     L3EntryGrid,
@@ -34,6 +36,14 @@ from netforge.validate import validate_switch_config
 
 class GenerateTab(ttk.Frame):
     """Three-step wizard: Model & Site -> Port Assignments -> Switch Details."""
+
+    if TYPE_CHECKING:
+        # Per-kind L3 LabelFrames created dynamically via setattr() in the
+        # build loop (aliases from _L3_UI_ALIAS: loopback->lb, routed_mgmt->rm,
+        # mgmt_svi->msvi). Declared so type checkers know they exist.
+        lb_lf: ttk.LabelFrame
+        rm_lf: ttk.LabelFrame
+        msvi_lf: ttk.LabelFrame
 
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -261,9 +271,12 @@ class GenerateTab(ttk.Frame):
         self.work_order  = _field(form, "Work Order #")
         # Cache the label widget that sits next to each L3-aware entry so
         # we can rename it when an L3 profile is selected
-        self._mgmt_ip_label  = self.mgmt_ip.master.winfo_children()[0]
-        self._mgmt_mask_label = self.mgmt_mask.master.winfo_children()[0]
-        self._gateway_label  = self.gateway.master.winfo_children()[0]
+        self._mgmt_ip_label  = cast(ttk.Label,
+                                    self.mgmt_ip.master.winfo_children()[0])
+        self._mgmt_mask_label = cast(ttk.Label,
+                                    self.mgmt_mask.master.winfo_children()[0])
+        self._gateway_label  = cast(ttk.Label,
+                                    self.gateway.master.winfo_children()[0])
 
         # OOB management port (Gi0/0) - only shown for models that have one
         self.oob_frame = ttk.Frame(form)
@@ -527,8 +540,7 @@ class GenerateTab(ttk.Frame):
             self.sw_vlans_text.delete("1.0", "end")
             self.sw_vlans_text.insert("1.0",
                                       profile.get("vlan_definitions", "") or "")
-            if hasattr(self.sw_vlans_text, "_autosize"):
-                self.sw_vlans_text._autosize()
+            _trigger_autosize(self.sw_vlans_text)
         else:
             self.vlans_frame.pack_forget()
             self.sw_vlans_text.delete("1.0", "end")
@@ -694,8 +706,8 @@ class GenerateTab(ttk.Frame):
 
         # Step 1's Management IP / Subnet Mask are L2-only. L3 profiles
         # source the mgmt IP from one of the three l3_sections instead.
-        mgmt_ip_row = self.mgmt_ip.master
-        mgmt_mask_row = self.mgmt_mask.master
+        mgmt_ip_row = cast(tk.Widget, self.mgmt_ip.master)
+        mgmt_mask_row = cast(tk.Widget, self.mgmt_mask.master)
         if layer3:
             mgmt_ip_row.pack_forget()
             mgmt_mask_row.pack_forget()
@@ -841,10 +853,12 @@ class GenerateTab(ttk.Frame):
                 ip.insert(0, existing[iface][0])
                 mask.insert(0, existing[iface][1])
             rm_entry = _find_routed_mgmt_entry(iface, rm_entries)
-            if not ip.get() and (rm_entry.get("ip") or "").strip():
-                ip.insert(0, rm_entry.get("ip"))
-            if not mask.get() and (rm_entry.get("mask") or "").strip():
-                mask.insert(0, rm_entry.get("mask"))
+            rm_ip = (rm_entry.get("ip") or "").strip()
+            rm_mask = (rm_entry.get("mask") or "").strip()
+            if not ip.get() and rm_ip:
+                ip.insert(0, rm_ip)
+            if not mask.get() and rm_mask:
+                mask.insert(0, rm_mask)
             default_mask = ""
             if rm_entries:
                 default_mask = (rm_entries[0].get("mask") or "").strip()

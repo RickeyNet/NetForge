@@ -7,6 +7,7 @@ import ctypes
 import tkinter as tk
 import zipfile
 from tkinter import filedialog, ttk
+from typing import Any
 
 from netforge.data.base_settings import load_base_settings, resolve_base
 from netforge.data.storage import (
@@ -60,11 +61,12 @@ class App:
                                       relief="flat")
         self.menubar_frame.pack(side="top", fill="x")
 
-        menu_kw = dict(bg=C["bg2"], fg=C["fg"], font=("Segoe UI", 9),
+        menu_kw: dict[str, Any] = dict(bg=C["bg2"], fg=C["fg"],
+                        font=("Segoe UI", 9),
                         activebackground=C["border"],
                         activeforeground=C["fg"], bd=0, relief="flat",
                         highlightthickness=0, padx=8, pady=4)
-        drop_kw = dict(tearoff=0, bg=C["bg2"], fg=C["fg"],
+        drop_kw: dict[str, Any] = dict(tearoff=0, bg=C["bg2"], fg=C["fg"],
                         activebackground=C["border"],
                         activeforeground=C["fg"])
 
@@ -571,7 +573,7 @@ class App:
 
     def _build_theme_menu(self):
         """Build (or rebuild) the Theme drop-down, including custom themes."""
-        drop_kw = dict(tearoff=0, bg=C["bg2"], fg=C["fg"],
+        drop_kw: dict[str, Any] = dict(tearoff=0, bg=C["bg2"], fg=C["fg"],
                        activebackground=C["border"],
                        activeforeground=C["fg"])
         theme_menu = tk.Menu(self._theme_mb, **drop_kw)
@@ -601,22 +603,20 @@ class App:
     def _refresh_menubar_colors(self):
         """Re-apply current C colours to every widget in the menu bar."""
         self.menubar_frame.configure(bg=C["bg2"])
+        _color_kw: dict[str, Any] = dict(bg=C["bg2"], fg=C["fg"],
+                                         activebackground=C["border"],
+                                         activeforeground=C["fg"])
         for w in self.menubar_frame.winfo_children():
-            w.configure(bg=C["bg2"], fg=C["fg"],
-                        activebackground=C["border"],
-                        activeforeground=C["fg"])
+            w.configure(**_color_kw)
             try:
                 sub = w.cget("menu")
                 if sub:
-                    self.root.nametowidget(sub).configure(
-                        bg=C["bg2"], fg=C["fg"],
-                        activebackground=C["border"],
-                        activeforeground=C["fg"])
+                    self.root.nametowidget(sub).configure(**_color_kw)
             except Exception:
                 pass
-        _cascade_kw = dict(bg=C["bg2"], fg=C["fg"],
-                           activebackground=C["border"],
-                           activeforeground=C["fg"])
+        _cascade_kw: dict[str, Any] = dict(bg=C["bg2"], fg=C["fg"],
+                                           activebackground=C["border"],
+                                           activeforeground=C["fg"])
         for _m in (self._recent_profiles_menu, self._recent_zips_menu,
                    self._recent_configs_menu):
             _m.configure(**_cascade_kw)

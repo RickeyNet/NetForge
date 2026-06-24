@@ -2,6 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk
+from typing import Any, Optional
 
 from netforge.ui.helpers import _attach_context_menu
 from netforge.ui.theme import C
@@ -82,7 +83,7 @@ class GuideTab(ttk.Frame):
         f = self._guide_scroll.inner
 
         self._guide_sections = []
-        current_section = [None]
+        current_section: list[Optional[dict[str, Any]]] = [None]
 
         def _register(widget, text):
             if current_section[0] is not None:
@@ -104,27 +105,24 @@ class GuideTab(ttk.Frame):
             ttk.Separator(sec["frame"]).pack(fill="x", padx=12)
 
         def subheading(text):
-            if current_section[0] is None:
-                _start_section()
-            lbl = ttk.Label(current_section[0]["frame"], text=text,
+            sec = current_section[0] or _start_section()
+            lbl = ttk.Label(sec["frame"], text=text,
                             font=("Segoe UI", 10, "bold"),
                             foreground=C["accent"], background=C["bg"])
             lbl.pack(anchor="w", padx=16, pady=(12, 2))
             _register(lbl, text)
 
         def body(text):
-            if current_section[0] is None:
-                _start_section()
-            lbl = ttk.Label(current_section[0]["frame"], text=text, wraplength=750,
+            sec = current_section[0] or _start_section()
+            lbl = ttk.Label(sec["frame"], text=text, wraplength=750,
                             justify="left", foreground=C["fg"], background=C["bg"],
                             font=("Segoe UI", 9))
             lbl.pack(anchor="w", padx=20, pady=(2, 2))
             _register(lbl, text)
 
         def code(text):
-            if current_section[0] is None:
-                _start_section()
-            box = tk.Text(current_section[0]["frame"], height=text.count("\n") + 1,
+            sec = current_section[0] or _start_section()
+            box = tk.Text(sec["frame"], height=text.count("\n") + 1,
                           font=("Consolas", 9), wrap="none",
                           bg=C["bg_input"], fg=C["green"],
                           relief="flat", bd=4, padx=6, pady=4)

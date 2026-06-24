@@ -18,9 +18,14 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: Install linters
-        run: pip install ruff "bandit[toml]"
+        # Project deps too, so pyright can resolve imports (jinja2, serial).
+        run: pip install ruff "bandit[toml]" pyright -r requirements.txt
       - name: Lint (ruff)
         run: ruff check .
+      # Static type/usage check (settings in [tool.pyright]). Catches bad
+      # widget kwargs, attribute typos, and None-access before runtime.
+      - name: Type check (pyright)
+        run: pyright
       # Gate at low severity so Bandit's low-rated hardcoded-secret checks
       # (B105-B107) actually block; intentional findings are triaged via
       # [tool.bandit] skips and inline # nosec in the source.

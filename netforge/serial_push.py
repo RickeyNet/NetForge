@@ -373,6 +373,7 @@ class _SerialPushDialog:
     def _drain(self, settle_seconds):
         """Read whatever the switch has sent, up to settle_seconds of silence."""
         import time
+        assert self._ser is not None  # only called with a live connection
         buf = bytearray()
         deadline = time.monotonic() + settle_seconds
         while time.monotonic() < deadline:
@@ -402,6 +403,7 @@ class _SerialPushDialog:
         optional extra pause after each line for finicky consoles.
         """
         import time
+        assert self._ser is not None  # only called with a live connection
         self._ser.write(text.encode("ascii", errors="replace") + b"\r\n")
         if not expect_prompt:
             if line_delay:
@@ -445,6 +447,7 @@ class _SerialPushDialog:
         keeps streaming is never truncated.
         """
         import time
+        assert self._ser is not None  # only called with a live connection
         # Clear any stray bytes still in the buffer from the prior command.
         self._drain(0.2)
         self._log(f"\n--- Capturing: {cmd} ---\n")
@@ -551,6 +554,7 @@ class _SerialPushDialog:
     def _ensure_enable(self, enable_pw):
         """Get the switch into privileged-exec mode."""
         import time
+        assert self._ser is not None  # only called with a live connection
         self._ser.write(b"\r\n")
         buf = self._drain(0.5)
         tail = buf[-200:]

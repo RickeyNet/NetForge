@@ -8,6 +8,7 @@ tab sets up in its ``_build`` (``bgp_blocks``, ``bgp_container``).
 
 import tkinter as tk
 from tkinter import ttk
+from typing import TYPE_CHECKING, Any
 
 from netforge.ui.helpers import _attach_context_menu, _autosize_textarea
 from netforge.ui.theme import C
@@ -64,6 +65,12 @@ def _bgp_aggregates_to_text(aggs):
 
 class BgpEditorMixin:
     """Per-instance BGP blocks: ASN, peer slots, advertising options."""
+
+    if TYPE_CHECKING:
+        # Set up by ProfilesTab._build; declared here so type checkers know
+        # the mixin relies on them (see module docstring).
+        bgp_blocks: list[dict[str, Any]]
+        bgp_container: ttk.Frame
 
     def _update_bgp_collapsed(self):
         """Show only the Add button when no BGP instances; expand once blocks exist."""

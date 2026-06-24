@@ -4,6 +4,7 @@ import json
 
 import tkinter as tk
 from tkinter import ttk
+from typing import Any
 
 from netforge.data.storage import save_json
 from netforge.render import (
@@ -21,6 +22,7 @@ from netforge.ui.helpers import (
     _section,
     _textarea,
     _toggle_hidden_batch,
+    _trigger_autosize,
 )
 from netforge.ui.l3_grid import L3EntryGrid, _L3_UI_ALIAS
 from netforge.ui.theme import C
@@ -559,7 +561,7 @@ class ProfilesTab(BgpEditorMixin, ttk.Frame):
         rules_frame.columnconfigure(6, minsize=36)
         rules_frame.columnconfigure(7, minsize=52)
 
-        hdr_kw = dict(sticky="ew", padx=1)
+        hdr_kw: dict[str, Any] = dict(sticky="ew", padx=1)
         ttk.Label(rules_frame, text="Action", anchor="w"
                   ).grid(row=0, column=0, **hdr_kw)
         ttk.Label(rules_frame, text="Proto", anchor="w"
@@ -628,7 +630,7 @@ class ProfilesTab(BgpEditorMixin, ttk.Frame):
         parent = block["rules_frame"]
         r = block["next_row"]
         block["next_row"] = r + 1
-        gkw = dict(row=r, sticky="ew", padx=1, pady=1)
+        gkw: dict[str, Any] = dict(row=r, sticky="ew", padx=1, pady=1)
 
         action_cb = ttk.Combobox(parent, width=8, state="readonly",
                                  values=list(self._ACL_ACTIONS))
@@ -873,13 +875,11 @@ class ProfilesTab(BgpEditorMixin, ttk.Frame):
         self.clock_summer_e.insert(0, svc.get("clock_summer_time", "") or "")
         self.ntp_text.delete("1.0", "end")
         self.ntp_text.insert("1.0", _ntp_commands_for_edit(ntp))
-        if hasattr(self.ntp_text, "_autosize"):
-            self.ntp_text._autosize()
+        _trigger_autosize(self.ntp_text)
 
         self.vlans_text.delete("1.0", "end")
         self.vlans_text.insert("1.0", p.get("vlan_definitions", ""))
-        if hasattr(self.vlans_text, "_autosize"):
-            self.vlans_text._autosize()
+        _trigger_autosize(self.vlans_text)
         self.allow_sw_vlans.set(bool(p.get("allow_per_switch_vlans", False)))
 
         self._clear_vars()
@@ -904,8 +904,7 @@ class ProfilesTab(BgpEditorMixin, ttk.Frame):
 
         self.ospf_text.delete("1.0", "end")
         self.ospf_text.insert("1.0", _ospf_config_for_edit(p))
-        if hasattr(self.ospf_text, "_autosize"):
-            self.ospf_text._autosize()
+        _trigger_autosize(self.ospf_text)
 
         bgp = p.get("bgp", {}) or {}
         self._clear_bgp_blocks()
@@ -938,12 +937,10 @@ class ProfilesTab(BgpEditorMixin, ttk.Frame):
                   self.dns_servers_e, self.clock_tz_e, self.clock_summer_e):
             w.delete(0, "end")
         self.ntp_text.delete("1.0", "end")
-        if hasattr(self.ntp_text, "_autosize"):
-            self.ntp_text._autosize()
+        _trigger_autosize(self.ntp_text)
         self._clear_users()
         self.vlans_text.delete("1.0", "end")
-        if hasattr(self.vlans_text, "_autosize"):
-            self.vlans_text._autosize()
+        _trigger_autosize(self.vlans_text)
         self.allow_sw_vlans.set(False)
         self._clear_vars(); self._clear_pa()
         # Layer 3 defaults for a new profile
@@ -953,8 +950,7 @@ class ProfilesTab(BgpEditorMixin, ttk.Frame):
             grid.clear()
         self._clear_svis()
         self.ospf_text.delete("1.0", "end")
-        if hasattr(self.ospf_text, "_autosize"):
-            self.ospf_text._autosize()
+        _trigger_autosize(self.ospf_text)
         self._clear_bgp_blocks()
         self._clear_acls()
         self._on_layer3_toggle()

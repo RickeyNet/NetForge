@@ -4,6 +4,7 @@ import json
 
 import tkinter as tk
 from tkinter import ttk
+from typing import Any
 
 from netforge.data.storage import save_json
 from netforge.ui.helpers import (
@@ -194,7 +195,7 @@ class RolesTab(ttk.Frame):
         old = self.lb.get_selected()
         if old and old != name and old in self.app.roles:
             del self.app.roles[old]
-        data = {"commands": self.cmds.get("1.0", "end").strip()}
+        data: dict[str, Any] = {"commands": self.cmds.get("1.0", "end").strip()}
         if self.requires_ip.get():
             data["requires_ip"] = True
         self.app.roles[name] = data

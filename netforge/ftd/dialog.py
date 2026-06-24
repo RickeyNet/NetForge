@@ -5,6 +5,7 @@ import threading
 import tkinter as tk
 from datetime import datetime
 from tkinter import ttk, filedialog
+from typing import Any
 
 from netforge.data.storage import load_json, save_json
 from netforge.serial_common import (
@@ -519,7 +520,7 @@ class FtdTab(ttk.Frame):
 
     def _collect_profile(self):
         entries, checks = self._profile_fields()
-        data = {k: w.get() for k, w in entries.items()}
+        data: dict[str, Any] = {k: w.get() for k, w in entries.items()}
         data.update({k: int(v.get()) for k, v in checks.items()})
         return data
 

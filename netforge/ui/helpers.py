@@ -130,8 +130,20 @@ def _autosize_textarea(widget, min_h=2, max_h=20):
     # Run once after the widget is mapped so initial content sizes correctly.
     widget.after_idle(_resize)
     # Expose for callers that programmatically reload content.
-    widget._autosize = _resize
+    widget._autosize = _resize  # type: ignore[attr-defined]
     return widget
+
+
+def _trigger_autosize(widget):
+    """Re-run a textarea's autosize callback, if one was attached.
+
+    ``_autosize_textarea`` stashes the resize closure on the widget; call
+    this after programmatically reloading content so the height re-fits.
+    No-op for widgets that were never autosized.
+    """
+    resize = getattr(widget, "_autosize", None)
+    if resize is not None:
+        resize()
 
 
 def _scrolled_text(parent, **text_kwargs):

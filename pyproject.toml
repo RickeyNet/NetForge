@@ -6,6 +6,14 @@ target-version = "py39"
 # NetForge uses semicolon-separated tkinter one-liners throughout.
 ignore = ["E702"]
 
+[tool.pyright]
+# Static type/usage checking. Catches the same class of issues your editor's
+# Pylance surfaces (bad kwargs, attribute typos, None-access). Checked against
+# the oldest supported runtime so we don't lean on newer-Python-only typing.
+include = ["netforge"]
+pythonVersion = "3.9"
+typeCheckingMode = "basic"
+
 [tool.bandit]
 # Tests aren't shipped and use subprocess/asserts by design.
 exclude_dirs = ["tests"]

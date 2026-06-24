@@ -16,6 +16,7 @@ from netforge.ui.helpers import (
     _section,
     _textarea,
     _toggle_hidden_batch,
+    _trigger_autosize,
 )
 from netforge.ui.theme import C
 from netforge.ui.widgets import PanedWindow, ScrollFrame, _CheckList
@@ -341,8 +342,7 @@ class BaseTab(ttk.Frame):
         for key, widget in self.text_areas.items():
             widget.delete("1.0", "end")
             widget.insert("1.0", b.get(key, ""))
-            if hasattr(widget, "_autosize"):
-                widget._autosize()
+            _trigger_autosize(widget)
 
         self._clear_cs()
         for cs in b.get("custom_sections", []) or []:
@@ -488,8 +488,7 @@ class BaseTab(ttk.Frame):
             pos_cb.set("Before Interfaces"
                        if pos == "pre-interface" else "After Interfaces")
             cmds.insert("1.0", data.get("commands", ""))
-            if hasattr(cmds, "_autosize"):
-                cmds._autosize()
+            _trigger_autosize(cmds)
             self._preview_cs(row)
 
         self.cs_rows.append(row)
