@@ -1,3 +1,26 @@
+# NetForge v1.5.3 - Release Notes
+
+A small UI-clarity release: clearer tab names, a tidier layout, and an up-to-date How-To Guide.
+
+## Renamed and Reordered Tabs
+
+- **"Generate Config" is now "Generator"** and **"FTD Setup" is now "Provisioner"** - shorter names that read better across the tab bar.
+- **The Provisioner now sits second**, right after the Generator, so the two day-to-day workflows are side by side. The keyboard shortcuts follow the new order (Ctrl+1 = Generator, Ctrl+2 = Provisioner, then the setup tabs).
+
+## At-a-Glance Descriptions
+
+Both primary tabs now open with a short description of what they do:
+
+- **Generator** - summarizes the model -> profile -> config wizard and what it produces.
+- **Provisioner** - explains that it stages Cisco FTD firewalls over the console cable and the FDM/FMC REST APIs, from factory-default to site-ready.
+
+## How-To Guide Refresh
+
+- Updated the stale tab numbers and "Generate Config" references throughout to match the new names and order.
+- Added a new **Provisioner - FTD Firewall Setup** section (the tab was previously undocumented), covering the shared connection/profiles bar, the pre-stage console and FDM steps, and the pre-ship FMC registration and config capture.
+
+---
+
 # NetForge v1.5.2 - Release Notes
 
 A reliability and safety release: catch bad input before it reaches a device, see what the device rejected, recover from a known FTD upgrade failure, and more ways to advertise BGP routes. Plus a test/CI foundation under the hood.

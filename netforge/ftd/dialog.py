@@ -110,8 +110,17 @@ class FtdTab(ttk.Frame):
         inner = ttk.Frame(self, padding=(16, 12, 16, 14))
         inner.pack(fill="both", expand=True)
 
-        ttk.Label(inner, text="FTD Setup",
+        ttk.Label(inner, text="Provisioner",
                   style="Sec.TLabel").pack(anchor="w")
+        ttk.Label(inner,
+                  text="Provisions Cisco Firepower Threat Defense (FTD) "
+                       "firewalls from factory-default to site-ready. It "
+                       "drives the console cable for the day-0 wizard and "
+                       "the FDM/FMC REST APIs for the rest, so a box can be "
+                       "brought up, upgraded, and handed to its "
+                       "manager without clicking through the GUI by hand.",
+                  style="Hint.TLabel", wraplength=560,
+                  justify="left").pack(anchor="w", pady=(2, 6))
         ttk.Label(inner,
                   text="Pre-stage (before customer info): step 1 runs "
                        "the day-0 wizard over the console cable; step 2 "

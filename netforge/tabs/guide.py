@@ -137,16 +137,23 @@ class GuideTab(ttk.Frame):
         body(
             "This app generates ready-to-paste initial configurations for "
             "Cisco switches and routers (Layer 2 access, Layer 3 distribution, "
-            "and L3 edge/BGP). There are two phases:\n\n"
-            "ONE-TIME SETUP  (tabs 2-5)\n"
+            "and L3 edge/BGP), and provisions Cisco FTD firewalls. The "
+            "switch/router workflow has two phases:\n\n"
+            "ONE-TIME SETUP  (tabs 3-6)\n"
             "Define your switch models, interface roles, site profiles, and "
             "base settings. This only needs to be done once - after that the "
             "definitions are saved and reused.\n\n"
-            "DAILY USE  (tab 1 - Generate Config)\n"
+            "DAILY USE  (tab 1 - Generator)\n"
             "Pick a model, pick a profile, review port assignments, enter "
             "the per-switch details (hostname, local users, IPs, SVI IPs, "
             "routed-interface IPs, BGP values, etc.), click Generate, then "
-            "copy or save the config.")
+            "copy or save the config.\n\n"
+            "FIREWALL PROVISIONING  (tab 2 - Provisioner)\n"
+            "A separate tool that stages Cisco FTD firewalls over the "
+            "console cable and the FDM/FMC REST APIs - day-0 setup, "
+            "licensing, firmware upgrade, and FMC registration. It is "
+            "independent of the switch/router tabs; see the Provisioner "
+            "section below.")
 
         # ---- Recommended order ----
         heading("Recommended Setup Order")
@@ -157,7 +164,7 @@ class GuideTab(ttk.Frame):
             "2.  Switch Models   - Hardware definitions (port groups)\n"
             "3.  Interface Roles - Reusable per-port command templates\n"
             "4.  Site Profiles   - VLANs, services, L3, and port assignments\n"
-            "5.  Generate Config - Use the wizard to build a config")
+            "5.  Generator       - Use the wizard to build a config")
 
         # ---- Menu Bar ----
         heading("Menu Bar")
@@ -245,8 +252,8 @@ class GuideTab(ttk.Frame):
         subheading("Disabled Port Template")
         body(
             "This template is applied to unassigned ports on the switch - "
-            "ports that do not have a role assigned in Step 2 of Generate "
-            "Config (or in the profile's port assignments). Assigned ports "
+            "ports that do not have a role assigned in Step 2 of the "
+            "Generator (or in the profile's port assignments). Assigned ports "
             "skip this template and are configured through their role "
             "instead. It is the security baseline - typically shuts down "
             "unused ports and puts them on a blackhole VLAN.\n\n"
@@ -338,7 +345,7 @@ class GuideTab(ttk.Frame):
             "standalone). Port groups are replicated per member - e.g. "
             "GigabitEthernet1/0/1-24 on a 4-member stack becomes "
             "GigabitEthernet1/0/1-24 through GigabitEthernet4/0/1-24 in "
-            "the Generate wizard.")
+            "the Generator wizard.")
 
         subheading("Example: C9200L-24T-4G-A")
         code(
@@ -377,7 +384,7 @@ class GuideTab(ttk.Frame):
             "section, so the same role template can be reused across sites "
             "with different VLAN numbers.\n\n"
             "{{ description }} is always available - it is set per port "
-            "assignment in the profile or in the Generate wizard.")
+            "assignment in the profile or in the Generator wizard.")
 
         subheading("Example: Access Port Role")
         code(
@@ -477,7 +484,7 @@ class GuideTab(ttk.Frame):
 
         subheading("Credential Defaults")
         body(
-            "Optional defaults that pre-fill Generate Config Step 3 when "
+            "Optional defaults that pre-fill Generator Step 3 when "
             "this profile is selected:\n\n"
             "  Local Users         One row per IOS local account. Each row "
             "renders as 'username <name> privilege <P> secret <password>'. "
@@ -561,7 +568,7 @@ class GuideTab(ttk.Frame):
             "When Layer 3 is on, enable each section you need with its "
             "checkbox. You can enable more than one. Each section supports "
             "multiple rows (+ Add ...) and carries site-wide IP/Mask defaults "
-            "that pre-fill Generate Config Step 3:\n\n"
+            "that pre-fill Generator Step 3:\n\n"
             "  Loopbacks           One or more loopback interfaces. Typical "
             "for router-ID and management reachability. Each row has an "
             "Interface Config box for the full Loopback stanza body; use "
@@ -588,14 +595,14 @@ class GuideTab(ttk.Frame):
             "  Helpers (CSV) Optional DHCP helper IPs, comma separated. "
             "Each becomes an 'ip helper-address ...' line.\n\n"
             "Per-switch IP/Mask (and optionally VLAN ID when per-switch "
-            "VLAN overrides are enabled) are entered in Generate Config "
+            "VLAN overrides are enabled) are entered in Generator "
             "Step 3 under SVI IPs.")
 
         subheading("OSPF")
         body(
             "Paste the site-wide OSPF IOS block for this profile. Lines "
             "emit verbatim in the Routing section. Router-ID can be "
-            "included in the paste or left to Generate Config Step 3, "
+            "included in the paste or left to Generator Step 3, "
             "which defaults to the first loopback IP.")
         code(
             "router ospf 1\n"
@@ -610,7 +617,7 @@ class GuideTab(ttk.Frame):
             "renders as its own 'router bgp <local_asn>' block. On the "
             "profile, define Peer Slots (remote ASN + description) for "
             "neighbours that exist on every switch. Per-switch values are "
-            "filled in Generate Config Step 3:\n\n"
+            "filled in Generator Step 3:\n\n"
             "  ISP Gateway         Next-hop toward the ISP (often matches "
             "Default Gateway).\n"
             "  User Network        Prefix advertised to BGP.\n"
@@ -641,7 +648,7 @@ class GuideTab(ttk.Frame):
         body("Click 'Save Profile' when done.")
 
         # ---- Daily Use ----
-        heading("Daily Use - Generate Config Tab")
+        heading("Daily Use - Generator Tab")
         body(
             "Once setup is complete, generating a config is a 3-step wizard:")
 
@@ -842,5 +849,72 @@ class GuideTab(ttk.Frame):
             "default route unless you supplied your own under Static Routes.\n\n"
             "- Use the Theme menu to switch between built-in palettes or "
             "open the custom theme editor to build your own.")
+
+        # ---- Provisioner (FTD) ----
+        heading("Provisioner - FTD Firewall Setup (Tab 2)")
+        body(
+            "The Provisioner (tab 2) stages Cisco Firepower Threat Defense "
+            "(FTD) firewalls from factory-default to site-ready. It drives "
+            "the console cable for the day-0 wizard and the FDM/FMC REST "
+            "APIs for the rest, so a box can be brought up, upgraded, and "
+            "handed to its manager without clicking through the GUI by "
+            "hand. It is independent of the switch/router tabs - "
+            "none of the model / role / profile / base setup applies here.\n\n"
+            "The console steps need the 'pyserial' Python package; the tab "
+            "shows an install hint instead of the form if it is missing.")
+
+        subheading("Connection & Profiles")
+        body(
+            "Shared across the whole tab:\n\n"
+            "  COM Port / Baud  The serial connection used by the console "
+            "steps (1 and 3). Click Refresh to re-scan ports; 9600 is the "
+            "FTD console default.\n"
+            "  Profile          Save the form fields (IPs, masks, passwords, "
+            "interfaces) under a name and reload them later - type a name "
+            "and click Save, or pick one from the dropdown to load it. The "
+            "per-device site name and rack number are deliberately not "
+            "saved.\n"
+            "  Status light     Red = idle, amber = starting / connecting, "
+            "green = an operation is running. The transcript on the right "
+            "streams everything sent and received. 'Stop Operation' is "
+            "active only while something is running.")
+
+        subheading("Pre-Stage (before customer site info)")
+        body(
+            "Done on the bench, before you know the customer's details.\n\n"
+            "Step 1 - Console (serial):\n"
+            "Runs the first-boot wizard over the console cable - login, "
+            "password change, connect ftd, EULA, and the management network "
+            "(IP / mask / gateway, hostname, DNS, search domain). "
+            "'Run Initial Setup' performs the wizard. Two recovery tools "
+            "live here too: 'Erase Configuration' for a login-loop or "
+            "'FTD service not installed' box (do a paperclip reset first), "
+            "and 'Regenerate Certificate' for an upgrade that fails with an "
+            "expired-certificate error (Cisco CSCwd11825).\n\n"
+            "Step 2 - FDM (network):\n"
+            "Talks to the FDM REST API over the management port (the IP set "
+            "in step 1) to do what the config guide does in the web GUI. "
+            "'Accept EULA + 90-Day Eval' starts the evaluation license, "
+            "'Deploy Now' pushes pending changes, and 'Upload Firmware & "
+            "Upgrade' uploads an image and runs the upgrade. FDM takes "
+            "~10 minutes to come up after console setup; the upgrade reboots "
+            "on its own (~45 minutes) and the API drops mid-upgrade, which "
+            "is normal.")
+
+        subheading("Pre-Ship (after customer site info)")
+        body(
+            "Step 3 - Pre-Ship (serial):\n"
+            "Run once you have the site details. Over the console it "
+            "registers the FMC manager (FMC IP + registration key), runs "
+            "the management-data-interface wizard (data interface used as "
+            "management, or unchecked for HA), and optionally disables or "
+            "statically configures management0 (including dedicated mgmt0 "
+            "for 2100 / 3100 series). It then captures the device config "
+            "(show managers / network / routes / version) to a text file "
+            "named with the date, site name, and S rack number for the site "
+            "records.\n\n"
+            "'Run Pre-Ship Config' does the configuration then the capture; "
+            "'Capture Config Only' skips straight to capturing show output "
+            "from an already-configured device.")
 
 

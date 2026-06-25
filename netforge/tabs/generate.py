@@ -60,9 +60,25 @@ class GenerateTab(ttk.Frame):
 
     # ------------------------------------------------------------------ build
     def _build(self):
+        # ---- intro ----
+        intro = ttk.Frame(self)
+        intro.pack(fill="x", padx=10, pady=(10, 0))
+        ttk.Label(intro, text="Generator",
+                  style="Sec.TLabel").pack(anchor="w")
+        ttk.Label(intro,
+                  text="Builds a complete switch configuration from your "
+                       "saved models, interface roles, and site profiles. "
+                       "Walk the three-step wizard - pick the model and "
+                       "site, assign each port a role, then fill in the "
+                       "per-switch details - and it renders a ready-to-paste "
+                       "config you can review, save, or push to the switch "
+                       "over the console.",
+                  style="Hint.TLabel", wraplength=560,
+                  justify="left").pack(anchor="w", pady=(2, 6))
+
         # ---- step indicator bar ----
         ind = ttk.Frame(self)
-        ind.pack(fill="x", padx=10, pady=(10, 0))
+        ind.pack(fill="x", padx=10, pady=(4, 0))
         self.step_labels = []
         names = ["Model & Site", "Port Assignments", "Switch Details"]
         for i, name in enumerate(names):
