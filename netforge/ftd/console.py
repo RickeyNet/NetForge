@@ -310,11 +310,19 @@ def preship_rules(answers):
         Rule("mgr-add", rb"[\r\n]>\s*$",
              f"configure manager add {a['fmc_ip']} {a['reg_key']}",
              max_fires=1),
+        # Answer the yes/no confirmation(s) that follow the add. When the
+        # device is already managed (a previous / local manager), the add
+        # first prompts to delete it before registering - that prompt uses
+        # square brackets ([yes/no]) rather than the parentheses or
+        # 'YES' or 'NO' of the registration confirm, so match every style.
+        # max_fires covers a delete confirm plus the registration confirm.
         Rule("mgr-confirm",
-             rb"(?:'YES' or 'NO'|\(yes/no\))[^\r\n]*:?\s*$", "YES",
-             max_fires=2, requires="mgr-add"),
+             rb"(?:'YES' or 'NO'|[\[(]\s*yes\s*/\s*no\s*[\])])"
+             rb"[^\r\n]*:?\s*$",
+             "YES", max_fires=3, requires="mgr-add"),
         # Some versions warn before reconfiguring the management path.
-        Rule("continue-y", rb"do you wish to continue[^\r\n]*:\s*$", "y",
+        Rule("continue-y",
+             rb"do you (?:wish|want) to continue[^\r\n]*:\s*$", "y",
              max_fires=3, requires="mgr-add"),
     ]
     prev = "mgr-add"

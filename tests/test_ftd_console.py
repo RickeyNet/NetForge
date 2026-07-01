@@ -279,6 +279,37 @@ class TestPreship(unittest.TestCase):
             "preship-complete",
         ])
 
+    def test_delete_previous_manager_confirm(self):
+        # When the device is already managed (a previous / local manager),
+        # `configure manager add` first prompts to delete it before
+        # registering. That confirm uses square brackets ([yes/no]) and
+        # must be answered so the flow reaches the registration confirm.
+        a = dict(PRESHIP_ANSWERS, use_data_mgmt=False, disable_mgmt=False,
+                 dedicated_mgmt=False)
+        steps = [
+            (b"\r\nfirepower login: ",  b"admin"),
+            (b"\r\nPassword: ",         b"S3cret!pw"),
+            (b"\r\nfirepower# ",        b"connect ftd"),
+            (b"\r\n> ",
+             b"configure manager add 198.51.100.10 cisco123"),
+            (b"\r\nA manager is already configured on this device."
+             b"\r\nContinuing will delete the current manager."
+             b"\r\nDo you want to continue? [yes/no]: ",          b"YES"),
+            (b"\r\nManager deleted. Registering new manager."
+             b"\r\nPlease enter 'YES' or 'NO': ",                 b"YES"),
+            (b"\r\nManager successfully configured.\r\n> ",       None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, preship_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.reason, "preship-complete")
+        self.assertEqual(result.fired.count("mgr-confirm"), 2)
+        self.assertEqual(result.fired, [
+            "login", "password", "connect-ftd", "mgr-add",
+            "mgr-confirm", "mgr-confirm", "preship-complete"])
+
     def test_dedicated_mgmt_only(self):
         # HA-style run: no management-data-interface, configure
         # management0 statically instead (2100/3100 procedure).
