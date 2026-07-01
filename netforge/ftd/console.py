@@ -303,6 +303,7 @@ def preship_rules(answers):
     ``>``-pattern rule fires once and gates the next via ``requires``.
     """
     a = answers
+    use_data_mgmt = a.get("use_data_mgmt", True)
     rules = [
         *_ftd_shell_rules(a),
         # First '>' prompt -> register the FMC manager. No requires:
@@ -310,6 +311,18 @@ def preship_rules(answers):
         Rule("mgr-add", rb"[\r\n]>\s*$",
              f"configure manager add {a['fmc_ip']} {a['reg_key']}",
              max_fires=1),
+    ]
+    if use_data_mgmt:
+        # Listed ahead of mgr-confirm on purpose: mgr-confirm usually has
+        # fires left during the management-data-interface wizard, and if
+        # a build phrases this destructive confirm with "(yes/no)" the
+        # generic yes/no pattern would answer YES and wipe the device
+        # config. requires="mdi-start" keeps it inert until the wizard.
+        rules.append(
+            Rule("mdi-clear",
+                 rb"clear all the device configuration[^\r\n]*:\s*$",
+                 "n", requires="mdi-start"))
+    rules += [
         # Answer the yes/no confirmation(s) that follow the add. When the
         # device is already managed (a previous / local manager), the add
         # first prompts to delete it before registering - that prompt uses
@@ -326,7 +339,7 @@ def preship_rules(answers):
              max_fires=3, requires="mgr-add"),
     ]
     prev = "mgr-add"
-    if a.get("use_data_mgmt", True):
+    if use_data_mgmt:
         rules += [
             Rule("mdi-start", rb"[\r\n]>\s*$",
                  "configure network management-data-interface",
@@ -352,9 +365,7 @@ def preship_rules(answers):
                  a.get("ddns") or "none", requires="mdi-start"),
             Rule("mdi-dns", rb"DNS server[^\r\n]*:\s*$",
                  a.get("dns") or "0.0.0.0", requires="mdi-start"),
-            Rule("mdi-clear",
-                 rb"clear all the device configuration[^\r\n]*:\s*$",
-                 "n", requires="mdi-start"),
+            # mdi-clear lives above mgr-confirm - see comment there.
         ]
         prev = "mdi-start"
     if a.get("disable_mgmt"):

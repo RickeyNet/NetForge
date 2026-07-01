@@ -35,7 +35,7 @@ class _SerialPushDialog:
                             rb"[\w.\-]+(?:\([^)]+\))?[>#]\s*$")
     # Common day-0 setup-dialog question on factory-fresh IOS
     _SETUP_RE  = re.compile(rb"initial configuration dialog\? \[yes/no\]:")
-    # Password prompt for `enable`
+    # Password prompt for `enable` and mid-push console re-authentication
     _PASS_RE   = re.compile(rb"[Pp]assword:\s*$")
     # IOS pager prompt - capture has to page past it if pagination is on.
     _MORE_RE   = re.compile(rb"--More--")
@@ -416,6 +416,13 @@ class _SerialPushDialog:
         buf        = bytearray()
         got_prompt = False
         pw_sent    = 0
+        # Bytes before this offset can't satisfy _PASS_RE: once a prompt
+        # is answered the buffer still ends with 'Password:', and \s* in
+        # the pattern would soak up the CRLF the device sends next -
+        # re-matching the stale prompt and sending the password twice
+        # (the duplicate then runs as a bogus command at the restored
+        # prompt). Same consume-on-fire trick as ExpectSession.scan_from.
+        pw_scan_from = 0
         while time.monotonic() < deadline:
             # Drain only the bytes already waiting; read(1) blocks just long
             # enough to catch the next byte instead of the full timeout.
@@ -431,14 +438,16 @@ class _SerialPushDialog:
                 # non-empty password (so a banner line ending in
                 # 'Password:' can't inject text) and capped so a wrong
                 # password can't loop forever.
+                pw_tail = buf[max(pw_scan_from, len(buf) - 200):]
                 if (pw_sent < 2 and self._active_enable_pw
-                        and self._PASS_RE.search(tail)
+                        and self._PASS_RE.search(pw_tail)
                         and not self._PROMPT_RE.search(tail)):
                     self._log("\n[netforge: answering password prompt]\n")
                     self._ser.write(
                         self._active_enable_pw.encode(
                             "ascii", errors="replace") + b"\r\n")
                     pw_sent += 1
+                    pw_scan_from = len(buf)
                     deadline = time.monotonic() + timeout
                     continue
                 if self._PROMPT_RE.search(tail):

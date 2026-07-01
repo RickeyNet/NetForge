@@ -92,12 +92,16 @@ class FakeLineSerial:
 
     ``pw_triggers`` is a set of command substrings that make the device
     answer with a ``Password:`` prompt first; the next write (the password
-    answer) then releases the normal device prompt.
+    answer) then releases the normal device prompt. ``max_chunk`` caps how
+    many bytes one read returns, mimicking a real console where bytes
+    trickle in rather than arriving as one atomic reply.
     """
 
-    def __init__(self, prompt=b"\r\nSwitch(config)# ", pw_triggers=()):
+    def __init__(self, prompt=b"\r\nSwitch(config)# ", pw_triggers=(),
+                 max_chunk=None):
         self.prompt      = prompt
         self.pw_triggers = set(pw_triggers)
+        self.max_chunk   = max_chunk
         self.buf         = bytearray()
         self.writes      = []
         self._await_pw   = False
@@ -110,6 +114,8 @@ class FakeLineSerial:
         if not self.buf:
             return b""
         n = min(n, len(self.buf))
+        if self.max_chunk:
+            n = min(n, self.max_chunk)
         out = bytes(self.buf[:n])
         del self.buf[:n]
         return out
@@ -144,6 +150,22 @@ class TestSendLinePasswordPrompt(unittest.TestCase):
         self.assertLess(ser.writes.index(b"line con 0\r\n"),
                         ser.writes.index(b"s3cret\r\n"))
         self.assertIn(b"Switch(config)# ", resp)
+
+    def test_password_sent_once_when_reply_trickles(self):
+        # Bytes arrive one at a time, as on a real 9600-baud console. After
+        # the password is answered the buffer still ends with 'Password:',
+        # and the CRLF that precedes the returning prompt arrives as its
+        # own chunk - \s* in _PASS_RE soaks it up, so without the scan
+        # offset the stale prompt re-matches and the password is sent a
+        # second time (which then runs as a bogus command at the prompt).
+        ser = FakeLineSerial(pw_triggers=("line con 0",), max_chunk=1)
+        d = _make_dialog(ser)
+        d._active_enable_pw = "s3cret"
+        resp = d._send_line("line con 0", expect_prompt=True, timeout=2)
+        self.assertEqual(ser.writes.count(b"s3cret\r\n"), 1)
+        # Byte-at-a-time reads return the instant '#' lands, so the
+        # trailing space may not have arrived yet.
+        self.assertIn(b"Switch(config)#", resp)
 
     def test_no_password_sent_without_prompt(self):
         # A normal line that returns straight to the prompt must not emit
