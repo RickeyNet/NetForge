@@ -415,13 +415,33 @@ class _SerialPushDialog:
         deadline   = time.monotonic() + timeout
         buf        = bytearray()
         got_prompt = False
+        pw_sent    = 0
         while time.monotonic() < deadline:
             # Drain only the bytes already waiting; read(1) blocks just long
             # enough to catch the next byte instead of the full timeout.
             chunk = self._ser.read(self._ser.in_waiting or 1)
             if chunk:
                 buf.extend(chunk)
-                if self._PROMPT_RE.search(buf[-200:]):
+                tail = buf[-200:]
+                # A 'Password:' prompt can appear while streaming config -
+                # e.g. the switch drops the console to re-authenticate after
+                # an AAA/line change. Answer it with the enable password
+                # instead of letting the loop time out and then send the
+                # next config line straight into the prompt. Gated on a
+                # non-empty password (so a banner line ending in
+                # 'Password:' can't inject text) and capped so a wrong
+                # password can't loop forever.
+                if (pw_sent < 2 and self._active_enable_pw
+                        and self._PASS_RE.search(tail)
+                        and not self._PROMPT_RE.search(tail)):
+                    self._log("\n[netforge: answering password prompt]\n")
+                    self._ser.write(
+                        self._active_enable_pw.encode(
+                            "ascii", errors="replace") + b"\r\n")
+                    pw_sent += 1
+                    deadline = time.monotonic() + timeout
+                    continue
+                if self._PROMPT_RE.search(tail):
                     got_prompt = True
                     break
             if self._stop_flag:

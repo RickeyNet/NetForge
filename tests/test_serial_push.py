@@ -87,6 +87,84 @@ class TestCapture(unittest.TestCase):
         self.assertEqual(out, "partial")
 
 
+class FakeLineSerial:
+    """Serial stub for _send_line: a written command triggers a reply.
+
+    ``pw_triggers`` is a set of command substrings that make the device
+    answer with a ``Password:`` prompt first; the next write (the password
+    answer) then releases the normal device prompt.
+    """
+
+    def __init__(self, prompt=b"\r\nSwitch(config)# ", pw_triggers=()):
+        self.prompt      = prompt
+        self.pw_triggers = set(pw_triggers)
+        self.buf         = bytearray()
+        self.writes      = []
+        self._await_pw   = False
+
+    @property
+    def in_waiting(self):
+        return len(self.buf)
+
+    def read(self, n):
+        if not self.buf:
+            return b""
+        n = min(n, len(self.buf))
+        out = bytes(self.buf[:n])
+        del self.buf[:n]
+        return out
+
+    def write(self, data):
+        self.writes.append(data)
+        if self._await_pw:
+            # This write is the answer to the password prompt.
+            self._await_pw = False
+            self.buf.extend(self.prompt)
+            return
+        text = data.decode("ascii", errors="replace").strip()
+        if any(t in text for t in self.pw_triggers):
+            self._await_pw = True
+            self.buf.extend(b"\r\nPassword: ")
+            return
+        self.buf.extend(self.prompt)
+
+
+class TestSendLinePasswordPrompt(unittest.TestCase):
+    def test_answers_password_prompt_midpush(self):
+        # A config line causes the switch to drop to a Password: prompt;
+        # the push must send the enable password, not the next line.
+        ser = FakeLineSerial(pw_triggers=("line con 0",))
+        d = _make_dialog(ser)
+        d._active_enable_pw = "s3cret"
+        resp = d._send_line("line con 0", expect_prompt=True, timeout=2)
+        self.assertIn(b"line con 0\r\n", ser.writes)
+        self.assertIn(b"s3cret\r\n", ser.writes)
+        # The enable password must be sent AFTER the command, in response
+        # to the prompt - never before it.
+        self.assertLess(ser.writes.index(b"line con 0\r\n"),
+                        ser.writes.index(b"s3cret\r\n"))
+        self.assertIn(b"Switch(config)# ", resp)
+
+    def test_no_password_sent_without_prompt(self):
+        # A normal line that returns straight to the prompt must not emit
+        # the enable password.
+        ser = FakeLineSerial()
+        d = _make_dialog(ser)
+        d._active_enable_pw = "s3cret"
+        d._send_line("hostname SW1", expect_prompt=True, timeout=2)
+        self.assertNotIn(b"s3cret\r\n", ser.writes)
+
+    def test_empty_enable_pw_not_injected_midpush(self):
+        # With no enable password configured, a stray Password:-looking
+        # tail must not cause a blank/enable write to be injected.
+        ser = FakeLineSerial(pw_triggers=("banner",))
+        d = _make_dialog(ser)
+        d._active_enable_pw = ""
+        d._send_line("banner motd x", expect_prompt=True, timeout=0.6)
+        # Only the command itself should have been written.
+        self.assertEqual(ser.writes, [b"banner motd x\r\n"])
+
+
 class TestSerialPushPrompts(unittest.TestCase):
     def test_prompt_re_matches_hostname_prompt(self):
         buf = b"\r\nSwitch# "
