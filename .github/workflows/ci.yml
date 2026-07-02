@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: '3.13'
           cache: pip
       - name: Install linters
         # Project deps too, so pyright can resolve imports (jinja2, serial).
@@ -40,11 +40,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            python-version: '3.9'
-          - os: ubuntu-latest
-            python-version: '3.12'
+            python-version: '3.13'
           - os: windows-latest
-            python-version: '3.12'
+            python-version: '3.13'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6

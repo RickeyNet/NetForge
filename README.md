@@ -133,7 +133,7 @@ NetForge is an offline staging tool. A few things to be aware of:
 ## Requirements
 
 - Windows 10/11
-- Python 3.8+ (if running from source)
+- Python 3.13 (if running from source)
 - Dependencies listed in `requirements.txt` (`jinja2`, `pyserial`)
 
 ## License
