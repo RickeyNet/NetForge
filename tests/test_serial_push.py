@@ -94,14 +94,17 @@ class FakeLineSerial:
     answer with a ``Password:`` prompt first; the next write (the password
     answer) then releases the normal device prompt. ``max_chunk`` caps how
     many bytes one read returns, mimicking a real console where bytes
-    trickle in rather than arriving as one atomic reply.
+    trickle in rather than arriving as one atomic reply. ``pw_rejects``
+    makes the device reject that many password answers with a fresh
+    ``Password:`` prompt (a wrong enable password).
     """
 
     def __init__(self, prompt=b"\r\nSwitch(config)# ", pw_triggers=(),
-                 max_chunk=None):
+                 max_chunk=None, pw_rejects=0):
         self.prompt      = prompt
         self.pw_triggers = set(pw_triggers)
         self.max_chunk   = max_chunk
+        self.pw_rejects  = pw_rejects
         self.buf         = bytearray()
         self.writes      = []
         self._await_pw   = False
@@ -124,6 +127,10 @@ class FakeLineSerial:
         self.writes.append(data)
         if self._await_pw:
             # This write is the answer to the password prompt.
+            if self.pw_rejects:
+                self.pw_rejects -= 1
+                self.buf.extend(b"\r\nPassword: ")
+                return
             self._await_pw = False
             self.buf.extend(self.prompt)
             return
@@ -166,6 +173,16 @@ class TestSendLinePasswordPrompt(unittest.TestCase):
         # Byte-at-a-time reads return the instant '#' lands, so the
         # trailing space may not have arrived yet.
         self.assertIn(b"Switch(config)#", resp)
+
+    def test_wrong_password_capped_at_two_attempts(self):
+        # A rejected password (device re-prompts) gets exactly one retry;
+        # after that the loop stops answering so a wrong enable password
+        # can't ping-pong with the device until the config runs dry.
+        ser = FakeLineSerial(pw_triggers=("line con 0",), pw_rejects=5)
+        d = _make_dialog(ser)
+        d._active_enable_pw = "wr0ng"
+        d._send_line("line con 0", expect_prompt=True, timeout=0.4)
+        self.assertEqual(ser.writes.count(b"wr0ng\r\n"), 2)
 
     def test_no_password_sent_without_prompt(self):
         # A normal line that returns straight to the prompt must not emit

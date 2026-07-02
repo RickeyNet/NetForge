@@ -310,6 +310,61 @@ class TestPreship(unittest.TestCase):
             "login", "password", "connect-ftd", "mgr-add",
             "mgr-confirm", "mgr-confirm", "preship-complete"])
 
+    def test_yesno_clear_prompt_not_hijacked_by_mgr_confirm(self):
+        # Regression for rule ordering: if a build phrases the destructive
+        # "clear all the device configuration" confirm with "(yes/no)"
+        # instead of "(y/n)", it matches mgr-confirm's generic yes/no
+        # pattern too. mdi-clear must outrank it and answer "n" - a "YES"
+        # here wipes the device config.
+        a = dict(PRESHIP_ANSWERS, disable_mgmt=False)
+        steps = [
+            (b"\r\nfirepower login: ",  b"admin"),
+            (b"\r\nPassword: ",         b"S3cret!pw"),
+            (b"\r\nfirepower# ",        b"connect ftd"),
+            (b"\r\n> ",
+             b"configure manager add 198.51.100.10 cisco123"),
+            (b"\r\nPlease enter 'YES' or 'NO': ",                 b"YES"),
+            (b"\r\nManager successfully configured.\r\n> ",
+             b"configure network management-data-interface"),
+            (b"\r\nDo you wish to clear all the device "
+             b"configuration before applying ? (yes/no) [n]: ",   b"n"),
+            (b"\r\nConfiguration done\r\n> ",                     None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, preship_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertNotIn(b"YES\r\n", ser.writes[-2:])
+        self.assertEqual(result.fired, [
+            "login", "password", "connect-ftd", "mgr-add",
+            "mgr-confirm", "mdi-start", "mdi-clear", "preship-complete"])
+
+    def test_want_to_continue_without_brackets_answered(self):
+        # The reconfigure warning on some builds says "Do you want to
+        # continue?" with no (yes/no) hint at all - continue-y must catch
+        # it ("wish" and "want" phrasings both exist in the wild).
+        a = dict(PRESHIP_ANSWERS, use_data_mgmt=False, disable_mgmt=False,
+                 dedicated_mgmt=False)
+        steps = [
+            (b"\r\nfirepower login: ",  b"admin"),
+            (b"\r\nPassword: ",         b"S3cret!pw"),
+            (b"\r\nfirepower# ",        b"connect ftd"),
+            (b"\r\n> ",
+             b"configure manager add 198.51.100.10 cisco123"),
+            (b"\r\nThis will reconfigure the management path."
+             b"\r\nDo you want to continue?: ",                   b"y"),
+            (b"\r\nManager successfully configured.\r\n> ",       None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, preship_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.fired, [
+            "login", "password", "connect-ftd", "mgr-add",
+            "continue-y", "preship-complete"])
+
     def test_dedicated_mgmt_only(self):
         # HA-style run: no management-data-interface, configure
         # management0 statically instead (2100/3100 procedure).
