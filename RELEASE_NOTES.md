@@ -1,3 +1,25 @@
+# NetForge v1.5.4 - Release Notes
+
+A reliability release for FTD provisioning: the console automation now answers a few device prompts it used to miss, and the toolchain moves to Python 3.13.
+
+## FTD Provisioning: Answer More Console Prompts
+
+The pre-ship console flow now handles prompts that previously stalled a run or, worse, got the wrong answer:
+
+- **Delete-previous-manager confirm** - when a device is already managed, `configure manager add` first asks to delete the current manager before registering. That confirm uses square brackets (`[yes/no]`) rather than the registration prompt's `'YES' or 'NO'`, so it's now matched and answered, and the "want to continue" reconfigure warning is caught whether or not it shows a `(yes/no)` hint.
+- **Clear-config prompt can't be hijacked** - if a build phrases the destructive "clear all the device configuration" confirm as `(yes/no)`, the wizard's own "answer no" rule now outranks the generic yes/no confirm, so the device config is never wiped by a stray `YES`.
+
+## Switch Push: Mid-Push Password Prompts
+
+- **Re-authentication during a config push** - if a switch drops the console to a `Password:` prompt while streaming config (for example after an AAA or line change), the push now answers with the enable password and waits for the real prompt instead of timing out and sending the next config line into the prompt. The answer is gated on a non-empty password, capped at one retry so a wrong password can't loop, and the password stays scrubbed from the transcript.
+
+## Under the Hood
+
+- **Python 3.13** - the shipped build, developer setup, and CI now target Python 3.13, replacing the aging 3.9 baseline. CI runs the suite on Linux and Windows against 3.13.
+- **Test coverage** - new regression tests pin the prompt-answer behavior above, including a byte-at-a-time console fake that reproduces the chunk-boundary cases these fixes address.
+
+---
+
 # NetForge v1.5.3 - Release Notes
 
 A small UI-clarity release: clearer tab names, a tidier layout, and an up-to-date How-To Guide.
