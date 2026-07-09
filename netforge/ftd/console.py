@@ -40,23 +40,31 @@ class Rule:
     """When *pattern* matches the unconsumed tail of the buffer, respond.
 
     ``response`` may be:
-      str   -> sent followed by CR+LF; "" sends a bare CR+LF, i.e.
-               "accept the default" for wizard questions
+      str   -> sent followed by a bare CR (what Enter sends in a terminal
+               emulator); "" sends just the CR, i.e. "accept the default"
+               for wizard questions. Never CR+LF: the appliance console is
+               a Linux tty that maps CR to NL, so CR+LF arrives as TWO
+               line endings and the stray empty line desyncs paired
+               prompts (new password / confirm never match).
       bytes -> sent raw, no line ending (e.g. b" " to page the EULA)
       None  -> nothing is sent; used for terminal "we're done" rules
     ``requires`` names another rule that must already have fired before
     this one becomes eligible - it keeps generic patterns (like a bare
     ``>`` prompt) from matching too early.
+    ``fail`` marks a terminal rule as a failure outcome (e.g. the device
+    rejected a command), so the session ends with ok=False instead of
+    reporting success.
     """
 
     def __init__(self, name, pattern, response, max_fires=3,
-                 terminal=False, requires=None):
+                 terminal=False, requires=None, fail=False):
         self.name      = name
         self.pattern   = re.compile(pattern, re.IGNORECASE)
         self.response  = response
         self.max_fires = max_fires
         self.terminal  = terminal
         self.requires  = requires
+        self.fail      = fail
         self.fires     = 0
 
 
@@ -75,7 +83,7 @@ class ExpectSession:
 
     Reads only buffered bytes (same pacing trick as the IOS console push)
     so prompts are answered the instant they appear. While nothing has
-    matched yet the session periodically nudges the console with CR+LF to
+    matched yet the session periodically nudges the console with a CR to
     wake a sleeping login prompt; once the dialog is underway it stays
     quiet, because the wizard legitimately goes silent for minutes during
     system initialization.
@@ -140,7 +148,7 @@ class ExpectSession:
                 time.sleep(0.01)
                 if (not self.fired and nudges < self.max_nudges
                         and now - last_rx > self.nudge_interval):
-                    self.ser.write(b"\r\n")
+                    self.ser.write(b"\r")
                     nudges += 1
                     last_rx = now
                 continue
@@ -164,7 +172,7 @@ class ExpectSession:
             self._flush_log()
             scan_from = len(buf)
             if rule.terminal:
-                return ExpectResult(True, rule.name, self.fired)
+                return ExpectResult(not rule.fail, rule.name, self.fired)
 
     def _match(self, window):
         for rule in self.rules:
@@ -181,7 +189,7 @@ class ExpectSession:
             self.ser.write(rule.response)
             return
         self.ser.write(
-            rule.response.encode("ascii", errors="replace") + b"\r\n")
+            rule.response.encode("ascii", errors="replace") + b"\r")
         shown = rule.response if rule.response else "<Enter>"
         self._emit(f"\n[netforge: {rule.name} -> {shown}]\n")
 
@@ -221,7 +229,10 @@ def _fxos_login_rules(a):
              a["new_password"], max_fires=4),
         Rule("login", rb"(?<!last )login:\s*$", a["username"],
              max_fires=3),
-        Rule("password", rb"password:\s*$",
+        # The lookbehind keeps this from ever answering an
+        # "Enter/Confirm new password:" prompt with the *current*
+        # password once new-pass / confirm-pass run out of fires.
+        Rule("password", rb"(?<!new )password:\s*$",
              a["current_password"], max_fires=3),
     ]
 
@@ -256,9 +267,13 @@ def initial_setup_rules(answers):
         Rule("hostname",
              rb"fully qualified hostname[^\r\n]*:\s*$",
              a.get("hostname", "")),
-        Rule("dns", rb"DNS servers[^\r\n]*:\s*$", a.get("dns", "")),
+        # "list of" pins these to the wizard prompts; the applying phase
+        # prints status lines like "Setting DNS servers:" that would
+        # otherwise fire the rule and inject a junk input line.
+        Rule("dns", rb"list of DNS servers[^\r\n]*:\s*$",
+             a.get("dns", "")),
         Rule("search-domain",
-             rb"search domains[^\r\n]*:\s*$",
+             rb"list of search domains[^\r\n]*:\s*$",
              a.get("search_domain") or "none"),
         Rule("manage-local",
              rb"manage the device locally\? ?\(yes/no\)[^\r\n]*:?\s*$",
@@ -418,8 +433,28 @@ def regenerate_cert_rules(answers):
     """
     a = answers
     keyrings = a.get("keyrings") or ["fdm"]
+    # A command rejection followed by the '>' prompt. Matching the prompt
+    # too (not just the error text) matters twice over: a fire consumes
+    # the scan window, so firing on the bare error would swallow a
+    # same-chunk prompt and strand the session; and it guarantees the
+    # device is ready to read the fallback command.
+    rejected = (rb"(?:syntax error|illegal command|invalid command)"
+                rb"[\s\S]*?[\r\n]>\s*$")
     rules = [
         *_ftd_shell_rules(a),
+        # Even the bare fallback command was rejected - this build does
+        # not have the command at all; end the run as a failure.
+        Rule("regen-failed", rejected, None, terminal=True, fail=True,
+             requires="regen-fallback"),
+        # Some builds take no keyring argument (e.g. 7.0.1 accepts only
+        # a bare <cr>): when the argument form is rejected, re-run the
+        # command bare. Remaining keyrings are skipped afterwards - a
+        # no-argument build only has the one keyring to regenerate.
+        Rule("regen-fallback", rejected,
+             "system support regenerate-security-keyring",
+             max_fires=1, requires="regen-0"),
+        Rule("regen-fallback-done", rb"[\r\n]>\s*$", None, terminal=True,
+             requires="regen-fallback"),
         # Some builds prompt to confirm; others regenerate silently.
         Rule("regen-confirm",
              rb"(?:\(yes/no\)|continue\??)[^\r\n]*:?\s*$", "yes",
@@ -456,7 +491,7 @@ def capture_command(ser, cmd, log=None, stop=None, timeout=60.0,
     """
     log  = log or (lambda _msg: None)
     stop = stop or (lambda: False)
-    ser.write(cmd.encode("ascii", errors="replace") + b"\r\n")
+    ser.write(cmd.encode("ascii", errors="replace") + b"\r")
     buf         = bytearray()
     deadline    = time.monotonic() + timeout
     quiet_until = None

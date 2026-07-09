@@ -23,6 +23,7 @@ import uuid
 import http.client
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 API_BASE = "/api/fdm/latest/"
 
@@ -33,6 +34,16 @@ class FdmError(Exception):
 
 class FdmStopped(FdmError):
     """Raised when a long-running operation is cancelled via ``stop``."""
+
+
+class FdmUnavailable(FdmError):
+    """Connection-level failure: the FDM API is unreachable or not ready.
+
+    Distinct from FdmError so login can retry these (the API takes
+    minutes to come up after first boot, and restarts after a keyring
+    regeneration) while real HTTP errors - bad credentials, rejected
+    payloads - still fail immediately.
+    """
 
 
 class FdmClient:
@@ -65,6 +76,7 @@ class FdmClient:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(self._url(path), data=body,
                                      headers=headers, method=method)
+        self.log(f"[fdm] {method} {path}\n")
         try:
             with urllib.request.urlopen(  # nosec B310 - FDM REST client; URL is always built with a fixed https:// scheme
                     req, context=self._ctx,
@@ -75,7 +87,12 @@ class FdmClient:
                 f"{method} {path} -> HTTP {exc.code}: "
                 f"{_error_detail(exc)}") from exc
         except urllib.error.URLError as exc:
-            raise FdmError(f"{method} {path} -> {exc.reason}") from exc
+            raise FdmUnavailable(f"{method} {path} -> {exc.reason}") from exc
+        except (TimeoutError, OSError, http.client.HTTPException) as exc:
+            # A read timeout or a dropped/garbled connection surfaces as a
+            # raw socket/http error, not a URLError - typical while the
+            # FDM web server is still starting up.
+            raise FdmUnavailable(f"{method} {path} -> {exc}") from exc
         if not raw:
             return {}
         try:
@@ -84,15 +101,41 @@ class FdmClient:
             return {"raw": raw.decode("utf-8", errors="replace")}
 
     # ------------------------------------------------------------ auth
-    def login(self):
-        data = self._request("POST", "fdm/token", {
-            "grant_type": "password",
-            "username":   self.username,
-            "password":   self.password,
-        }, auth=False)
+    def login(self, wait=0.0, stop=None):
+        """Fetch a bearer token, retrying while the API comes up.
+
+        Connection-level failures (unreachable, timeout, dropped) are
+        retried for up to ``wait`` seconds - the FDM API takes minutes
+        to come up after the console setup, and restarts briefly after
+        a keyring regeneration. HTTP errors such as bad credentials
+        fail immediately. ``stop`` aborts the wait with FdmStopped.
+        """
+        stop = stop or (lambda: False)
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                data = self._attempt_login()
+                break
+            except FdmUnavailable as exc:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                self.log(f"FDM API not ready ({exc}) - retrying, "
+                         f"will keep trying for {int(remaining)}s\n")
+                self._sleep_unless_stopped(min(20.0, remaining), stop)
         token = data.get("access_token")
         if not token:
             raise FdmError(f"login succeeded but no access_token: {data}")
+        self._store_token(data, token)
+
+    def _attempt_login(self):
+        return self._request("POST", "fdm/token", {
+            "grant_type": "password",
+            "username":   self.username,
+            "password":   self.password,
+        }, auth=False, timeout=60)
+
+    def _store_token(self, data, token):
         self._token = token
         # Trust the server's lifetime when given; refresh early.
         try:
@@ -122,10 +165,17 @@ class FdmClient:
         prov["acceptEULA"] = True
         prov.setdefault("type", "initialprovision")
         try:
+            # Kicks off initial provisioning on the device; the response
+            # regularly takes well over the default timeout.
             result = self._request(
-                "POST", "devices/default/action/provision", prov)
+                "POST", "devices/default/action/provision", prov,
+                timeout=300)
         except FdmError as exc:
-            if "DeviceSetupAlreadyDone" in str(exc):
+            # Phrasing varies by build: older ones return the
+            # DeviceSetupAlreadyDone key, newer ones a readable sentence.
+            msg = str(exc)
+            if ("DeviceSetupAlreadyDone" in msg
+                    or "device setup is complete" in msg.lower()):
                 self.log("Device setup already completed - nothing to do\n")
                 return None
             raise
@@ -148,8 +198,62 @@ class FdmClient:
         result = self._request("POST", "license/smartagentconnections", {
             "type":           "smartagentconnection",
             "connectionType": "EVALUATION",
-        })
+        }, timeout=120)
         self.log("90-day evaluation started\n")
+        return result
+
+    # ------------------------------------------------- web certificate
+    def replace_web_cert(self, name="NetForge-Web-Cert",
+                         common_name="netforge", days=1825):
+        """Replace the management web server certificate with a fresh one.
+
+        Recovery for the expired-cert upgrade failure (CSCwd11825) on
+        out-of-box devices: generates a self-signed certificate locally,
+        uploads it as an internal certificate object, and points the
+        management web server at it - the API equivalent of System
+        Settings > Management Access > Management Web Server in the GUI.
+        The caller still has to deploy for it to take effect.
+        """
+        cert_pem, key_pem = _self_signed_pem(common_name, days)
+        data = self._request("GET", "object/internalcertificates?limit=100")
+        items = [it for it in (data.get("items") or []) if it]
+        taken = {it.get("name") for it in items}
+        base, n = name, 2
+        while name in taken:
+            name = f"{base}-{n}"
+            n += 1
+        payload = {
+            "name": name,
+            "cert": cert_pem,
+            "privateKey": key_pem,
+            "type": "internalcertificate",
+        }
+        # Builds whose cert objects carry a certType expect it on create.
+        if any("certType" in it for it in items):
+            payload["certType"] = "UPLOAD"
+        cert_obj = self._request("POST", "object/internalcertificates",
+                                 payload)
+        self.log(f"Created internal certificate '{name}' "
+                 f"(valid {days} days)\n")
+
+        data = self._request("GET",
+                             "devicesettings/default/webuicertificates")
+        items = data.get("items")
+        if not items:
+            raise FdmError("no webuicertificate settings object found")
+        settings = items[0]
+        settings.pop("links", None)
+        settings["certificate"] = {
+            "id":   cert_obj.get("id"),
+            "name": cert_obj.get("name", name),
+            "type": cert_obj.get("type", "internalcertificate"),
+        }
+        result = self._request(
+            "PUT",
+            f"devicesettings/default/webuicertificates/{settings['id']}",
+            settings)
+        self.log("Management web server set to the new certificate - "
+                 "deploy required to take effect\n")
         return result
 
     # ---------------------------------------------------------- deploy
@@ -162,7 +266,7 @@ class FdmClient:
         deployment itself continues on the device).
         """
         stop = stop or (lambda: False)
-        job = self._request("POST", "operational/deploy")
+        job = self._request("POST", "operational/deploy", timeout=120)
         job_id = job.get("id")
         if not job_id:
             raise FdmError(f"deploy did not return a job id: {job}")
@@ -172,7 +276,12 @@ class FdmClient:
             if progress:
                 progress(state)
             self._sleep_unless_stopped(poll_interval, stop)
-            job = self._request("GET", f"operational/deploy/{job_id}")
+            try:
+                job = self._request("GET", f"operational/deploy/{job_id}")
+            except FdmUnavailable:
+                # Deploying a web certificate change restarts the web
+                # server mid-deploy; keep polling until the deadline.
+                continue
             state = job.get("state", state)
         if state != "DEPLOYED":
             raise FdmError(f"deployment ended in state {state}")
@@ -256,6 +365,44 @@ class FdmClient:
         result = self._request("POST", "action/upgrade", timeout=120)
         self.log("Upgrade started - device will install and reboot\n")
         return result
+
+
+def _self_signed_pem(common_name, days):
+    """Generate a self-signed certificate; returns (cert_pem, key_pem).
+
+    Country US + a common name, mirroring what the FDM GUI's
+    "Create new Internal Certificate > Self-Signed" wizard asks for.
+    """
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+    except ImportError as exc:
+        raise FdmError(
+            "The 'cryptography' package is required to generate a web "
+            "certificate. Install it with:  pip install cryptography"
+        ) from exc
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+        x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+    ])
+    now = datetime.now(timezone.utc)
+    cert = (x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=days))
+            .sign(key, hashes.SHA256()))
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption()).decode()
+    return cert_pem, key_pem
 
 
 def _error_detail(exc):

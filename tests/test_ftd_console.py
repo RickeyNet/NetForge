@@ -74,7 +74,7 @@ def _wizard_steps():
         (b"\r\nConfirm new password: ",                           b"S3cret!pw"),
         (b"\r\nfirepower# ",                                      b"connect ftd"),
         (b"\r\nYou must accept the EULA to continue."
-         b"\r\nPress <ENTER> to display the EULA: ",              b"\r\n"),
+         b"\r\nPress <ENTER> to display the EULA: ",              b"\r"),
         (b"\r\nEND USER LICENSE AGREEMENT ...\r\n--More--",       b" "),
         (b"\r\n...rest of the EULA...\r\nPlease enter 'YES' or "
          b"press <ENTER> to AGREE to the EULA: ",                 b"YES"),
@@ -89,9 +89,9 @@ def _wizard_steps():
         (b"\r\nEnter the IPv4 default gateway for the "
          b"management interface [192.168.45.1]: ",                b"10.20.30.1"),
         (b"\r\nEnter a fully qualified hostname for this "
-         b"system [firepower]: ",                                 b"\r\n"),
+         b"system [firepower]: ",                                 b"\r"),
         (b"\r\nEnter a comma-separated list of DNS servers "
-         b"or 'none' [208.67.222.222]: ",                         b"\r\n"),
+         b"or 'none' [208.67.222.222]: ",                         b"\r"),
         (b"\r\nEnter a comma-separated list of search "
          b"domains or 'none' []: ",                               b"none"),
         (b"\r\nManage the device locally? (yes/no) [yes]: ",      b"yes"),
@@ -114,6 +114,42 @@ class TestInitialSetup(unittest.TestCase):
             "gateway", "hostname", "dns", "search-domain",
             "manage-local", "setup-complete",
         ])
+
+    def test_no_write_ends_with_crlf(self):
+        # Regression: the appliance console is a Linux tty (icrnl), so a
+        # CR+LF line ending arrives as TWO newlines. The stray empty line
+        # desyncs paired prompts - the day-0 password change loops with
+        # "Passwords do not match" forever because the confirm prompt
+        # keeps reading the empty line. Enter must be a bare CR.
+        ser = FakeSerial(_wizard_steps())
+        session = ExpectSession(ser, initial_setup_rules(ANSWERS),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        for w in ser.writes:
+            self.assertFalse(w.endswith(b"\r\n"),
+                             msg=f"CR+LF sent to the console: {w!r}")
+
+    def test_new_password_prompt_never_gets_current_password(self):
+        # Regression: once new-pass / confirm-pass are out of fires, the
+        # generic password rule must NOT answer "Enter new password:"
+        # with the current password (seen live after a desync).
+        rules = {r.name: r for r in initial_setup_rules(ANSWERS)}
+        rules["new-pass"].fires = rules["new-pass"].max_fires
+        self.assertIsNone(
+            ExpectSession(FakeSerial([]), list(rules.values()))._match(
+                b"\r\nEnter new password: "))
+
+    def test_status_lines_are_not_prompts(self):
+        # Regression: while applying the config the wizard prints status
+        # lines ending in ':' ("Setting DNS servers:") that must not fire
+        # the prompt rules - a live run answered one and injected a junk
+        # input line ahead of the "Manage the device locally?" prompt.
+        session = ExpectSession(FakeSerial([]), initial_setup_rules(ANSWERS))
+        for status in (b"\r\nSetting DNS servers:",
+                       b"\r\nSetting search domains:"):
+            self.assertIsNone(session._match(status),
+                              msg=f"rule fired on status line {status!r}")
 
     def test_already_configured(self):
         steps = [
@@ -335,7 +371,7 @@ class TestPreship(unittest.TestCase):
                                 overall_timeout=10, idle_timeout=2)
         result = session.run()
         self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
-        self.assertNotIn(b"YES\r\n", ser.writes[-2:])
+        self.assertNotIn(b"YES\r", ser.writes[-2:])
         self.assertEqual(result.fired, [
             "login", "password", "connect-ftd", "mgr-add",
             "mgr-confirm", "mdi-start", "mdi-clear", "preship-complete"])
@@ -455,6 +491,54 @@ class TestRegenerateCert(unittest.TestCase):
         self.assertEqual(result.fired, [
             "login", "password", "connect-ftd",
             "regen-0", "regen-confirm", "regen-complete"])
+
+    def test_no_arg_build_falls_back_to_bare_command(self):
+        # Regression: FTD 7.0.1 takes no keyring argument (bare <cr>
+        # only) and rejects "... fdm" with "Syntax error: Illegal
+        # command line". The flow must re-run the command bare and
+        # finish cleanly.
+        a = dict(self.LOGIN, keyrings=["fdm"])
+        steps = [
+            (b"\r\nfirepower login: ", b"admin"),
+            (b"\r\nPassword: ",        b"S3cret!pw"),
+            (b"\r\nfirepower# ",       b"connect ftd"),
+            (b"\r\n> ",
+             b"system support regenerate-security-keyring fdm"),
+            # Error and the next prompt arrive in one chunk; the bare
+            # retry ends in CR with no argument.
+            (b"\r\nSyntax error: Illegal command line\r\n\r\n> ",
+             b"regenerate-security-keyring\r"),
+            (b"\r\nKeyring certificate regenerated.\r\n> ",       None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, regenerate_cert_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertTrue(result.ok, msg=f"{result!r} fired={result.fired}")
+        self.assertEqual(result.reason, "regen-fallback-done")
+        self.assertIn("regen-fallback", result.fired)
+
+    def test_rejected_bare_command_is_a_failure(self):
+        # A build without the command at all rejects the argument form
+        # AND the bare fallback - the run must end as a failure, not
+        # report "complete" off the trailing '>' prompt.
+        a = dict(self.LOGIN, keyrings=["fdm"])
+        steps = [
+            (b"\r\nfirepower login: ", b"admin"),
+            (b"\r\nPassword: ",        b"S3cret!pw"),
+            (b"\r\nfirepower# ",       b"connect ftd"),
+            (b"\r\n> ",
+             b"system support regenerate-security-keyring fdm"),
+            (b"\r\nSyntax error: Illegal command line\r\n\r\n> ",
+             b"regenerate-security-keyring\r"),
+            (b"\r\nSyntax error: Illegal command line\r\n\r\n> ", None),
+        ]
+        ser = FakeSerial(steps)
+        session = ExpectSession(ser, regenerate_cert_rules(a),
+                                overall_timeout=10, idle_timeout=2)
+        result = session.run()
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "regen-failed")
 
     def test_silent_regen_no_confirm(self):
         # Builds that regenerate without a confirmation prompt still

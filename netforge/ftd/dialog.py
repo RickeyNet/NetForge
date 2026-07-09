@@ -34,7 +34,6 @@ from netforge.ftd.console import (
     erase_config_rules,
     initial_setup_rules,
     preship_rules,
-    regenerate_cert_rules,
 )
 from netforge.ftd.fdm_api import FdmClient, FdmError, FdmStopped
 from netforge.push_errors import LineErrorScanner
@@ -173,10 +172,9 @@ class FtdTab(ttk.Frame):
         # the connection settings since a profile spans every tab.
         self._build_profile_bar(left, before=nb)
         self._action_btns = (self.setup_btn, self.erase_btn,
-                             self.regen_btn,
                              self.eula_btn, self.deploy_btn,
-                             self.upgrade_btn, self.preship_btn,
-                             self.capture_btn)
+                             self.webcert_btn, self.upgrade_btn,
+                             self.preship_btn, self.capture_btn)
 
         # Status line: a coloured light shows state at a glance - red =
         # idle, amber = starting/connecting, green = running - beside the
@@ -299,34 +297,6 @@ class FtdTab(ttk.Frame):
                   justify="left").grid(
             row=10, column=0, columnspan=3, sticky="w", padx=4)
 
-        # Recovery for the expired-certificate upgrade failure.
-        ttk.Label(tab, text="Certificate keyring", width=22,
-                  anchor="w").grid(row=11, column=0, sticky="w",
-                                   padx=4, pady=(10, 2))
-        self.cert_keyring_cb = ttk.Combobox(
-            tab, width=28, state="readonly",
-            values=["FDM web server (fdm)",
-                    "Default / FXOS (default)",
-                    "Both"])
-        self.cert_keyring_cb.set("FDM web server (fdm)")
-        self.cert_keyring_cb.grid(row=11, column=1, sticky="ew",
-                                  padx=4, pady=(10, 2))
-        self.regen_btn = ttk.Button(tab, text="Regenerate Certificate...",
-                                    command=self._start_regen_cert)
-        self.regen_btn.grid(row=11, column=2, sticky="w", padx=4,
-                            pady=(10, 2))
-        ttk.Label(tab,
-                  text="Fix for an FDM software upgrade that fails with "
-                       "an expired-certificate error (Cisco CSCwd11825). "
-                       "Regenerates the internal keyring over the console "
-                       "using the password above; it takes effect "
-                       "immediately - no deployment - and avoids the "
-                       "cert-deploy loop. The FDM web UI restarts "
-                       "briefly; device config is untouched.",
-                  style="Hint.TLabel", wraplength=560,
-                  justify="left").grid(
-            row=12, column=0, columnspan=3, sticky="w", padx=4)
-
     def _build_fdm_tab(self, nb):
         tab = ttk.Frame(nb, padding=(10, 8))
         nb.add(tab, text="2. Pre-Stage: FDM (network)")
@@ -359,16 +329,27 @@ class FtdTab(ttk.Frame):
             bf, text="Deploy Now",
             command=lambda: self._start_fdm("deploy"))
         self.deploy_btn.pack(side="left", padx=8)
+        self.webcert_btn = ttk.Button(
+            bf, text="Fix Web Cert (Expired)",
+            command=lambda: self._start_fdm("webcert"))
+        self.webcert_btn.pack(side="left")
         self.upgrade_btn = ttk.Button(
             bf, text="Upload Firmware & Upgrade",
             command=lambda: self._start_fdm("upgrade"))
-        self.upgrade_btn.pack(side="left")
+        self.upgrade_btn.pack(side="left", padx=8)
 
         ttk.Label(tab,
                   text="FDM takes ~10 minutes to come up after the "
-                       "console setup finishes. The upgrade installs and "
+                       "console setup finishes; these actions wait and "
+                       "retry for up to 10 minutes, so it is safe to "
+                       "click right away. The upgrade installs and "
                        "reboots on its own (~45 minutes); the API drops "
-                       "mid-upgrade, which is normal.",
+                       "mid-upgrade, which is normal. Fix Web Cert is "
+                       "the recovery for an upgrade that fails with "
+                       "'certificate has already expired' (out-of-box "
+                       "7.0.1): it creates a fresh self-signed web "
+                       "certificate, assigns it, and deploys - then "
+                       "run the upgrade again.",
                   style="Hint.TLabel", wraplength=560,
                   justify="left").grid(
             row=5, column=0, columnspan=3, sticky="w", padx=4)
@@ -654,9 +635,14 @@ class FtdTab(ttk.Frame):
         if self._closing:
             return
         try:
+            # Follow the output only when already at the bottom, so
+            # scrolling back through the transcript isn't yanked down
+            # by every new chunk.
+            follow = self.log.yview()[1] >= 0.999
             self.log.configure(state="normal")
             self.log.insert("end", msg)
-            self.log.see("end")
+            if follow:
+                self.log.see("end")
             self.log.configure(state="disabled")
         except tk.TclError:
             pass
@@ -857,52 +843,6 @@ class FtdTab(ttk.Frame):
         self._begin(self._run_console,
                     (port, self._baud(), rules, "Erase configuration",
                      ERASE_TIMEOUT, 300.0))
-
-    def _keyrings(self):
-        sel = self.cert_keyring_cb.get()
-        if sel.startswith("Both"):
-            return ["default", "fdm"]
-        if sel.startswith("Default"):
-            return ["default"]
-        return ["fdm"]
-
-    def _start_regen_cert(self):
-        port = self._selected_port()
-        if port is None:
-            return
-        pw = self.cur_pw_e.get() or self.new_pw_e.get()
-        if not pw:
-            _dialog("Missing Password",
-                    "Enter the device admin password (in Current or New "
-                    "Password) so NetForge can log in over the console.",
-                    "warning")
-            return
-        keyrings = self._keyrings()
-        if not _ask("Regenerate Certificate",
-                    "Regenerate the " + " and ".join(keyrings)
-                    + " keyring certificate over the console?\n\nThe FDM "
-                      "web server restarts briefly; the device config is "
-                      "left untouched."):
-            return
-        a = {
-            "username":         self.user_e.get().strip() or "admin",
-            "current_password": pw,
-            # No forced password change is expected on a configured
-            # device; reuse the same password if one is requested anyway.
-            "new_password":     pw,
-            "keyrings":         keyrings,
-        }
-        bad = self._non_ascii_fields(a)
-        if bad:
-            _dialog("Non-ASCII Characters",
-                    "The console only accepts ASCII. Fix: " + ", ".join(
-                        b.replace("_", " ") for b in bad),
-                    "warning")
-            return
-        rules = regenerate_cert_rules(a)
-        self._begin(self._run_console,
-                    (port, self._baud(), rules, "Regenerate certificate",
-                     ERASE_TIMEOUT, 120.0))
 
     def _scanning_log(self, scanner):
         """A log callback that feeds the error scanner, then logs as usual."""
@@ -1158,7 +1098,10 @@ class FtdTab(ttk.Frame):
         stop = lambda: self._stop_flag  # noqa: E731
         try:
             self._set_status(f"Connecting to https://{host} ...")
-            client.login()
+            # The API takes minutes to come up after the console setup
+            # (and restarts when its certificate changes); wait it out
+            # here rather than making the user time the click.
+            client.login(wait=600.0, stop=stop)
             self._set_state("running")
             if action == "eula":
                 self._set_status("Accepting EULA / initial provisioning...")
@@ -1172,6 +1115,15 @@ class FtdTab(ttk.Frame):
                               self._set_status(f"Deploying... ({s})"),
                               stop=stop)
                 self._set_status("Deploy complete")
+            elif action == "webcert":
+                self._set_status("Creating & assigning web certificate...")
+                client.replace_web_cert()
+                self._set_status("Deploying...")
+                client.deploy(progress=lambda s:
+                              self._set_status(f"Deploying... ({s})"),
+                              stop=stop)
+                self._set_status("Web certificate replaced - re-run "
+                                 "the upgrade")
             elif action == "upgrade":
                 self._set_status("Uploading firmware...")
                 last_mb = [-1]

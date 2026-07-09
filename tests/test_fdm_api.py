@@ -19,6 +19,7 @@ from netforge.ftd.fdm_api import (
     FdmClient,
     FdmError,
     FdmStopped,
+    FdmUnavailable,
     _error_detail,
 )
 
@@ -101,6 +102,40 @@ class TestLogin(_ApiTest):
         with self.assertRaises(FdmError):
             self.client.login()
 
+    def test_timeout_becomes_fdmunavailable(self):
+        # A raw socket read timeout is not a URLError; it must still
+        # surface as an FdmError (naming the call) rather than escape.
+        self.server.add("POST", "fdm/token",
+                        TimeoutError("The read operation timed out"))
+        with self.assertRaises(FdmUnavailable) as ctx:
+            self.client.login()
+        self.assertIn("fdm/token", str(ctx.exception))
+
+    def test_login_retries_while_api_comes_up(self):
+        self.server.add("POST", "fdm/token", [
+            TimeoutError("The read operation timed out"),
+            {"access_token": "TOK", "expires_in": 1800},
+        ])
+        self.client.login(wait=0.2)
+        self.assertEqual(self.client._token, "TOK")
+        self.assertEqual(len(self.server.payloads("POST", "fdm/token")), 2)
+
+    def test_login_does_not_retry_bad_credentials(self):
+        # HTTP errors (wrong password) must fail immediately even with a
+        # wait budget - only connection-level failures are retried.
+        self.server.add("POST", "fdm/token",
+                        http_error(400, {"error": {"messages": [
+                            {"description": "bad credentials"}]}}))
+        with self.assertRaises(FdmError):
+            self.client.login(wait=60)
+        self.assertEqual(len(self.server.payloads("POST", "fdm/token")), 1)
+
+    def test_stop_aborts_login_wait(self):
+        self.server.add("POST", "fdm/token",
+                        TimeoutError("The read operation timed out"))
+        with self.assertRaises(FdmStopped):
+            self.client.login(wait=60, stop=lambda: True)
+
     def test_request_auto_logs_in_once(self):
         self._with_token()
         self.server.add("GET", "license/smartagentconnections",
@@ -158,6 +193,20 @@ class TestAcceptEula(_ApiTest):
                             {"description": "DeviceSetupAlreadyDone"}]}}))
         self.assertIsNone(self.client.accept_eula())
 
+    def test_already_done_prose_message_returns_none(self):
+        # Some builds phrase the 422 as a sentence instead of the
+        # DeviceSetupAlreadyDone key (seen live on FTD 7.0.1).
+        self._with_token()
+        self.server.add("GET", "devices/default/action/provision",
+                        {"items": [{"type": "initialprovision"}]})
+        self.server.add("POST", "devices/default/action/provision",
+                        http_error(422, {"error": {"messages": [
+                            {"description":
+                             "The initial device setup is complete. You "
+                             "can now manage the device and change the "
+                             "configuration."}]}}))
+        self.assertIsNone(self.client.accept_eula())
+
 
 class TestStartEvaluation(_ApiTest):
     def test_starts_when_unlicensed(self):
@@ -175,6 +224,66 @@ class TestStartEvaluation(_ApiTest):
         self.client.start_evaluation()
         self.assertEqual(
             self.server.payloads("POST", "license/smartagentconnections"), [])
+
+
+class TestReplaceWebCert(_ApiTest):
+    def _routes(self, existing_names=("DefaultInternalCertificate",)):
+        self._with_token()
+        self.server.add("GET", "object/internalcertificates?limit=100",
+                        {"items": [{"name": n, "certType": "SELF_SIGNED",
+                                    "id": f"c-{i}"}
+                                   for i, n in enumerate(existing_names)]})
+        self.server.add("POST", "object/internalcertificates",
+                        {"id": "c-new", "name": "whatever",
+                         "type": "internalcertificate"})
+        self.server.add("GET", "devicesettings/default/webuicertificates",
+                        {"items": [{"id": "w1", "type": "webuicertificate",
+                                    "certificate": {"id": "c-0"},
+                                    "links": {"self": "x"}}]})
+        self.server.add("PUT",
+                        "devicesettings/default/webuicertificates/w1",
+                        {"ok": 1})
+
+    def test_creates_cert_and_assigns_it(self):
+        self._routes()
+        self.client.replace_web_cert()
+        posted = self.server.payloads(
+            "POST", "object/internalcertificates")[0]
+        self.assertIn("BEGIN CERTIFICATE", posted["cert"])
+        self.assertIn("PRIVATE KEY", posted["privateKey"])
+        self.assertEqual(posted["type"], "internalcertificate")
+        # Existing objects carry certType, so the upload declares one.
+        self.assertEqual(posted["certType"], "UPLOAD")
+        put = self.server.payloads(
+            "PUT", "devicesettings/default/webuicertificates/w1")[0]
+        self.assertEqual(put["certificate"]["id"], "c-new")
+        self.assertNotIn("links", put)
+
+    def test_name_collision_gets_a_suffix(self):
+        self._routes(existing_names=("DefaultInternalCertificate",
+                                     "NetForge-Web-Cert"))
+        self.client.replace_web_cert()
+        posted = self.server.payloads(
+            "POST", "object/internalcertificates")[0]
+        self.assertEqual(posted["name"], "NetForge-Web-Cert-2")
+
+    def test_certtype_omitted_when_unknown_to_build(self):
+        self._with_token()
+        self.server.add("GET", "object/internalcertificates?limit=100",
+                        {"items": [{"name": "DefaultInternalCertificate",
+                                    "id": "c-0"}]})
+        self.server.add("POST", "object/internalcertificates",
+                        {"id": "c-new", "type": "internalcertificate"})
+        self.server.add("GET", "devicesettings/default/webuicertificates",
+                        {"items": [{"id": "w1", "type": "webuicertificate",
+                                    "certificate": {"id": "c-0"}}]})
+        self.server.add("PUT",
+                        "devicesettings/default/webuicertificates/w1",
+                        {"ok": 1})
+        self.client.replace_web_cert()
+        posted = self.server.payloads(
+            "POST", "object/internalcertificates")[0]
+        self.assertNotIn("certType", posted)
 
 
 class TestDeploy(_ApiTest):
@@ -203,6 +312,18 @@ class TestDeploy(_ApiTest):
         self.server.add("GET", "operational/deploy/j", [{"state": "FAILED"}])
         with self.assertRaises(FdmError):
             self.client.deploy(poll_interval=0)
+
+    def test_poll_rides_out_web_server_restart(self):
+        # Deploying a web-cert change restarts the FDM web server; a
+        # dropped poll must not abort the wait.
+        self._with_token()
+        self.server.add("POST", "operational/deploy",
+                        {"id": "j", "state": "QUEUED"})
+        self.server.add("GET", "operational/deploy/j",
+                        [TimeoutError("The read operation timed out"),
+                         {"state": "DEPLOYED"}])
+        job = self.client.deploy(poll_interval=0)
+        self.assertEqual(job["state"], "DEPLOYED")
 
     def test_stop_raises_fdmstopped(self):
         self._with_token()

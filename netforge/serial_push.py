@@ -193,9 +193,13 @@ class _SerialPushDialog:
         self.dlg.after(0, self._log_main, msg, tag)
 
     def _log_main(self, msg, tag):
+        # Follow the output only when already at the bottom, so scrolling
+        # back through the transcript isn't yanked down by every new chunk.
+        follow = self.log.yview()[1] >= 0.999
         self.log.configure(state="normal")
         self.log.insert("end", msg)
-        self.log.see("end")
+        if follow:
+            self.log.see("end")
         self.log.configure(state="disabled")
 
     def _set_status(self, text):
