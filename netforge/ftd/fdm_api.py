@@ -266,11 +266,20 @@ class FdmClient:
         deployment itself continues on the device).
         """
         stop = stop or (lambda: False)
-        job = self._request("POST", "operational/deploy", timeout=120)
+        deadline = time.time() + timeout
+        try:
+            job = self._request("POST", "operational/deploy", timeout=120)
+        except FdmUnavailable as exc:
+            # Deploying a management web certificate change restarts the
+            # web server, which drops this very request without a
+            # response - but the deployment still starts on the device.
+            self.log(f"Deploy request dropped ({exc}) - the web server "
+                     "is likely restarting to apply the change; "
+                     "reconnecting to find the deployment\n")
+            job = self._recover_deploy_job(deadline, stop)
         job_id = job.get("id")
         if not job_id:
             raise FdmError(f"deploy did not return a job id: {job}")
-        deadline = time.time() + timeout
         state = job.get("state", "QUEUED")
         while state in ("QUEUED", "DEPLOYING") and time.time() < deadline:
             if progress:
@@ -282,11 +291,39 @@ class FdmClient:
                 # Deploying a web certificate change restarts the web
                 # server mid-deploy; keep polling until the deadline.
                 continue
+            except FdmError as exc:
+                # The restart can also invalidate the token; get a fresh
+                # one and keep polling instead of aborting.
+                if "HTTP 401" not in str(exc):
+                    raise
+                self._token = None
+                continue
             state = job.get("state", state)
         if state != "DEPLOYED":
             raise FdmError(f"deployment ended in state {state}")
         self.log("Deployment complete\n")
         return job
+
+    def _recover_deploy_job(self, deadline, stop):
+        """Reconnect after a dropped deploy POST and find the job.
+
+        The old token may have died with the web server, so log in
+        again (waiting for the API to come back), then look for a
+        deployment already in flight. If none is found the request
+        never reached the device, and posting again is safe.
+        """
+        self._token = None
+        self.login(wait=max(30.0, deadline - time.time()), stop=stop)
+        data = self._request("GET", "operational/deploy")
+        active = [it for it in (data.get("items") or [])
+                  if it and it.get("state") in ("QUEUED", "DEPLOYING")]
+        if active:
+            self.log("Found the in-progress deployment - "
+                     "resuming polling\n")
+            return active[-1]
+        self.log("No deployment in progress after reconnecting - "
+                 "requesting the deploy again\n")
+        return self._request("POST", "operational/deploy", timeout=120)
 
     @staticmethod
     def _sleep_unless_stopped(seconds, stop):

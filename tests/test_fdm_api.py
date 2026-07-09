@@ -325,6 +325,53 @@ class TestDeploy(_ApiTest):
         job = self.client.deploy(poll_interval=0)
         self.assertEqual(job["state"], "DEPLOYED")
 
+    def test_dropped_deploy_post_finds_running_job(self):
+        # Deploying a web-cert change restarts the web server, which
+        # closes the deploy POST itself without a response ("Remote end
+        # closed connection without response") - but the deployment
+        # still starts. The client must reconnect and pick it up.
+        self._with_token()
+        self.server.add("POST", "operational/deploy",
+                        TimeoutError("Remote end closed connection "
+                                     "without response"))
+        self.server.add("GET", "operational/deploy",
+                        {"items": [{"id": "done", "state": "DEPLOYED"},
+                                   {"id": "j9", "state": "DEPLOYING"}]})
+        self.server.add("GET", "operational/deploy/j9",
+                        [{"state": "DEPLOYED"}])
+        job = self.client.deploy(poll_interval=0)
+        self.assertEqual(job["state"], "DEPLOYED")
+        # A fresh token was fetched after the restart.
+        self.assertEqual(len(self.server.payloads("POST", "fdm/token")), 2)
+
+    def test_dropped_deploy_post_reposts_when_no_job_found(self):
+        # If the dropped request never reached the device there is no
+        # job to resume - deploying again is the safe recovery.
+        self._with_token()
+        self.server.add("POST", "operational/deploy",
+                        [TimeoutError("Remote end closed connection "
+                                      "without response"),
+                         {"id": "j2", "state": "QUEUED"}])
+        self.server.add("GET", "operational/deploy", {"items": []})
+        self.server.add("GET", "operational/deploy/j2",
+                        [{"state": "DEPLOYED"}])
+        job = self.client.deploy(poll_interval=0)
+        self.assertEqual(job["state"], "DEPLOYED")
+        self.assertEqual(
+            len(self.server.payloads("POST", "operational/deploy")), 2)
+
+    def test_poll_relogins_when_restart_invalidates_token(self):
+        self._with_token()
+        self.server.add("POST", "operational/deploy",
+                        {"id": "j", "state": "QUEUED"})
+        self.server.add("GET", "operational/deploy/j",
+                        [http_error(401, {"error": {"messages": [
+                            {"description": "Invalid token"}]}}),
+                         {"state": "DEPLOYED"}])
+        job = self.client.deploy(poll_interval=0)
+        self.assertEqual(job["state"], "DEPLOYED")
+        self.assertEqual(len(self.server.payloads("POST", "fdm/token")), 2)
+
     def test_stop_raises_fdmstopped(self):
         self._with_token()
         self.server.add("POST", "operational/deploy",
