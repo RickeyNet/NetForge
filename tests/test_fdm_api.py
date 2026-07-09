@@ -447,6 +447,15 @@ class TestUpload(unittest.TestCase):
         self.assertIn(b"netforge", sent)            # multipart boundary
         self.assertEqual(seen[-1], (20, 20))        # full file accounted for
 
+    def test_announces_upload_before_streaming(self):
+        # The upload takes many minutes with no other API traffic; the
+        # transcript must say it started, not just that it finished.
+        msgs = []
+        self.client.log = msgs.append
+        self.client.upload_upgrade(self.path, chunk_size=4)
+        self.assertIn("uploading", msgs[0])
+        self.assertIn("20 bytes", msgs[0])
+
     def test_stop_aborts_upload(self):
         with self.assertRaises(FdmStopped):
             self.client.upload_upgrade(self.path, stop=lambda: True,

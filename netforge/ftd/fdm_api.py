@@ -357,6 +357,8 @@ class FdmClient:
         size  = os.path.getsize(filepath)
         total = len(preamble) + size + len(epilogue)
 
+        self.log(f"[fdm] POST action/uploadupgrade - uploading {fname} "
+                 f"({size:,} bytes), progress in the status bar below\n")
         conn = http.client.HTTPSConnection(self.host, context=self._ctx,
                                            timeout=120)
         try:
