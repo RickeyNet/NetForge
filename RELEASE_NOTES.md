@@ -1,3 +1,38 @@
+# NetForge v1.5.5 - Release Notes
+
+The first release hardened against a real Firepower 1010 (FTD 7.0.1) staged end to end. Everything here fixes something that actually broke on the bench: the day-0 console wizard, the FDM REST steps that time out or drop mid-request, and the expired-certificate upgrade failure that now has a one-click recovery.
+
+## FTD Console: Day-0 Wizard Fixes
+
+- **Password change no longer loops forever** - the appliance console is a Linux tty that maps carriage return to newline, so sending CR+LF delivered *two* line endings and the extra blank line desynced every paired prompt. The classic symptom was an endless "Passwords do not match" during the day-0 password change, plus a failed first login even with the correct credentials. NetForge now sends a bare CR for every console answer, nudge, and capture command, matching what a real terminal's Enter key sends.
+- **Prompts are pinned so status lines can't hijack them** - the generic password rule can no longer answer "Enter new password:" with the *current* password, and the DNS / search-domain rules require the actual "comma-separated list of..." prompt so a config-apply status line like "Setting DNS servers:" can't fire them and inject stray input.
+- **A rejected command now fails honestly** - console rules gained a failure flag, so a run that hits a syntax error ends as a failure instead of falsely reporting "complete" off the next prompt. The security-keyring regeneration also adapts to builds that take no argument (FTD 7.0.1), retrying the bare command instead of erroring out.
+
+## FDM REST API: Survives a Slow, Restarting API
+
+The FDM API is slow to come up after console setup and restarts itself whenever its certificate changes. The client is now built for that reality:
+
+- **Waits the API out instead of timing out** - login retries connection-level failures for up to 10 minutes (bad credentials still fail immediately), and every step uses a realistic timeout instead of the old 30 seconds that expired mid-provision. Dropped or timed-out calls are reported by name instead of escaping as a raw socket error.
+- **Every API call is logged** - the transcript shows each request as it happens, and FDM status lines now appear the instant they're generated rather than being held back behind the next message - during a firmware upload that "next message" was ten minutes away, which made login look frozen.
+- **Firmware upload announces itself** - the transcript names the image and size when the upload starts, with byte progress in the status bar, so a long upload no longer looks stalled.
+- **Recognizes the "setup already complete" reply** - FTD 7.0.1 phrases the already-provisioned response as a sentence rather than a status key, so the EULA step now treats it as done instead of an error.
+
+## Fix Web Cert (Expired): One-Click Upgrade Recovery
+
+Out-of-box 1010s can hit Cisco bug CSCwd11825, where a firmware upgrade fails around 42% with "The chosen certificate has already expired." The manual fix is a multi-step trip through the FDM GUI to create and assign a new management web-server certificate. NetForge now does it for you:
+
+- **New "Fix Web Cert (Expired)" button** on the Provisioner's FDM tab (left of Upload Firmware & Upgrade). It generates a fresh self-signed certificate locally, uploads it as an internal certificate object, points the management web server at it, and deploys - the API equivalent of the documented GUI recovery.
+- **Rides out the web-server restart** - assigning the new certificate restarts FDM's web server, which drops the deploy request without a reply. The deploy step now reconnects, gets a fresh token, finds the deployment already in flight and resumes it (or safely re-issues it if the request never landed) instead of failing. After running it, re-run the upgrade.
+
+## Under the Hood
+
+- **New dependency: `cryptography`** - used to generate the self-signed web certificate locally rather than guessing an undocumented device-side API.
+- **Transcript scrolling** - the FTD and switch-push transcripts only auto-scroll when you're already at the bottom, so scrolling back to read earlier output isn't yanked down by every new line.
+- **UI cleanup** - the console Certificate keyring section on the FDM tab was removed in favor of the API-driven web-cert recovery.
+- **Test coverage** - new regression tests pin the CR-only sends, the prompt-pattern fixes, the console failure paths, and the FDM retry / timeout / 422-phrasing / web-cert / deploy-recovery behavior.
+
+---
+
 # NetForge v1.5.4 - Release Notes
 
 A reliability release for FTD provisioning: the console automation now answers a few device prompts it used to miss, and the toolchain moves to Python 3.13.
